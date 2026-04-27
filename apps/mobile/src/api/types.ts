@@ -173,6 +173,7 @@ export interface FileSystemListRequest {
   path?: string | null;
   includeHidden?: boolean;
   directoriesOnly?: boolean;
+  includeGitRepo?: boolean;
 }
 
 export interface FileSystemEntry {

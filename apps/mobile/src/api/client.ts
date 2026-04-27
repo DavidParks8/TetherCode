@@ -797,11 +797,15 @@ export class HostBridgeApiClient {
   async listFilesystemEntries(
     request?: FileSystemListRequest
   ): Promise<FileSystemListResponse> {
-    const response = await this.ws.request<Record<string, unknown>>('bridge/fs/list', {
+    const params: Record<string, unknown> = {
       path: normalizeCwd(request?.path) ?? null,
       includeHidden: request?.includeHidden === true,
       directoriesOnly: request?.directoriesOnly !== false,
-    });
+    };
+    if (request?.includeGitRepo === true) {
+      params.includeGitRepo = true;
+    }
+    const response = await this.ws.request<Record<string, unknown>>('bridge/fs/list', params);
     return readFileSystemListResponse(response);
   }
 

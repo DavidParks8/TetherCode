@@ -69,6 +69,7 @@ import type {
   TurnPlanStep,
   ChatMessage as ChatTranscriptMessage,
   FileSystemEntry,
+  FileSystemListResponse,
   WorkspaceSummary,
 } from '../api/types';
 import type { HostBridgeWsClient } from '../api/ws';
@@ -235,6 +236,7 @@ const RUN_WATCHDOG_MS = 60_000;
 const LARGE_CHAT_MESSAGE_COUNT_THRESHOLD = 120;
 const CHAT_INITIAL_VISIBLE_MESSAGE_WINDOW = 80;
 const CHAT_MESSAGE_PAGE_SIZE = 80;
+const CHAT_AUTO_LOAD_OLDER_TOP_THRESHOLD_PX = 96;
 const LIKELY_RUNNING_RECENT_UPDATE_MS = 30_000;
 const UNANSWERED_USER_RUNNING_TTL_MS = 90_000;
 const ACTIVE_CHAT_SYNC_INTERVAL_MS = 2_000;
@@ -609,6 +611,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [workspaceBrowseEntries, setWorkspaceBrowseEntries] = useState<FileSystemEntry[]>([]);
     const [loadingWorkspaceBrowse, setLoadingWorkspaceBrowse] = useState(false);
     const [workspaceBrowseError, setWorkspaceBrowseError] = useState<string | null>(null);
+    const workspaceBrowseCacheRef = useRef<Record<string, FileSystemListResponse>>({});
+    const workspaceBrowseRequestRef = useRef(0);
     const [resumeGitCheckoutAfterWorkspacePicker, setResumeGitCheckoutAfterWorkspacePicker] =
       useState(false);
     const [gitCheckoutModalVisible, setGitCheckoutModalVisible] = useState(false);
@@ -2539,27 +2543,52 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
     const browseWorkspacePath = useCallback(
       async (path: string | null | undefined) => {
+        const normalizedRequestPath = normalizeWorkspacePath(path);
+        const cacheKey = getWorkspaceBrowseCacheKey(normalizedRequestPath);
+        const cached = workspaceBrowseCacheRef.current[cacheKey];
+        const requestId = workspaceBrowseRequestRef.current + 1;
+        workspaceBrowseRequestRef.current = requestId;
+
+        if (cached) {
+          setWorkspaceBridgeRoot((current) => normalizeWorkspacePath(cached.bridgeRoot) ?? current);
+          setWorkspaceBrowsePath(normalizeWorkspacePath(cached.path));
+          setWorkspaceBrowseParentPath(normalizeWorkspacePath(cached.parentPath));
+          setWorkspaceBrowseEntries(cached.entries);
+          setWorkspaceBrowseError(null);
+        }
+
         setLoadingWorkspaceBrowse(true);
         try {
           const response = await api.listFilesystemEntries({
-            path: normalizeWorkspacePath(path),
+            path: normalizedRequestPath,
             directoriesOnly: true,
           });
+          if (workspaceBrowseRequestRef.current !== requestId) {
+            return;
+          }
+
           const normalizedPath = normalizeWorkspacePath(response.path);
-          setWorkspaceBridgeRoot(
-            normalizeWorkspacePath(response.bridgeRoot) ?? workspaceBridgeRoot
-          );
+          workspaceBrowseCacheRef.current[cacheKey] = response;
+          if (normalizedPath) {
+            workspaceBrowseCacheRef.current[getWorkspaceBrowseCacheKey(normalizedPath)] = response;
+          }
+          setWorkspaceBridgeRoot((current) => normalizeWorkspacePath(response.bridgeRoot) ?? current);
           setWorkspaceBrowsePath(normalizedPath);
           setWorkspaceBrowseParentPath(normalizeWorkspacePath(response.parentPath));
           setWorkspaceBrowseEntries(response.entries);
           setWorkspaceBrowseError(null);
         } catch (err) {
+          if (workspaceBrowseRequestRef.current !== requestId) {
+            return;
+          }
           setWorkspaceBrowseError((err as Error).message);
         } finally {
-          setLoadingWorkspaceBrowse(false);
+          if (workspaceBrowseRequestRef.current === requestId) {
+            setLoadingWorkspaceBrowse(false);
+          }
         }
       },
-      [api, workspaceBridgeRoot]
+      [api]
     );
 
     const openWorkspacePicker = useCallback(
@@ -2575,8 +2604,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           null;
         setWorkspacePickerPurpose(purpose);
         setWorkspaceModalVisible(true);
-        void refreshWorkspaceRoots();
         void browseWorkspacePath(initialPath);
+        InteractionManager.runAfterInteractions(() => {
+          void refreshWorkspaceRoots();
+        });
       },
       [
         browseWorkspacePath,
@@ -2736,9 +2767,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     );
 
     const closeWorkspaceModal = useCallback(() => {
-      if (loadingWorkspaceBrowse || loadingWorkspaceRoots) {
-        return;
-      }
       setWorkspaceModalVisible(false);
       if (
         workspacePickerPurpose === 'git-checkout-destination' &&
@@ -2748,8 +2776,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         setGitCheckoutModalVisible(true);
       }
     }, [
-      loadingWorkspaceBrowse,
-      loadingWorkspaceRoots,
       resumeGitCheckoutAfterWorkspacePicker,
       workspacePickerPurpose,
     ]);
@@ -4830,11 +4856,13 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const openChatThread = useCallback(
       (id: string, optimisticChat?: Chat | null) => {
         const isSameChat = chatIdRef.current === id;
-        const optimisticSnapshot =
-          optimisticChat && optimisticChat.id === id
-            ? optimisticChat
-            : api.peekChatShell(id);
-        const hasSnapshot = Boolean(optimisticSnapshot);
+        const providedSnapshot =
+          optimisticChat && optimisticChat.id === id ? optimisticChat : null;
+        const providedHydratedSnapshot =
+          providedSnapshot && providedSnapshot.messages.length > 0 ? providedSnapshot : null;
+        const cachedChat = providedHydratedSnapshot ?? api.peekChat(id);
+        const optimisticSnapshot = cachedChat ?? providedSnapshot ?? api.peekChatShell(id);
+        const hasHydratedSnapshot = Boolean(cachedChat);
 
         if (isSameChat) {
           setSelectedChatId(id);
@@ -4853,8 +4881,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
 
         setSelectedChatId(id);
-        openingChatStartedAtRef.current = hasSnapshot ? 0 : Date.now();
-        setOpeningChatId(hasSnapshot ? null : id);
+        openingChatStartedAtRef.current = hasHydratedSnapshot ? 0 : Date.now();
+        setOpeningChatId(hasHydratedSnapshot ? null : id);
         setSending(false);
         setCreating(false);
         setError(null);
@@ -8264,10 +8292,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                   bottomInset={androidComposerReservedInset}
                 />
               ) : isOpeningChat ? (
-                <View style={styles.chatLoadingContainer}>
-                  <ActivityIndicator size="small" color={theme.colors.textMuted} />
-                  <Text style={styles.chatLoadingText}>Opening chat...</Text>
-                </View>
+                <ChatOpeningView />
               ) : (
                 <ComposeView
                   startWorkspaceLabel={defaultStartWorkspaceLabel}
@@ -8318,10 +8343,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 bottomInset={chatBottomInset}
               />
             ) : isOpeningChat ? (
-              <View style={styles.chatLoadingContainer}>
-                <ActivityIndicator size="small" color={theme.colors.textMuted} />
-                <Text style={styles.chatLoadingText}>Opening chat...</Text>
-              </View>
+              <ChatOpeningView />
             ) : (
               <ComposeView
                 startWorkspaceLabel={defaultStartWorkspaceLabel}
@@ -8436,11 +8458,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           onBrowsePath={(path) => void browseWorkspacePath(path)}
           onSelectPath={handleWorkspaceSelection}
           actionLabel={
-            workspacePickerPurpose === 'default-start' ? 'Clone repository here' : null
+            workspacePickerPurpose === 'default-start' ? 'Clone Repo' : null
           }
           actionDescription={
             workspacePickerPurpose === 'default-start'
-              ? 'Use the folder you already have selected or open as the destination for a fresh checkout.'
+              ? 'Into this workspace'
               : null
           }
           onActionPress={
@@ -9178,6 +9200,24 @@ function AgentThreadsPanel({
 
 // ── Chat View ──────────────────────────────────────────────────────
 
+function ChatOpeningView() {
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
+  return (
+    <View style={styles.chatOpeningShell}>
+      <View style={styles.chatOpeningCard}>
+        <View style={styles.chatOpeningTopRow}>
+          <ActivityIndicator size="small" color={theme.colors.textMuted} />
+          <Text style={styles.chatOpeningTitle}>Opening chat</Text>
+        </View>
+        <View style={styles.chatOpeningBubbleWide} />
+        <View style={styles.chatOpeningBubbleShort} />
+      </View>
+    </View>
+  );
+}
+
 const ChatView = memo(function ChatView({
   chat,
   parentChat,
@@ -9199,6 +9239,12 @@ const ChatView = memo(function ChatView({
   const styles = useMemo(() => createStyles(theme), [theme]);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const showJumpToLatestRef = useRef(false);
+  const contentHeightRef = useRef(0);
+  const viewportHeightRef = useRef(0);
+  const scrollOffsetYRef = useRef(0);
+  const previousScrollOffsetYRef = useRef(0);
+  const scrollingTowardOlderMessagesRef = useRef(false);
+  const autoLoadOlderCheckpointRef = useRef<number | null>(null);
 
   const transcriptView = useMemo(() => {
     const childVisibleMessages = getVisibleTranscriptMessages(
@@ -9237,8 +9283,6 @@ const ChatView = memo(function ChatView({
     () => [...displayItems].reverse(),
     [displayItems]
   );
-  const olderMessageCount = visibleStartIndex;
-  const hasOlderMessages = olderMessageCount > 0;
   const inlineChoiceSet = useMemo(
     () => (inlineChoicesEnabled ? findInlineChoiceSet(paginatedMessages) : null),
     [inlineChoicesEnabled, paginatedMessages]
@@ -9260,9 +9304,53 @@ const ChatView = memo(function ChatView({
     );
   }, []);
 
+  const maybeAutoLoadOlderMessages = useCallback(
+    (allowShortContentLoad = false) => {
+      if (visibleStartIndex <= 0) {
+        return;
+      }
+
+      const viewportHeight = viewportHeightRef.current;
+      if (viewportHeight <= 0) {
+        return;
+      }
+
+      const maxOffsetY = Math.max(contentHeightRef.current - viewportHeight, 0);
+      const distanceFromOlderEdge = Math.max(0, maxOffsetY - scrollOffsetYRef.current);
+      const contentNeedsMoreToScroll = maxOffsetY <= CHAT_AUTO_LOAD_OLDER_TOP_THRESHOLD_PX;
+      const reachedOlderEdge = distanceFromOlderEdge <= CHAT_AUTO_LOAD_OLDER_TOP_THRESHOLD_PX;
+      if (!contentNeedsMoreToScroll && !reachedOlderEdge) {
+        return;
+      }
+
+      if (
+        !scrollingTowardOlderMessagesRef.current &&
+        !(allowShortContentLoad && contentNeedsMoreToScroll)
+      ) {
+        return;
+      }
+
+      if (autoLoadOlderCheckpointRef.current === visibleStartIndex) {
+        return;
+      }
+
+      autoLoadOlderCheckpointRef.current = visibleStartIndex;
+      loadOlderMessages();
+    },
+    [loadOlderMessages, visibleStartIndex]
+  );
+
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const { contentOffset } = event.nativeEvent;
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      const nextOffsetY = Math.max(contentOffset.y, 0);
+      contentHeightRef.current = contentSize.height;
+      viewportHeightRef.current = layoutMeasurement.height;
+      scrollOffsetYRef.current = nextOffsetY;
+      scrollingTowardOlderMessagesRef.current =
+        nextOffsetY > previousScrollOffsetYRef.current + 1;
+      previousScrollOffsetYRef.current = nextOffsetY;
+
       const distanceFromBottom = contentOffset.y;
       const shouldStickToBottom = distanceFromBottom <= theme.spacing.xl * 2;
       autoScrollStateRef.current.shouldStickToBottom = shouldStickToBottom;
@@ -9271,8 +9359,9 @@ const ChatView = memo(function ChatView({
         showJumpToLatestRef.current = nextShowJumpToLatest;
         setShowJumpToLatest(nextShowJumpToLatest);
       }
+      maybeAutoLoadOlderMessages(false);
     },
-    [autoScrollStateRef, theme.spacing.xl]
+    [autoScrollStateRef, maybeAutoLoadOlderMessages, theme.spacing.xl]
   );
 
   useEffect(() => {
@@ -9281,6 +9370,12 @@ const ChatView = memo(function ChatView({
     autoScrollStateRef.current.isMomentumScrolling = false;
     showJumpToLatestRef.current = false;
     setShowJumpToLatest(false);
+    contentHeightRef.current = 0;
+    viewportHeightRef.current = 0;
+    scrollOffsetYRef.current = 0;
+    previousScrollOffsetYRef.current = 0;
+    scrollingTowardOlderMessagesRef.current = false;
+    autoLoadOlderCheckpointRef.current = null;
   }, [autoScrollStateRef, chat.id]);
   const messageListContentStyle = useMemo(
     () =>
@@ -9351,44 +9446,6 @@ const ChatView = memo(function ChatView({
     [bridgeToken, bridgeUrl, inlineChoiceSet, onInlineOptionSelect]
   );
 
-  const paginationHeader = useMemo(() => {
-    if (!hasOlderMessages) {
-      return null;
-    }
-
-    const olderBatchCount = Math.min(CHAT_MESSAGE_PAGE_SIZE, olderMessageCount);
-    return (
-      <View style={styles.messagePaginationWrap}>
-        <Pressable
-          onPress={loadOlderMessages}
-          style={({ pressed }) => [
-            styles.messagePaginationButton,
-            pressed && styles.messagePaginationButtonPressed,
-          ]}>
-          <Ionicons
-            name="chevron-up-circle-outline"
-            size={16}
-            color={theme.colors.textPrimary}
-          />
-          <Text style={styles.messagePaginationButtonText}>
-            {`Load ${String(olderBatchCount)} earlier message${
-              olderBatchCount === 1 ? '' : 's'
-            }`}
-          </Text>
-        </Pressable>
-        <Text style={styles.messagePaginationMeta}>
-          {`Showing ${String(paginatedMessages.length)} of ${String(visibleMessages.length)} messages`}
-        </Text>
-      </View>
-    );
-  }, [
-    hasOlderMessages,
-    loadOlderMessages,
-    olderMessageCount,
-    paginatedMessages.length,
-    visibleMessages.length,
-  ]);
-
   return (
     <View style={styles.messageListShell}>
       <FlatList
@@ -9397,7 +9454,6 @@ const ChatView = memo(function ChatView({
         data={displayMessages}
         keyExtractor={keyExtractor}
         renderItem={renderMessageItem}
-        ListFooterComponent={paginationHeader}
         style={styles.messageList}
         contentContainerStyle={messageListContentStyle}
         maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
@@ -9426,8 +9482,14 @@ const ChatView = memo(function ChatView({
         }}
         onScroll={handleScroll}
         scrollEventThrottle={32}
-        onContentSizeChange={() => {
+        onLayout={(event) => {
+          viewportHeightRef.current = event.nativeEvent.layout.height;
+          maybeAutoLoadOlderMessages(true);
+        }}
+        onContentSizeChange={(_width, height) => {
+          contentHeightRef.current = height;
           onPinnedAutoScroll(false);
+          maybeAutoLoadOlderMessages(true);
         }}
         initialNumToRender={Math.min(displayMessages.length, isLargeChat ? 18 : 16)}
         maxToRenderPerBatch={Math.min(displayMessages.length, isLargeChat ? 12 : 10)}
@@ -10574,6 +10636,10 @@ function normalizeWorkspacePath(value: string | null | undefined): string | null
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function getWorkspaceBrowseCacheKey(path: string | null): string {
+  return path ?? '__bridge_default__';
 }
 
 function normalizeAttachmentPath(value: string | null | undefined): string | null {
@@ -13116,34 +13182,6 @@ const createStyles = (theme: AppTheme) => {
   chatMessageBlock: {
     gap: theme.spacing.sm,
   },
-  messagePaginationWrap: {
-    alignItems: 'flex-start',
-    gap: theme.spacing.xs,
-  },
-  messagePaginationButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.borderHighlight,
-    backgroundColor: theme.colors.bgItem,
-    borderRadius: 999,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-  },
-  messagePaginationButtonPressed: {
-    backgroundColor: theme.colors.bgInput,
-  },
-  messagePaginationButtonText: {
-    ...theme.typography.caption,
-    color: theme.colors.textPrimary,
-    fontWeight: '600',
-  },
-  messagePaginationMeta: {
-    ...theme.typography.caption,
-    color: theme.colors.textMuted,
-    marginLeft: theme.spacing.xs,
-  },
   inlineChoiceOptions: {
     marginLeft: theme.spacing.sm,
     gap: theme.spacing.xs,
@@ -13188,16 +13226,42 @@ const createStyles = (theme: AppTheme) => {
     marginTop: 2,
     marginLeft: theme.spacing.xs,
   },
-  chatLoadingContainer: {
+  chatOpeningShell: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.xl,
+    backgroundColor: theme.colors.bgElevated,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.lg,
   },
-  chatLoadingText: {
+  chatOpeningCard: {
+    borderRadius: theme.radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderLight,
+    backgroundColor: theme.colors.bgItem,
+    padding: theme.spacing.md,
+    gap: theme.spacing.md,
+  },
+  chatOpeningTopRow: {
+    minHeight: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  chatOpeningTitle: {
     ...theme.typography.caption,
-    color: theme.colors.textMuted,
+    color: theme.colors.textSecondary,
+    fontWeight: '700',
+  },
+  chatOpeningBubbleWide: {
+    width: '82%',
+    height: 18,
+    borderRadius: theme.radius.full,
+    backgroundColor: theme.colors.bgInput,
+  },
+  chatOpeningBubbleShort: {
+    width: '54%',
+    height: 18,
+    borderRadius: theme.radius.full,
+    backgroundColor: theme.colors.bgInput,
   },
 
   // Streaming thinking text

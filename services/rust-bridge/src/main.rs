@@ -5778,6 +5778,7 @@ struct FileSystemListRequest {
     path: Option<String>,
     include_hidden: Option<bool>,
     directories_only: Option<bool>,
+    include_git_repo: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -6777,7 +6778,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
                 match message {
                     Ok(Message::Text(text)) => {
-                        handle_client_message(client_id, text.to_string(), &state).await;
+                        let state = Arc::clone(&state);
+                        tokio::spawn(async move {
+                            handle_client_message(client_id, text.to_string(), &state).await;
+                        });
                     }
                     Ok(Message::Close(_)) => break,
                     Ok(Message::Binary(_)) => {
@@ -7700,6 +7704,7 @@ async fn list_filesystem_entries(
 ) -> Result<FileSystemListResponse, BridgeError> {
     let include_hidden = request.include_hidden.unwrap_or(false);
     let directories_only = request.directories_only.unwrap_or(true);
+    let include_git_repo = request.include_git_repo.unwrap_or(false);
     let current_path =
         resolve_browsable_directory(&state.config.workdir, request.path.as_deref()).await?;
 
@@ -7724,18 +7729,27 @@ async fn list_filesystem_entries(
         }
 
         let entry_path = normalize_path(&entry.path());
-        let metadata = match fs::metadata(&entry_path).await {
-            Ok(metadata) => metadata,
+        let file_type = match entry.file_type().await {
+            Ok(file_type) => file_type,
             Err(_) => continue,
         };
 
-        let is_directory = metadata.is_dir();
+        let is_directory = if file_type.is_dir() {
+            true
+        } else if file_type.is_symlink() {
+            fs::metadata(&entry_path)
+                .await
+                .map(|metadata| metadata.is_dir())
+                .unwrap_or(false)
+        } else {
+            false
+        };
         if directories_only && !is_directory {
             continue;
         }
 
         let kind = if is_directory { "directory" } else { "file" }.to_string();
-        let is_git_repo = if is_directory {
+        let is_git_repo = if include_git_repo && is_directory {
             fs::metadata(entry_path.join(".git")).await.is_ok()
         } else {
             false
