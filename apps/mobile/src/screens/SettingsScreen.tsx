@@ -44,6 +44,12 @@ import { isGitHubBridgeProfile, type BridgeProfile } from '../bridgeProfiles';
 import { BridgeProfileManagerSheet } from '../components/bridge-profile-manager-sheet';
 import { SelectionSheet, type SelectionSheetOption } from '../components/SelectionSheet';
 import {
+  DEFAULT_WORKSPACE_CHAT_LIMIT,
+  formatWorkspaceChatLimit,
+  WORKSPACE_CHAT_LIMIT_OPTIONS,
+  type WorkspaceChatLimit,
+} from '../appSettings';
+import {
   buildComposerUsageLimitBadges,
   formatComposerUsageLimitResetAt,
 } from '../components/usageLimitBadges';
@@ -92,6 +98,7 @@ interface SettingsScreenProps {
   defaultEngineSettings?: EngineDefaultSettingsMap | null;
   approvalMode?: ApprovalMode;
   showToolCalls?: boolean;
+  workspaceChatLimit?: WorkspaceChatLimit;
   appearancePreference?: AppearancePreference;
   fontPreference?: FontPreference;
   onDefaultChatEngineChange?: (engine: ChatEngine) => void;
@@ -102,6 +109,7 @@ interface SettingsScreenProps {
   ) => void;
   onApprovalModeChange?: (mode: ApprovalMode) => void;
   onShowToolCallsChange?: (value: boolean) => void;
+  onWorkspaceChatLimitChange?: (limit: WorkspaceChatLimit) => void;
   onAppearancePreferenceChange?: (preference: AppearancePreference) => void;
   onFontPreferenceChange?: (preference: FontPreference) => void;
   onEditBridgeProfile?: () => void;
@@ -151,6 +159,8 @@ export function SettingsScreen({
   onDefaultModelSettingsChange,
   onApprovalModeChange,
   onShowToolCallsChange,
+  workspaceChatLimit = DEFAULT_WORKSPACE_CHAT_LIMIT,
+  onWorkspaceChatLimitChange,
   onAppearancePreferenceChange,
   onFontPreferenceChange,
   onEditBridgeProfile,
@@ -198,6 +208,7 @@ export function SettingsScreen({
   const [modelModalVisible, setModelModalVisible] = useState(false);
   const [effortModalVisible, setEffortModalVisible] = useState(false);
   const [approvalModeModalVisible, setApprovalModeModalVisible] = useState(false);
+  const [workspaceChatLimitModalVisible, setWorkspaceChatLimitModalVisible] = useState(false);
   const [appearanceModalVisible, setAppearanceModalVisible] = useState(false);
   const [fontModalVisible, setFontModalVisible] = useState(false);
   const [bridgeProfileModalVisible, setBridgeProfileModalVisible] = useState(false);
@@ -284,6 +295,7 @@ export function SettingsScreen({
     normalizedApprovalMode === 'yolo'
       ? 'YOLO (no approval prompts)'
       : 'Normal (ask for approvals)';
+  const workspaceChatLimitLabel = formatWorkspaceChatLimit(workspaceChatLimit);
   const appearancePreferenceLabel =
     normalizedAppearancePreference === 'light'
       ? 'Light'
@@ -882,6 +894,25 @@ export function SettingsScreen({
     [normalizedApprovalMode, selectApprovalMode]
   );
 
+  const workspaceChatLimitOptions = useMemo<SelectionSheetOption[]>(
+    () =>
+      WORKSPACE_CHAT_LIMIT_OPTIONS.map((option) => ({
+        key: option === null ? 'all' : String(option),
+        title: formatWorkspaceChatLimit(option),
+        description:
+          option === null
+            ? 'Show every chat in each workspace section.'
+            : `Show ${option} chats first, with a Show all button for the rest.`,
+        icon: option === null ? ('albums-outline' as const) : ('list-outline' as const),
+        selected: workspaceChatLimit === option,
+        onPress: () => {
+          onWorkspaceChatLimitChange?.(option);
+          setWorkspaceChatLimitModalVisible(false);
+        },
+      })),
+    [onWorkspaceChatLimitChange, workspaceChatLimit]
+  );
+
   const appearanceOptions = useMemo<SelectionSheetOption[]>(
     () => [
       {
@@ -1301,6 +1332,26 @@ export function SettingsScreen({
         Live tool activity stays in a capped panel so the chat list does not
         start jumping while a turn is running.
       </Text>
+
+      <Text style={[styles.sectionLabel, styles.sectionLabelGap]}>Sidebar</Text>
+      <BlurView intensity={50} tint={theme.blurTint} style={styles.card}>
+        <Pressable
+          onPress={() => setWorkspaceChatLimitModalVisible(true)}
+          style={({ pressed }) => [
+            styles.settingRow,
+            styles.settingRowLast,
+            pressed && styles.linkRowPressed,
+          ]}
+        >
+          <View style={styles.settingRowLeft}>
+            <Text style={styles.rowLabel}>Chats per workspace</Text>
+            <Text style={styles.settingValue} numberOfLines={2}>
+              {workspaceChatLimitLabel}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+        </Pressable>
+      </BlurView>
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
     </>
@@ -1912,6 +1963,15 @@ export function SettingsScreen({
         subtitle="This only affects command and file-change approvals."
         options={approvalModeOptions}
         onClose={() => setApprovalModeModalVisible(false)}
+      />
+
+      <SelectionSheet
+        visible={workspaceChatLimitModalVisible}
+        eyebrow="Sidebar"
+        title="Chats per workspace"
+        subtitle="Choose how many chats each workspace shows before the Show all row."
+        options={workspaceChatLimitOptions}
+        onClose={() => setWorkspaceChatLimitModalVisible(false)}
       />
 
       <SelectionSheet

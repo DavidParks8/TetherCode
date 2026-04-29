@@ -29,7 +29,12 @@ import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-c
 import { HostBridgeApiClient } from './src/api/client';
 import { toRecord } from './src/api/chatMapping';
 import { readAccountRateLimitSnapshot } from './src/api/rateLimits';
-import { APP_SETTINGS_VERSION, parseAppSettings } from './src/appSettings';
+import {
+  APP_SETTINGS_VERSION,
+  DEFAULT_WORKSPACE_CHAT_LIMIT,
+  parseAppSettings,
+  type WorkspaceChatLimit,
+} from './src/appSettings';
 import type {
   ApprovalMode,
   Chat,
@@ -257,6 +262,9 @@ export default function App() {
   );
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('yolo');
   const [showToolCalls, setShowToolCalls] = useState(true);
+  const [workspaceChatLimit, setWorkspaceChatLimit] = useState<WorkspaceChatLimit>(
+    DEFAULT_WORKSPACE_CHAT_LIMIT
+  );
   const [appearancePreference, setAppearancePreference] =
     useState<AppearancePreference>('system');
   const [fontPreference, setFontPreference] = useState<FontPreference>(
@@ -694,6 +702,7 @@ export default function App() {
       nextDefaultEngineSettings: EngineDefaultSettingsMap,
       nextApprovalMode: ApprovalMode,
       nextShowToolCalls: boolean,
+      nextWorkspaceChatLimit: WorkspaceChatLimit,
       nextAppearancePreference: AppearancePreference,
       nextFontPreference: FontPreference,
       nextRecentBrowserTargetUrls: string[]
@@ -710,6 +719,7 @@ export default function App() {
         defaultEngineSettings: nextDefaultEngineSettings,
         approvalMode: nextApprovalMode,
         showToolCalls: nextShowToolCalls,
+        workspaceChatLimit: nextWorkspaceChatLimit,
         appearancePreference: nextAppearancePreference,
         fontPreference: nextFontPreference,
         recentBrowserTargetUrls: nextRecentBrowserTargetUrls,
@@ -733,6 +743,7 @@ export default function App() {
       setDefaultEngineSettings(createEmptyEngineDefaultSettingsMap());
       setApprovalMode('yolo');
       setShowToolCalls(true);
+      setWorkspaceChatLimit(DEFAULT_WORKSPACE_CHAT_LIMIT);
       setAppearancePreference('system');
       setFontPreference(DEFAULT_FONT_PREFERENCE);
       setRecentBrowserTargetUrls([]);
@@ -778,6 +789,7 @@ export default function App() {
         setDefaultEngineSettings(parsed.defaultEngineSettings);
         setApprovalMode(parsed.approvalMode);
         setShowToolCalls(parsed.showToolCalls);
+        setWorkspaceChatLimit(parsed.workspaceChatLimit);
         setAppearancePreference(parsed.appearancePreference);
         setFontPreference(parsed.fontPreference);
         setRecentBrowserTargetUrls(parsed.recentBrowserTargetUrls);
@@ -789,6 +801,7 @@ export default function App() {
             parsed.defaultEngineSettings,
             parsed.approvalMode,
             parsed.showToolCalls,
+            parsed.workspaceChatLimit,
             parsed.appearancePreference,
             parsed.fontPreference,
             parsed.recentBrowserTargetUrls
@@ -1162,6 +1175,7 @@ export default function App() {
         defaultEngineSettings,
         approvalMode,
         showToolCalls,
+        workspaceChatLimit,
         appearancePreference,
         fontPreference,
         recentBrowserTargetUrls
@@ -1174,6 +1188,7 @@ export default function App() {
       recentBrowserTargetUrls,
       saveAppSettings,
       showToolCalls,
+      workspaceChatLimit,
       appearancePreference,
       fontPreference,
     ]
@@ -1198,6 +1213,7 @@ export default function App() {
         nextDefaultEngineSettings,
         approvalMode,
         showToolCalls,
+        workspaceChatLimit,
         appearancePreference,
         fontPreference,
         recentBrowserTargetUrls
@@ -1211,6 +1227,7 @@ export default function App() {
       recentBrowserTargetUrls,
       saveAppSettings,
       showToolCalls,
+      workspaceChatLimit,
       appearancePreference,
       fontPreference,
     ]
@@ -1226,6 +1243,7 @@ export default function App() {
         defaultEngineSettings,
         normalizedMode,
         showToolCalls,
+        workspaceChatLimit,
         appearancePreference,
         fontPreference,
         recentBrowserTargetUrls
@@ -1238,6 +1256,7 @@ export default function App() {
       recentBrowserTargetUrls,
       saveAppSettings,
       showToolCalls,
+      workspaceChatLimit,
       appearancePreference,
       fontPreference,
     ]
@@ -1252,6 +1271,7 @@ export default function App() {
         defaultEngineSettings,
         approvalMode,
         nextValue,
+        workspaceChatLimit,
         appearancePreference,
         fontPreference,
         recentBrowserTargetUrls
@@ -1264,6 +1284,7 @@ export default function App() {
       defaultStartCwd,
       recentBrowserTargetUrls,
       saveAppSettings,
+      workspaceChatLimit,
       appearancePreference,
       fontPreference,
     ]
@@ -1279,6 +1300,7 @@ export default function App() {
         defaultEngineSettings,
         approvalMode,
         showToolCalls,
+        workspaceChatLimit,
         appearancePreference,
         fontPreference,
         recentBrowserTargetUrls
@@ -1291,6 +1313,7 @@ export default function App() {
       recentBrowserTargetUrls,
       saveAppSettings,
       showToolCalls,
+      workspaceChatLimit,
       appearancePreference,
       fontPreference,
     ]
@@ -1305,6 +1328,7 @@ export default function App() {
         defaultEngineSettings,
         approvalMode,
         showToolCalls,
+        workspaceChatLimit,
         nextPreference,
         fontPreference,
         recentBrowserTargetUrls
@@ -1318,6 +1342,7 @@ export default function App() {
       recentBrowserTargetUrls,
       saveAppSettings,
       showToolCalls,
+      workspaceChatLimit,
       fontPreference,
     ]
   );
@@ -1332,6 +1357,7 @@ export default function App() {
         defaultEngineSettings,
         approvalMode,
         showToolCalls,
+        workspaceChatLimit,
         appearancePreference,
         normalizedPreference,
         recentBrowserTargetUrls
@@ -1346,6 +1372,7 @@ export default function App() {
       recentBrowserTargetUrls,
       saveAppSettings,
       showToolCalls,
+      workspaceChatLimit,
     ]
   );
 
@@ -1358,6 +1385,7 @@ export default function App() {
         defaultEngineSettings,
         approvalMode,
         showToolCalls,
+        workspaceChatLimit,
         appearancePreference,
         fontPreference,
         nextTargets
@@ -1370,6 +1398,35 @@ export default function App() {
       defaultEngineSettings,
       defaultStartCwd,
       fontPreference,
+      saveAppSettings,
+      showToolCalls,
+      workspaceChatLimit,
+    ]
+  );
+
+  const handleWorkspaceChatLimitChange = useCallback(
+    (nextLimit: WorkspaceChatLimit) => {
+      setWorkspaceChatLimit(nextLimit);
+      void saveAppSettings(
+        defaultStartCwd,
+        defaultChatEngine,
+        defaultEngineSettings,
+        approvalMode,
+        showToolCalls,
+        nextLimit,
+        appearancePreference,
+        fontPreference,
+        recentBrowserTargetUrls
+      );
+    },
+    [
+      approvalMode,
+      appearancePreference,
+      defaultChatEngine,
+      defaultEngineSettings,
+      defaultStartCwd,
+      fontPreference,
+      recentBrowserTargetUrls,
       saveAppSettings,
       showToolCalls,
     ]
@@ -1434,6 +1491,7 @@ export default function App() {
         defaultEngineSettings,
         approvalMode,
         showToolCalls,
+        workspaceChatLimit,
         appearancePreference,
         fontPreference,
         recentBrowserTargetUrls
@@ -1457,6 +1515,7 @@ export default function App() {
       resetBridgeSessionState,
       saveAppSettings,
       showToolCalls,
+      workspaceChatLimit,
       appearancePreference,
     ]
   );
@@ -1486,6 +1545,7 @@ export default function App() {
         defaultEngineSettings,
         approvalMode,
         showToolCalls,
+        workspaceChatLimit,
         appearancePreference,
         fontPreference,
         recentBrowserTargetUrls
@@ -1507,6 +1567,7 @@ export default function App() {
       resetBridgeSessionState,
       saveAppSettings,
       showToolCalls,
+      workspaceChatLimit,
       appearancePreference,
     ]
   );
@@ -1943,6 +2004,8 @@ export default function App() {
             onApprovalModeChange={handleApprovalModeChange}
             showToolCalls={showToolCalls}
             onShowToolCallsChange={handleShowToolCallsChange}
+            workspaceChatLimit={workspaceChatLimit}
+            onWorkspaceChatLimitChange={handleWorkspaceChatLimitChange}
             appearancePreference={appearancePreference}
             onAppearancePreferenceChange={handleAppearancePreferenceChange}
             fontPreference={fontPreference}
@@ -2068,6 +2131,7 @@ export default function App() {
                         api={activeApi}
                         ws={activeWs}
                         active={drawerVisible}
+                        workspaceChatLimit={workspaceChatLimit}
                         selectedChatId={selectedChatId}
                         onSelectChat={handleSelectChat}
                         onNewChat={handleNewChat}

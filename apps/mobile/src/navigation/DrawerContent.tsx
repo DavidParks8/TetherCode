@@ -32,6 +32,19 @@ import {
   buildChatWorkspaceSections,
   type ChatWorkspaceSection,
 } from './chatThreadTree';
+import {
+  DEFAULT_WORKSPACE_CHAT_LIMIT,
+  type WorkspaceChatLimit,
+} from '../appSettings';
+import {
+  countDrawerRunningChats,
+  isDrawerChatRunning,
+  isDrawerWorkspaceSectionRunning,
+  pruneStaleDrawerRunIndicators,
+  reconcileDrawerRunIndicatorsWithChats,
+  updateDrawerRunIndicatorsForEvent,
+  type DrawerRunIndicatorMap,
+} from './drawerRuntimeIndicators';
 import { useAppTheme, type AppTheme } from '../theme';
 
 type Screen = 'Main' | 'Browser' | 'Settings' | 'Privacy' | 'Terms';
@@ -40,13 +53,13 @@ interface DrawerContentProps {
   api: HostBridgeApiClient;
   ws: HostBridgeWsClient;
   active: boolean;
+  workspaceChatLimit?: WorkspaceChatLimit;
   selectedChatId: string | null;
   onSelectChat: (id: string) => void;
   onNewChat: () => void;
   onNavigate: (screen: Screen) => void;
 }
 
-const RUN_HEARTBEAT_STALE_MS = 20_000;
 const DRAWER_REFRESH_CONNECTED_MS = 10_000;
 const DRAWER_REFRESH_DISCONNECTED_MS = 5_000;
 const DRAWER_EVENT_REFRESH_DEBOUNCE_MS = 250;
@@ -63,22 +76,6 @@ const PINNED_CHAT_IDS_FILE = 'clawdex-pinned-chats.json';
 const PINNED_WORKSPACE_PATHS_FILE = 'clawdex-workspace-favorites.json';
 const PINNED_WORKSPACE_PATHS_VERSION = 1;
 const PINNED_WORKSPACE_PATHS_LIMIT = 4;
-const RUN_HEARTBEAT_EVENT_TYPES = new Set([
-  'task_started',
-  'agent_reasoning_delta',
-  'reasoning_content_delta',
-  'reasoning_raw_content_delta',
-  'agent_reasoning_raw_content_delta',
-  'agent_reasoning_section_break',
-  'agent_message_delta',
-  'agent_message_content_delta',
-  'exec_command_begin',
-  'exec_command_end',
-  'mcp_startup_update',
-  'mcp_tool_call_begin',
-  'web_search_begin',
-  'background_event',
-]);
 const CHAT_FILTER_OPTIONS: ReadonlyArray<{
   key: ChatEngine;
   label: string;
@@ -97,6 +94,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
   api,
   ws,
   active,
+  workspaceChatLimit = DEFAULT_WORKSPACE_CHAT_LIMIT,
   selectedChatId,
   onSelectChat,
   onNewChat,
@@ -116,7 +114,8 @@ export const DrawerContent = memo(function DrawerContentComponent({
   const [collapsedWorkspaceKeys, setCollapsedWorkspaceKeys] = useState<Set<string>>(new Set());
   const [pinnedChatIds, setPinnedChatIds] = useState<string[]>([]);
   const [pinnedWorkspacePaths, setPinnedWorkspacePaths] = useState<string[]>([]);
-  const [runHeartbeatAtByThread, setRunHeartbeatAtByThread] = useState<Record<string, number>>({});
+  const [workspaceVisibleCounts, setWorkspaceVisibleCounts] = useState<Record<string, number>>({});
+  const [runIndicatorsByThread, setRunIndicatorsByThread] = useState<DrawerRunIndicatorMap>({});
   const [wsConnected, setWsConnected] = useState(ws.isConnected);
   const hasAppliedInitialCollapseRef = useRef(false);
   const knownWorkspaceKeysRef = useRef<Set<string>>(new Set());
@@ -168,29 +167,70 @@ export const DrawerContent = memo(function DrawerContentComponent({
     () => workspaceChatSections,
     [workspaceChatSections]
   );
+  const chatSectionByKey = useMemo(
+    () => new Map(chatSections.map((section) => [section.key, section])),
+    [chatSections]
+  );
   const isSearching = searchQuery.trim().length > 0;
+  const normalizedWorkspaceChatLimit = normalizeWorkspaceChatLimit(workspaceChatLimit);
   const visibleChatSections = useMemo(
     () =>
-      isSearching
-        ? chatSections
-        : chatSections.map((section) =>
-            collapsedWorkspaceKeys.has(section.key)
-              ? {
-                  ...section,
-                  data: [],
-                }
-              : section
-          ),
-    [chatSections, collapsedWorkspaceKeys, isSearching]
+      chatSections.map((section) => {
+        const collapsed = !isSearching && collapsedWorkspaceKeys.has(section.key);
+        if (collapsed) {
+          return {
+            ...section,
+            data: [],
+          };
+        }
+
+        if (isSearching || normalizedWorkspaceChatLimit === null) {
+          return section;
+        }
+
+        const visibleCount = Math.min(
+          section.data.length,
+          workspaceVisibleCounts[section.key] ?? normalizedWorkspaceChatLimit
+        );
+        return {
+          ...section,
+          data: section.data.slice(0, visibleCount),
+        };
+      }),
+    [
+      chatSections,
+      collapsedWorkspaceKeys,
+      isSearching,
+      normalizedWorkspaceChatLimit,
+      workspaceVisibleCounts,
+    ]
   );
-  const runningChatCount = useMemo(() => {
-    const now = Date.now();
-    return chats.reduce((count, chat) => {
-      const runningFromHeartbeat =
-        (runHeartbeatAtByThread[chat.id] ?? 0) > now - RUN_HEARTBEAT_STALE_MS;
-      return count + (chat.status === 'running' || runningFromHeartbeat ? 1 : 0);
-    }, 0);
-  }, [chats, runHeartbeatAtByThread]);
+  const runningChatCount = useMemo(
+    () => countDrawerRunningChats(chats, runIndicatorsByThread),
+    [chats, runIndicatorsByThread]
+  );
+
+  const showAllWorkspaceChats = useCallback(
+    (section: ChatWorkspaceSection) => {
+      if (normalizedWorkspaceChatLimit === null) {
+        return;
+      }
+
+      setWorkspaceVisibleCounts((prev) => {
+        const currentCount = prev[section.key] ?? normalizedWorkspaceChatLimit;
+        const nextCount = section.itemCount;
+        if (nextCount <= currentCount) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          [section.key]: nextCount,
+        };
+      });
+    },
+    [normalizedWorkspaceChatLimit]
+  );
 
   const cancelChatListStream = useCallback(() => {
     chatListStreamRef.current?.cancel();
@@ -407,24 +447,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
         lastLoadedAtRef.current = Date.now();
         setLoading(false);
 
-        const activeChatIds = new Set(nextChats.map((chat) => chat.id));
-        setRunHeartbeatAtByThread((prev) => {
-          const now = Date.now();
-          let changed = false;
-          const next: Record<string, number> = {};
-          for (const [threadId, ts] of Object.entries(prev)) {
-            if (!activeChatIds.has(threadId)) {
-              changed = true;
-              continue;
-            }
-            if (now - ts >= RUN_HEARTBEAT_STALE_MS) {
-              changed = true;
-              continue;
-            }
-            next[threadId] = ts;
-          }
-          return changed ? next : prev;
-        });
+        setRunIndicatorsByThread((prev) => reconcileDrawerRunIndicatorsWithChats(prev, nextChats));
       };
 
       const hydrateLoadedChats = async (listedChats: ChatSummary[], cacheLimit?: number) => {
@@ -688,6 +711,10 @@ export const DrawerContent = memo(function DrawerContentComponent({
   }, [active]);
 
   useEffect(() => {
+    setWorkspaceVisibleCounts({});
+  }, [normalizedWorkspaceChatLimit]);
+
+  useEffect(() => {
     chatsRef.current = chats;
   }, [chats]);
 
@@ -722,68 +749,8 @@ export const DrawerContent = memo(function DrawerContentComponent({
   }, [active, loadChats, ws]);
 
   useEffect(() => {
-    if (!active) {
-      return;
-    }
-
     return ws.onEvent((event: RpcNotification) => {
-      const threadIdFromEvent = extractThreadId(event);
-      const markThreadRunning = (threadId: string | null) => {
-        if (!threadId) {
-          return;
-        }
-        setRunHeartbeatAtByThread((prev) => ({
-          ...prev,
-          [threadId]: Date.now(),
-        }));
-      };
-      const clearThreadRunning = (threadId: string | null) => {
-        if (!threadId) {
-          return;
-        }
-        setRunHeartbeatAtByThread((prev) => {
-          if (!(threadId in prev)) {
-            return prev;
-          }
-          const next = { ...prev };
-          delete next[threadId];
-          return next;
-        });
-      };
-
-      if (
-        event.method === 'turn/started' ||
-        event.method === 'item/started' ||
-        event.method === 'item/agentMessage/delta' ||
-        event.method === 'item/plan/delta' ||
-        event.method === 'item/reasoning/summaryPartAdded' ||
-        event.method === 'item/reasoning/summaryTextDelta' ||
-        event.method === 'item/reasoning/textDelta' ||
-        event.method === 'item/commandExecution/outputDelta' ||
-        event.method === 'item/mcpToolCall/progress' ||
-        event.method === 'turn/plan/updated' ||
-        event.method === 'turn/diff/updated'
-      ) {
-        markThreadRunning(threadIdFromEvent);
-      }
-
-      if (event.method === 'turn/completed') {
-        clearThreadRunning(threadIdFromEvent);
-      }
-
-      if (event.method.startsWith('codex/event/')) {
-        const params = toRecord(event.params);
-        const msg = toRecord(params?.msg);
-        const codexEventType =
-          readString(msg?.type) ?? event.method.replace('codex/event/', '');
-        const scopedThreadId = threadIdFromEvent;
-
-        if (RUN_HEARTBEAT_EVENT_TYPES.has(codexEventType)) {
-          markThreadRunning(scopedThreadId);
-        } else if (codexEventType === 'task_complete' || codexEventType === 'turn_aborted') {
-          clearThreadRunning(scopedThreadId);
-        }
-      }
+      setRunIndicatorsByThread((prev) => updateDrawerRunIndicatorsForEvent(prev, event));
 
       if (
         event.method === 'thread/started' ||
@@ -795,44 +762,24 @@ export const DrawerContent = memo(function DrawerContentComponent({
         scheduleLoadChats(DRAWER_EVENT_REFRESH_DEBOUNCE_MS, true);
       }
     });
-  }, [active, scheduleLoadChats, ws]);
+  }, [scheduleLoadChats, ws]);
 
   useEffect(() => {
-    if (!active) {
-      return;
-    }
-
     return ws.onStatus((connected) => {
       setWsConnected(connected);
       if (connected) {
         scheduleLoadChats(DRAWER_EVENT_REFRESH_DEBOUNCE_MS, true);
       }
     });
-  }, [active, scheduleLoadChats, ws]);
+  }, [scheduleLoadChats, ws]);
 
   useEffect(() => {
-    if (!active) {
-      return;
-    }
-
     const timer = setInterval(() => {
-      setRunHeartbeatAtByThread((prev) => {
-        const now = Date.now();
-        let changed = false;
-        const next: Record<string, number> = {};
-        for (const [threadId, ts] of Object.entries(prev)) {
-          if (now - ts < RUN_HEARTBEAT_STALE_MS) {
-            next[threadId] = ts;
-          } else {
-            changed = true;
-          }
-        }
-        return changed ? next : prev;
-      });
+      setRunIndicatorsByThread((prev) => pruneStaleDrawerRunIndicators(prev));
     }, 5000);
 
     return () => clearInterval(timer);
-  }, [active]);
+  }, []);
 
   useEffect(() => {
     if (!active) {
@@ -1254,6 +1201,10 @@ export const DrawerContent = memo(function DrawerContentComponent({
               renderSectionHeader={({ section }) => {
                 const isPinnedWorkspace = pinnedWorkspacePathSet.has(section.key);
                 const collapsed = !isSearching && collapsedWorkspaceKeys.has(section.key);
+                const hasLiveChat = isDrawerWorkspaceSectionRunning(
+                  chatSectionByKey.get(section.key) ?? section,
+                  runIndicatorsByThread
+                );
                 return (
                   <Pressable
                     disabled={isSearching}
@@ -1277,6 +1228,12 @@ export const DrawerContent = memo(function DrawerContentComponent({
                           size={11}
                           color={theme.colors.textMuted}
                           style={styles.workspaceGroupPinIcon}
+                        />
+                      ) : null}
+                      {hasLiveChat ? (
+                        <View
+                          accessibilityLabel="Workspace has live chat"
+                          style={styles.workspaceGroupLiveDot}
                         />
                       ) : null}
                       <View style={styles.workspaceGroupTitleBlock}>
@@ -1307,13 +1264,36 @@ export const DrawerContent = memo(function DrawerContentComponent({
                   </Pressable>
                 );
               }}
+              renderSectionFooter={({ section }) => {
+                const collapsed = !isSearching && collapsedWorkspaceKeys.has(section.key);
+                const pageSize = normalizedWorkspaceChatLimit;
+                const hiddenCount =
+                  !isSearching && !collapsed && pageSize !== null
+                    ? Math.max(0, section.itemCount - section.data.length)
+                    : 0;
+                if (hiddenCount === 0 || pageSize === null) {
+                  return null;
+                }
+
+                return (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => showAllWorkspaceChats(section)}
+                    style={({ pressed }) => [
+                      styles.workspaceShowMoreRow,
+                      pressed && styles.workspaceShowMoreRowPressed,
+                    ]}
+                  >
+                    <Text style={styles.workspaceShowMoreText}>Show all</Text>
+                    <Ionicons name="chevron-down" size={14} color={theme.colors.textSecondary} />
+                  </Pressable>
+                );
+              }}
               renderItem={({ item, index, section }) => {
                 const chat = item.chat;
                 const isSelected = chat.id === selectedChatId;
                 const isLast = index === section.data.length - 1;
-                const isRunningFromHeartbeat =
-                  (runHeartbeatAtByThread[chat.id] ?? 0) > Date.now() - RUN_HEARTBEAT_STALE_MS;
-                const isRunning = chat.status === 'running' || isRunningFromHeartbeat;
+                const isRunning = isDrawerChatRunning(chat, runIndicatorsByThread);
                 const isSubAgent = item.indentLevel > 0 || Boolean(chat.parentThreadId);
                 const isPinnedChat = pinnedChatIdSet.has(chat.id);
                 const previewText = isSubAgent
@@ -1685,14 +1665,14 @@ function formatChatPreview(chat: ChatSummary): string {
   return 'No messages yet';
 }
 
+function normalizeWorkspaceChatLimit(value: WorkspaceChatLimit): WorkspaceChatLimit {
+  return value === 10 || value === 25 || value === null ? value : DEFAULT_WORKSPACE_CHAT_LIMIT;
+}
+
 function toRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null
     ? (value as Record<string, unknown>)
     : null;
-}
-
-function readString(value: unknown): string | null {
-  return typeof value === 'string' ? value : null;
 }
 
 function getPinnedChatIdsPath(): string | null {
@@ -1749,19 +1729,6 @@ function parsePinnedWorkspacePaths(raw: string): string[] {
   } catch {
     return [];
   }
-}
-
-function extractThreadId(event: RpcNotification): string | null {
-  const params = toRecord(event.params);
-  const msg = toRecord(params?.msg);
-  return (
-    readString(params?.threadId) ??
-    readString(params?.thread_id) ??
-    readString(msg?.thread_id) ??
-    readString(msg?.threadId) ??
-    readString(params?.conversationId) ??
-    readString(msg?.conversation_id)
-  );
 }
 
 const createStyles = (theme: AppTheme) => {
@@ -2171,6 +2138,13 @@ const createStyles = (theme: AppTheme) => {
   workspaceGroupPinIcon: {
     opacity: 0.75,
   },
+  workspaceGroupLiveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: connectionDotConnected,
+    flexShrink: 0,
+  },
   workspaceGroupTitle: {
     ...theme.typography.body,
     color: theme.colors.textPrimary,
@@ -2205,6 +2179,29 @@ const createStyles = (theme: AppTheme) => {
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+  },
+  workspaceShowMoreRow: {
+    marginHorizontal: theme.spacing.lg,
+    marginTop: -2,
+    marginBottom: theme.spacing.sm,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.borderLight,
+    backgroundColor: theme.colors.bgItem,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.xs,
+    paddingVertical: theme.spacing.sm,
+  },
+  workspaceShowMoreRowPressed: {
+    backgroundColor: theme.colors.bgInput,
+  },
+  workspaceShowMoreText: {
+    ...theme.typography.caption,
+    color: theme.colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '700',
   },
   chatItem: {
     marginHorizontal: theme.spacing.lg,

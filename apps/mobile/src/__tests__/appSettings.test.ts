@@ -1,4 +1,4 @@
-import { parseAppSettings } from '../appSettings';
+import { DEFAULT_WORKSPACE_CHAT_LIMIT, parseAppSettings } from '../appSettings';
 import { DEFAULT_FONT_PREFERENCE } from '../fonts';
 
 describe('parseAppSettings', () => {
@@ -12,6 +12,7 @@ describe('parseAppSettings', () => {
       showToolCalls: true,
       appearancePreference: 'system',
       fontPreference: DEFAULT_FONT_PREFERENCE,
+      workspaceChatLimit: DEFAULT_WORKSPACE_CHAT_LIMIT,
     });
   });
 
@@ -96,5 +97,32 @@ describe('parseAppSettings', () => {
     );
 
     expect(parsed.fontPreference).toBe('spaceGrotesk');
+  });
+
+  it('normalizes the workspace chat limit for version 9 settings', () => {
+    expect(
+      parseAppSettings(
+        JSON.stringify({
+          version: 9,
+          workspaceChatLimit: 10,
+        })
+      ).workspaceChatLimit
+    ).toBe(10);
+    expect(
+      parseAppSettings(
+        JSON.stringify({
+          version: 9,
+          workspaceChatLimit: 'all',
+        })
+      ).workspaceChatLimit
+    ).toBeNull();
+    expect(
+      parseAppSettings(
+        JSON.stringify({
+          version: 9,
+          workspaceChatLimit: 3,
+        })
+      ).workspaceChatLimit
+    ).toBe(DEFAULT_WORKSPACE_CHAT_LIMIT);
   });
 });

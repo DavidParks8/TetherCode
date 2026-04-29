@@ -13,7 +13,10 @@ import {
 } from './fonts';
 import type { AppearancePreference } from './theme';
 
-export const APP_SETTINGS_VERSION = 8;
+export const APP_SETTINGS_VERSION = 9;
+export const DEFAULT_WORKSPACE_CHAT_LIMIT = 5;
+export const WORKSPACE_CHAT_LIMIT_OPTIONS = [5, 10, 25, null] as const;
+export type WorkspaceChatLimit = (typeof WORKSPACE_CHAT_LIMIT_OPTIONS)[number];
 
 export function parseAppSettings(raw: string): {
   bridgeUrl: string | null;
@@ -25,6 +28,7 @@ export function parseAppSettings(raw: string): {
   showToolCalls: boolean;
   appearancePreference: AppearancePreference;
   fontPreference: FontPreference;
+  workspaceChatLimit: WorkspaceChatLimit;
   recentBrowserTargetUrls: string[];
 } {
   if (typeof raw !== 'string' || raw.trim().length === 0) {
@@ -38,6 +42,7 @@ export function parseAppSettings(raw: string): {
       showToolCalls: true,
       appearancePreference: 'system',
       fontPreference: DEFAULT_FONT_PREFERENCE,
+      workspaceChatLimit: DEFAULT_WORKSPACE_CHAT_LIMIT,
       recentBrowserTargetUrls: [],
     };
   }
@@ -55,6 +60,7 @@ export function parseAppSettings(raw: string): {
         parsedVersion !== 5 &&
         parsedVersion !== 6 &&
         parsedVersion !== 7 &&
+        parsedVersion !== 8 &&
         parsedVersion !== APP_SETTINGS_VERSION)
     ) {
       return {
@@ -67,6 +73,7 @@ export function parseAppSettings(raw: string): {
         showToolCalls: true,
         appearancePreference: 'system',
         fontPreference: DEFAULT_FONT_PREFERENCE,
+        workspaceChatLimit: DEFAULT_WORKSPACE_CHAT_LIMIT,
         recentBrowserTargetUrls: [],
       };
     }
@@ -109,6 +116,9 @@ export function parseAppSettings(raw: string): {
       fontPreference: normalizeFontPreference(
         (parsed as { fontPreference?: unknown }).fontPreference
       ),
+      workspaceChatLimit: normalizeWorkspaceChatLimit(
+        (parsed as { workspaceChatLimit?: unknown }).workspaceChatLimit
+      ),
       recentBrowserTargetUrls: normalizeBrowserTargetUrls(
         (parsed as { recentBrowserTargetUrls?: unknown }).recentBrowserTargetUrls
       ),
@@ -124,9 +134,14 @@ export function parseAppSettings(raw: string): {
       showToolCalls: true,
       appearancePreference: 'system',
       fontPreference: DEFAULT_FONT_PREFERENCE,
+      workspaceChatLimit: DEFAULT_WORKSPACE_CHAT_LIMIT,
       recentBrowserTargetUrls: [],
     };
   }
+}
+
+export function formatWorkspaceChatLimit(value: WorkspaceChatLimit): string {
+  return value === null ? 'All chats' : `${value} chats`;
 }
 
 function normalizeBridgeUrl(value: unknown): string | null {
@@ -153,6 +168,25 @@ function normalizeDefaultStartCwd(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeWorkspaceChatLimit(value: unknown): WorkspaceChatLimit {
+  if (value === null || value === 'all') {
+    return null;
+  }
+
+  const numericValue =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Number.parseInt(value.trim(), 10)
+        : Number.NaN;
+
+  return numericValue === 10 || numericValue === 25
+    ? numericValue
+    : numericValue === 5
+      ? 5
+      : DEFAULT_WORKSPACE_CHAT_LIMIT;
 }
 
 function normalizeModelId(value: unknown): string | null {
