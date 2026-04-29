@@ -397,6 +397,8 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
   const showPushAction = canPush || canPublishBranch;
   const commitButtonDisabled = committing || !commitMessage.trim() || !hasStagedFiles;
   const pushButtonDisabled = pushing || committing || loading;
+  const upstreamDisplay = upstreamBranch ?? (canPublishBranch ? 'Not published' : null);
+  const syncDisplay = formatSyncDisplay(aheadCount, behindCount);
   const reviewTitle = status?.clean
     ? 'Working tree clean'
     : hasStagedFiles
@@ -578,12 +580,12 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
         nestedScrollEnabled
         keyboardShouldPersistTaps="handled"
       >
-        <View style={styles.card}>
+        <View style={[styles.card, styles.workspaceCard]}>
           <Text style={styles.sectionLabel}>Workspace</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, styles.workspaceInput]}
             value={workspaceDraft}
-            onChangeText={setWorkspaceDraft}
+            onChangeText={(value) => setWorkspaceDraft(value.replace(/\r?\n/g, ''))}
             keyboardAppearance={theme.keyboardAppearance}
             onSubmitEditing={commitWorkspaceIfChanged}
             onBlur={commitWorkspaceIfChanged}
@@ -592,14 +594,17 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
             autoCapitalize="none"
             autoCorrect={false}
             returnKeyType="done"
+            multiline
+            numberOfLines={2}
+            blurOnSubmit
+            scrollEnabled={false}
+            textAlignVertical="top"
             editable={!savingWorkspace}
           />
 
-          {hasWorkspace ? (
-            <Text style={styles.metaText}>{requestedCwd}</Text>
-          ) : (
+          {!hasWorkspace ? (
             <Text style={styles.warningText}>Using bridge root workspace.</Text>
-          )}
+          ) : null}
           {savingWorkspace ? (
             <Text style={styles.metaText}>Saving workspace...</Text>
           ) : null}
@@ -611,17 +616,17 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
           <>
             <View style={styles.card}>
               <View style={styles.branchHeaderRow}>
-                <View style={styles.branchStatusRow}>
-                  <View style={styles.branchBadge}>
-                    <Ionicons
-                      name="git-branch-outline"
-                      size={14}
-                      color={theme.colors.textPrimary}
-                    />
-                    <Text style={styles.branchBadgeText} numberOfLines={1}>
-                      {status?.branch ?? '—'}
-                    </Text>
-                  </View>
+                <View style={styles.branchBadge}>
+                  <Ionicons
+                    name="git-branch-outline"
+                    size={14}
+                    color={theme.colors.textPrimary}
+                  />
+                  <Text style={styles.branchBadgeText}>
+                    {status?.branch ?? '—'}
+                  </Text>
+                </View>
+                <View style={styles.branchActionsRow}>
                   <View
                     style={[
                       styles.repoStateBadge,
@@ -632,24 +637,24 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
                       {status?.clean ? 'Clean' : 'Changes'}
                     </Text>
                   </View>
+                  <Pressable
+                    onPress={openBranchPanel}
+                    style={({ pressed }) => [
+                      styles.branchSwitchToggle,
+                      branchPanelOpen && styles.branchSwitchToggleActive,
+                      pressed && styles.branchSwitchTogglePressed,
+                    ]}
+                  >
+                    <Ionicons
+                      name="swap-horizontal-outline"
+                      size={14}
+                      color={theme.colors.textPrimary}
+                    />
+                    <Text style={styles.branchSwitchToggleText}>
+                      {branchPanelOpen ? 'Close' : 'Change branch'}
+                    </Text>
+                  </Pressable>
                 </View>
-                <Pressable
-                  onPress={openBranchPanel}
-                  style={({ pressed }) => [
-                    styles.branchSwitchToggle,
-                    branchPanelOpen && styles.branchSwitchToggleActive,
-                    pressed && styles.branchSwitchTogglePressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="swap-horizontal-outline"
-                    size={14}
-                    color={theme.colors.textPrimary}
-                  />
-                  <Text style={styles.branchSwitchToggleText}>
-                    {branchPanelOpen ? 'Close' : 'Change branch'}
-                  </Text>
-                </Pressable>
               </View>
               {branchPanelOpen ? (
                 <View style={styles.branchSwitchPanel}>
@@ -732,45 +737,39 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
                   </Pressable>
                 </View>
               ) : null}
-              <View style={styles.statsGrid}>
-                <View style={styles.statTile}>
-                  <Text style={styles.statTileLabel}>Changed</Text>
-                  <Text style={styles.statTileValue}>{changedFiles.length}</Text>
+              {hasChanges ? (
+                <View style={styles.statsGrid}>
+                  <View style={styles.statTile}>
+                    <Text style={styles.statTileLabel}>Changed</Text>
+                    <Text style={styles.statTileValue}>{changedFiles.length}</Text>
+                  </View>
+                  <View style={styles.statTile}>
+                    <Text style={styles.statTileLabel}>Staged</Text>
+                    <Text style={styles.statTileValue}>{stagedCount}</Text>
+                  </View>
+                  <View style={styles.statTile}>
+                    <Text style={styles.statTileLabel}>Unstaged</Text>
+                    <Text style={styles.statTileValue}>{unstagedCount}</Text>
+                  </View>
+                  <View style={styles.statTile}>
+                    <Text style={styles.statTileLabel}>Untracked</Text>
+                    <Text style={styles.statTileValue}>{untrackedCount}</Text>
+                  </View>
                 </View>
-                <View style={styles.statTile}>
-                  <Text style={styles.statTileLabel}>Staged</Text>
-                  <Text style={styles.statTileValue}>{stagedCount}</Text>
-                </View>
-                <View style={styles.statTile}>
-                  <Text style={styles.statTileLabel}>Unstaged</Text>
-                  <Text style={styles.statTileValue}>{unstagedCount}</Text>
-                </View>
-                <View style={styles.statTile}>
-                  <Text style={styles.statTileLabel}>Untracked</Text>
-                  <Text style={styles.statTileValue}>{untrackedCount}</Text>
-                </View>
-                <View style={styles.statTile}>
-                  <Text style={styles.statTileLabel}>Ahead</Text>
-                  <Text style={styles.statTileValue}>{aheadCount}</Text>
-                </View>
-                <View style={styles.statTile}>
-                  <Text style={styles.statTileLabel}>Behind</Text>
-                  <Text style={styles.statTileValue}>{behindCount}</Text>
-                </View>
-              </View>
-              {(upstreamBranch || latestCommit || isPublishableBranch(status?.branch)) ? (
+              ) : null}
+              {(upstreamDisplay || syncDisplay || latestCommit) ? (
                 <>
                   <View style={styles.separator} />
-                  {upstreamBranch ? (
+                  {upstreamDisplay ? (
                     <View style={styles.infoRow}>
                       <Text style={styles.infoLabel}>Upstream</Text>
-                      <Text style={styles.infoValue}>{upstreamBranch}</Text>
+                      <Text style={styles.infoValue}>{upstreamDisplay}</Text>
                     </View>
                   ) : null}
-                  {isPublishableBranch(status?.branch) ? (
+                  {syncDisplay ? (
                     <View style={styles.infoRow}>
-                      <Text style={styles.infoLabel}>Published</Text>
-                      <Text style={styles.infoValue}>{hasUpstream ? 'Yes' : 'No'}</Text>
+                      <Text style={styles.infoLabel}>Sync</Text>
+                      <Text style={styles.infoValue}>{syncDisplay}</Text>
                     </View>
                   ) : null}
                   {latestCommit ? (
@@ -791,33 +790,22 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
               ) : null}
             </View>
 
-            <View
-              style={[
-                styles.reviewCard,
-                status?.clean ? styles.reviewCardClean : styles.reviewCardDirty,
-              ]}
-            >
-              <View style={styles.reviewHeader}>
-                <View style={styles.reviewIconWrap}>
-                  <Ionicons
-                    name={
-                      status?.clean
-                        ? 'checkmark-circle-outline'
-                        : hasStagedFiles
-                          ? 'checkmark-done-circle-outline'
-                          : 'git-compare-outline'
-                    }
-                    size={18}
-                    color={status?.clean ? theme.colors.statusComplete : theme.colors.textPrimary}
-                  />
-                </View>
-                <View style={styles.reviewCopy}>
-                  <Text style={styles.reviewTitle}>{reviewTitle}</Text>
-                  <Text style={styles.reviewDetail}>{reviewDetail}</Text>
-                </View>
-              </View>
-              {hasChanges ? (
-                <>
+            {hasChanges ? (
+              <>
+                <View style={[styles.reviewCard, styles.reviewCardDirty]}>
+                  <View style={styles.reviewHeader}>
+                    <View style={styles.reviewIconWrap}>
+                      <Ionicons
+                        name={hasStagedFiles ? 'checkmark-done-circle-outline' : 'git-compare-outline'}
+                        size={18}
+                        color={theme.colors.textPrimary}
+                      />
+                    </View>
+                    <View style={styles.reviewCopy}>
+                      <Text style={styles.reviewTitle}>{reviewTitle}</Text>
+                      <Text style={styles.reviewDetail}>{reviewDetail}</Text>
+                    </View>
+                  </View>
                   <View style={styles.reviewStatsRow}>
                     <View style={styles.reviewStat}>
                       <Text style={styles.reviewStatLabel}>Files</Text>
@@ -919,42 +907,42 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
                       ) : null}
                     </View>
                   ) : null}
-                </>
-              ) : null}
-            </View>
+                </View>
 
-            <Text style={styles.sectionLabel}>Commit message</Text>
-            <TextInput
-              style={styles.input}
-              value={commitMessage}
-              onChangeText={setCommitMessage}
-              keyboardAppearance={theme.keyboardAppearance}
-              placeholder="Commit message..."
-              placeholderTextColor={theme.colors.textMuted}
-            />
+                <Text style={styles.sectionLabel}>Commit message</Text>
+                <TextInput
+                  style={styles.input}
+                  value={commitMessage}
+                  onChangeText={setCommitMessage}
+                  keyboardAppearance={theme.keyboardAppearance}
+                  placeholder="Commit message..."
+                  placeholderTextColor={theme.colors.textMuted}
+                />
 
-            <Pressable
-              onPress={() => void commit()}
-              disabled={commitButtonDisabled}
-              style={({ pressed }) => [
-                styles.actionBtn,
-                pressed && styles.actionBtnPressed,
-                commitButtonDisabled && styles.actionBtnDisabled,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.actionBtnText,
-                  commitButtonDisabled && styles.actionBtnTextDisabled,
-                ]}
-              >
-                {committing
-                  ? 'Committing...'
-                  : hasStagedFiles
-                    ? 'Commit'
-                    : 'Stage files first'}
-              </Text>
-            </Pressable>
+                <Pressable
+                  onPress={() => void commit()}
+                  disabled={commitButtonDisabled}
+                  style={({ pressed }) => [
+                    styles.actionBtn,
+                    pressed && styles.actionBtnPressed,
+                    commitButtonDisabled && styles.actionBtnDisabled,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.actionBtnText,
+                      commitButtonDisabled && styles.actionBtnTextDisabled,
+                    ]}
+                  >
+                    {committing
+                      ? 'Committing...'
+                      : hasStagedFiles
+                        ? 'Commit'
+                        : 'Stage files first'}
+                  </Text>
+                </Pressable>
+              </>
+            ) : null}
 
             {showPushAction ? (
               <Pressable
@@ -1026,264 +1014,198 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
               )}
             </View>
 
-            <View style={styles.filesHeaderRow}>
-              <Text style={[styles.sectionLabel, styles.sectionLabelResetMargin]}>
-                {hasChanges ? `Changed files (${changedFiles.length})` : 'Changed files'}
-              </Text>
-              {hasChanges ? (
-                <View style={styles.filesHeaderActions}>
-                  {hasUnstagedFiles ? (
-                    <Pressable
-                      onPress={() => void stageAll()}
-                      disabled={
-                        loading ||
-                        committing ||
-                        pushing ||
-                        stagingAll ||
-                        unstagingAll ||
-                        Boolean(stagingPath) ||
-                        Boolean(unstagingPath)
-                      }
-                      style={({ pressed }) => [
-                        styles.bulkActionBtn,
-                        styles.bulkActionBtnStage,
-                        pressed && styles.fileActionBtnPressed,
-                        (loading ||
-                          committing ||
-                          pushing ||
-                          stagingAll ||
-                          unstagingAll ||
-                          Boolean(stagingPath) ||
-                          Boolean(unstagingPath)) &&
-                          styles.fileActionBtnDisabled,
-                      ]}
-                    >
-                      <Text style={styles.bulkActionText}>
-                        {stagingAll ? 'Staging all...' : 'Stage all'}
-                      </Text>
-                    </Pressable>
-                  ) : null}
-                  {hasStagedFiles ? (
-                    <Pressable
-                      onPress={() => void unstageAll()}
-                      disabled={
-                        loading ||
-                        committing ||
-                        pushing ||
-                        unstagingAll ||
-                        stagingAll ||
-                        Boolean(stagingPath) ||
-                        Boolean(unstagingPath)
-                      }
-                      style={({ pressed }) => [
-                        styles.bulkActionBtn,
-                        styles.bulkActionBtnUnstage,
-                        pressed && styles.fileActionBtnPressed,
-                        (loading ||
-                          committing ||
-                          pushing ||
-                          unstagingAll ||
-                          stagingAll ||
-                          Boolean(stagingPath) ||
-                          Boolean(unstagingPath)) &&
-                          styles.fileActionBtnDisabled,
-                      ]}
-                    >
-                      <Text style={styles.bulkActionText}>
-                        {unstagingAll ? 'Unstaging all...' : 'Unstage all'}
-                      </Text>
-                    </Pressable>
-                  ) : null}
+            {hasChanges ? (
+              <>
+                <View style={styles.filesHeaderRow}>
+                  <Text style={[styles.sectionLabel, styles.sectionLabelResetMargin]}>
+                    Changed files ({changedFiles.length})
+                  </Text>
                 </View>
-              ) : null}
-            </View>
-            <View style={styles.filesCard}>
-              {changedFiles.length === 0 ? (
-                <Text style={styles.emptyFilesText}>No changes.</Text>
-              ) : (
-                <ScrollView
-                  style={[styles.filesScroll, { maxHeight: filesListMaxHeight }]}
-                  contentContainerStyle={styles.filesScrollContent}
-                  showsVerticalScrollIndicator
-                  nestedScrollEnabled
-                  keyboardShouldPersistTaps="handled"
-                  onTouchStart={disableBodyScroll}
-                  onTouchCancel={enableBodyScroll}
-                  onTouchEnd={enableBodyScroll}
-                  onScrollBeginDrag={disableBodyScroll}
-                  onScrollEndDrag={enableBodyScroll}
-                  onMomentumScrollEnd={enableBodyScroll}
-                >
-                  {changedFilesWithStats.map((entry) => (
-                    <View key={`${entry.code}:${entry.path}`} style={styles.fileRow}>
-                      <Text style={styles.fileCode}>{formatStatusCode(entry.code)}</Text>
-                      {entry.diffFileId ? (
-                        <Pressable
-                          style={styles.filePathPressable}
-                          onPress={() => {
-                            if (entry.diffFileId) {
-                              selectDiffFile(entry.diffFileId);
-                            }
-                          }}
-                          disabled={switchingDiffFile}
-                        >
-                          <Text
-                            style={[
-                              styles.filePath,
-                              styles.filePathInteractive,
-                              switchingDiffFile && styles.filePathDisabled,
-                            ]}
-                          >
-                            {entry.path}
-                          </Text>
-                        </Pressable>
-                      ) : (
-                        <Text style={styles.filePath}>
-                          {entry.path}
-                        </Text>
-                      )}
-                      {entry.stats ? (
-                        <View style={styles.fileStats}>
-                          <Text style={styles.fileAdded}>+{entry.stats.additions}</Text>
-                          <Text style={styles.fileRemoved}>-{entry.stats.deletions}</Text>
-                        </View>
-                      ) : null}
-                      <View style={styles.fileActions}>
-                        {entry.unstaged ? (
-                          <Pressable
-                            onPress={() => void stageFile(entry.stagePath)}
-                            disabled={
-                              loading ||
-                              committing ||
-                              pushing ||
-                              stagingAll ||
-                              unstagingAll ||
-                              stagingPath === entry.stagePath ||
-                              unstagingPath === entry.stagePath
-                            }
-                            style={({ pressed }) => [
-                              styles.fileActionBtn,
-                              styles.fileActionBtnStage,
-                              pressed && styles.fileActionBtnPressed,
-                              (loading ||
-                                committing ||
-                                pushing ||
-                                stagingAll ||
-                                unstagingAll ||
-                                stagingPath === entry.stagePath ||
-                                unstagingPath === entry.stagePath) &&
-                                styles.fileActionBtnDisabled,
-                            ]}
-                          >
-                            <Text style={styles.fileActionText}>
-                              {stagingPath === entry.stagePath ? 'Staging...' : 'Stage'}
-                            </Text>
-                          </Pressable>
-                        ) : null}
-                        {entry.staged ? (
-                          <Pressable
-                            onPress={() => void unstageFile(entry.stagePath)}
-                            disabled={
-                              loading ||
-                              committing ||
-                              pushing ||
-                              stagingAll ||
-                              unstagingAll ||
-                              unstagingPath === entry.stagePath ||
-                              stagingPath === entry.stagePath
-                            }
-                            style={({ pressed }) => [
-                              styles.fileActionBtn,
-                              styles.fileActionBtnUnstage,
-                              pressed && styles.fileActionBtnPressed,
-                              (loading ||
-                                committing ||
-                                pushing ||
-                                stagingAll ||
-                                unstagingAll ||
-                                unstagingPath === entry.stagePath ||
-                                stagingPath === entry.stagePath) &&
-                                styles.fileActionBtnDisabled,
-                            ]}
-                          >
-                            <Text style={styles.fileActionText}>
-                              {unstagingPath === entry.stagePath
-                                ? 'Unstaging...'
-                                : 'Unstage'}
-                            </Text>
-                          </Pressable>
-                        ) : null}
-                      </View>
-                    </View>
-                  ))}
-                </ScrollView>
-              )}
-            </View>
-
-            <Text style={styles.sectionLabel}>Diff summary</Text>
-            <View style={styles.diffSummaryRow}>
-              <View style={styles.diffSummaryPill}>
-                <Text style={styles.diffSummaryLabel}>Files</Text>
-                <Text style={styles.diffSummaryValue}>{parsedDiff.files.length}</Text>
-              </View>
-              <View style={styles.diffSummaryPill}>
-                <Text style={styles.diffSummaryLabel}>Added</Text>
-                <Text style={[styles.diffSummaryValue, styles.fileAdded]}>
-                  +{parsedDiff.totalAdditions}
-                </Text>
-              </View>
-              <View style={styles.diffSummaryPill}>
-                <Text style={styles.diffSummaryLabel}>Removed</Text>
-                <Text style={[styles.diffSummaryValue, styles.fileRemoved]}>
-                  -{parsedDiff.totalDeletions}
-                </Text>
-              </View>
-            </View>
-
-            <Text style={styles.sectionLabel}>Unified diff</Text>
-            <View style={styles.diffCard}>
-              {parsedDiff.files.length === 0 ? (
-                <Text style={styles.emptyFilesText}>
-                  {hasChanges
-                    ? 'No patch output for current changes yet (likely untracked files only).'
-                    : 'No diff to show.'}
-                </Text>
-              ) : (
-                <>
+                <View style={styles.filesCard}>
                   <ScrollView
-                    horizontal
-                    style={styles.diffTabsScroll}
-                    contentContainerStyle={styles.diffTabsContent}
-                    showsHorizontalScrollIndicator={false}
+                    style={[styles.filesScroll, { maxHeight: filesListMaxHeight }]}
+                    contentContainerStyle={styles.filesScrollContent}
+                    showsVerticalScrollIndicator
                     nestedScrollEnabled
                     keyboardShouldPersistTaps="handled"
                     onTouchStart={disableBodyScroll}
                     onTouchCancel={enableBodyScroll}
                     onTouchEnd={enableBodyScroll}
+                    onScrollBeginDrag={disableBodyScroll}
+                    onScrollEndDrag={enableBodyScroll}
+                    onMomentumScrollEnd={enableBodyScroll}
                   >
-                    {parsedDiff.files.map((file) => {
-                      const selected = file.id === activeDiffTabId;
-                      return (
-                        <Pressable
-                          key={file.id}
-                          onPress={() => selectDiffFile(file.id)}
-                          style={({ pressed }) => [
-                            styles.diffTab,
-                            selected && styles.diffTabActive,
-                            pressed && styles.diffTabPressed,
-                          ]}
-                        >
-                          <Text style={styles.diffTabTitle}>
-                            {file.displayPath}
+                    {changedFilesWithStats.map((entry) => (
+                      <View key={`${entry.code}:${entry.path}`} style={styles.fileRow}>
+                        <Text style={styles.fileCode}>{formatStatusCode(entry.code)}</Text>
+                        {entry.diffFileId ? (
+                          <Pressable
+                            style={styles.filePathPressable}
+                            onPress={() => {
+                              if (entry.diffFileId) {
+                                selectDiffFile(entry.diffFileId);
+                              }
+                            }}
+                            disabled={switchingDiffFile}
+                          >
+                            <Text
+                              style={[
+                                styles.filePath,
+                                styles.filePathInteractive,
+                                switchingDiffFile && styles.filePathDisabled,
+                              ]}
+                            >
+                              {entry.path}
+                            </Text>
+                          </Pressable>
+                        ) : (
+                          <Text style={styles.filePath}>
+                            {entry.path}
                           </Text>
-                          <View style={styles.diffTabStats}>
-                            <Text style={styles.fileAdded}>+{file.additions}</Text>
-                            <Text style={styles.fileRemoved}>-{file.deletions}</Text>
+                        )}
+                        {entry.stats ? (
+                          <View style={styles.fileStats}>
+                            <Text style={styles.fileAdded}>+{entry.stats.additions}</Text>
+                            <Text style={styles.fileRemoved}>-{entry.stats.deletions}</Text>
                           </View>
-                        </Pressable>
-                      );
-                    })}
+                        ) : null}
+                        <View style={styles.fileActions}>
+                          {entry.unstaged ? (
+                            <Pressable
+                              onPress={() => void stageFile(entry.stagePath)}
+                              disabled={
+                                loading ||
+                                committing ||
+                                pushing ||
+                                stagingAll ||
+                                unstagingAll ||
+                                stagingPath === entry.stagePath ||
+                                unstagingPath === entry.stagePath
+                              }
+                              style={({ pressed }) => [
+                                styles.fileActionBtn,
+                                styles.fileActionBtnStage,
+                                pressed && styles.fileActionBtnPressed,
+                                (loading ||
+                                  committing ||
+                                  pushing ||
+                                  stagingAll ||
+                                  unstagingAll ||
+                                  stagingPath === entry.stagePath ||
+                                  unstagingPath === entry.stagePath) &&
+                                  styles.fileActionBtnDisabled,
+                              ]}
+                            >
+                              <Text style={styles.fileActionText}>
+                                {stagingPath === entry.stagePath ? 'Staging...' : 'Stage'}
+                              </Text>
+                            </Pressable>
+                          ) : null}
+                          {entry.staged ? (
+                            <Pressable
+                              onPress={() => void unstageFile(entry.stagePath)}
+                              disabled={
+                                loading ||
+                                committing ||
+                                pushing ||
+                                stagingAll ||
+                                unstagingAll ||
+                                unstagingPath === entry.stagePath ||
+                                stagingPath === entry.stagePath
+                              }
+                              style={({ pressed }) => [
+                                styles.fileActionBtn,
+                                styles.fileActionBtnUnstage,
+                                pressed && styles.fileActionBtnPressed,
+                                (loading ||
+                                  committing ||
+                                  pushing ||
+                                  stagingAll ||
+                                  unstagingAll ||
+                                  unstagingPath === entry.stagePath ||
+                                  stagingPath === entry.stagePath) &&
+                                  styles.fileActionBtnDisabled,
+                              ]}
+                            >
+                              <Text style={styles.fileActionText}>
+                                {unstagingPath === entry.stagePath
+                                  ? 'Unstaging...'
+                                  : 'Unstage'}
+                              </Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      </View>
+                    ))}
                   </ScrollView>
+                </View>
+
+                {parsedDiff.files.length > 0 ? (
+                  <>
+                    <Text style={styles.sectionLabel}>Diff summary</Text>
+                    <View style={styles.diffSummaryRow}>
+                      <View style={styles.diffSummaryPill}>
+                        <Text style={styles.diffSummaryLabel}>Files</Text>
+                        <Text style={styles.diffSummaryValue}>{parsedDiff.files.length}</Text>
+                      </View>
+                      <View style={styles.diffSummaryPill}>
+                        <Text style={styles.diffSummaryLabel}>Added</Text>
+                        <Text style={[styles.diffSummaryValue, styles.fileAdded]}>
+                          +{parsedDiff.totalAdditions}
+                        </Text>
+                      </View>
+                      <View style={styles.diffSummaryPill}>
+                        <Text style={styles.diffSummaryLabel}>Removed</Text>
+                        <Text style={[styles.diffSummaryValue, styles.fileRemoved]}>
+                          -{parsedDiff.totalDeletions}
+                        </Text>
+                      </View>
+                    </View>
+                  </>
+                ) : null}
+
+                <Text style={styles.sectionLabel}>Unified diff</Text>
+                <View style={styles.diffCard}>
+                  {parsedDiff.files.length === 0 ? (
+                    <Text style={styles.emptyFilesText}>
+                      No patch output for current changes yet (likely untracked files only).
+                    </Text>
+                  ) : (
+                    <>
+                      <ScrollView
+                        horizontal
+                        style={styles.diffTabsScroll}
+                        contentContainerStyle={styles.diffTabsContent}
+                        showsHorizontalScrollIndicator={false}
+                        nestedScrollEnabled
+                        keyboardShouldPersistTaps="handled"
+                        onTouchStart={disableBodyScroll}
+                        onTouchCancel={enableBodyScroll}
+                        onTouchEnd={enableBodyScroll}
+                      >
+                        {parsedDiff.files.map((file) => {
+                          const selected = file.id === activeDiffTabId;
+                          return (
+                            <Pressable
+                              key={file.id}
+                              onPress={() => selectDiffFile(file.id)}
+                              style={({ pressed }) => [
+                                styles.diffTab,
+                                selected && styles.diffTabActive,
+                                pressed && styles.diffTabPressed,
+                              ]}
+                            >
+                              <Text style={styles.diffTabTitle}>
+                                {file.displayPath}
+                              </Text>
+                              <View style={styles.diffTabStats}>
+                                <Text style={styles.fileAdded}>+{file.additions}</Text>
+                                <Text style={styles.fileRemoved}>-{file.deletions}</Text>
+                              </View>
+                            </Pressable>
+                          );
+                        })}
+                      </ScrollView>
 
                   {diffFileForView ? (
                     <>
@@ -1376,6 +1298,8 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
               )}
             </View>
           </>
+        ) : null}
+          </>
         )}
 
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
@@ -1439,6 +1363,9 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     padding: theme.spacing.md,
     backgroundColor: theme.colors.bgItem,
     gap: theme.spacing.sm,
+  },
+  workspaceCard: {
+    gap: theme.spacing.xs,
   },
   reviewCard: {
     borderRadius: theme.radius.md,
@@ -1539,21 +1466,17 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     fontSize: 11,
   },
   branchHeaderRow: {
+    gap: theme.spacing.sm,
+  },
+  branchActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: theme.spacing.sm,
   },
-  branchStatusRow: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-  },
   branchBadge: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: theme.spacing.xs,
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 7,
@@ -1561,13 +1484,13 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     backgroundColor: theme.colors.bgInput,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.borderLight,
-    flexShrink: 1,
   },
   branchBadgeText: {
     ...theme.typography.body,
     color: theme.colors.textPrimary,
     fontWeight: '700',
-    flexShrink: 1,
+    flex: 1,
+    lineHeight: 21,
   },
   branchSwitchToggle: {
     minHeight: 34,
@@ -1693,8 +1616,8 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     gap: theme.spacing.sm,
   },
   statTile: {
-    minWidth: 92,
-    flexGrow: 1,
+    flexBasis: '48%',
+    flexGrow: 0,
     backgroundColor: theme.colors.bgInput,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
@@ -1735,6 +1658,14 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     color: theme.colors.textPrimary,
     fontSize: 15,
   },
+  workspaceInput: {
+    minHeight: 44,
+    paddingTop: 7,
+    paddingBottom: 7,
+    fontSize: 14,
+    lineHeight: 20,
+    includeFontPadding: false,
+  },
   actionBtn: {
     backgroundColor: theme.colors.accent,
     borderRadius: theme.radius.md,
@@ -1769,9 +1700,7 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     color: theme.colors.textMuted,
   },
   infoRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    gap: 4,
     paddingVertical: theme.spacing.sm,
   },
   separator: {
@@ -1779,13 +1708,16 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     backgroundColor: theme.colors.borderLight,
   },
   infoLabel: {
-    ...theme.typography.body,
+    ...theme.typography.caption,
     color: theme.colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   infoValue: {
     ...theme.typography.body,
     fontWeight: '600',
     color: theme.colors.textPrimary,
+    lineHeight: 22,
   },
   clean: {
     color: theme.colors.statusComplete,
@@ -2316,6 +2248,21 @@ function parseUpstreamBranch(rawStatus: string): string | null {
   const upstreamSection = normalized.split('...')[1] ?? '';
   const upstream = upstreamSection.split('[')[0]?.trim() ?? '';
   return upstream || null;
+}
+
+function formatSyncDisplay(aheadCount: number, behindCount: number): string | null {
+  if (aheadCount <= 0 && behindCount <= 0) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  if (aheadCount > 0) {
+    parts.push(`${aheadCount} ahead`);
+  }
+  if (behindCount > 0) {
+    parts.push(`${behindCount} behind`);
+  }
+  return parts.join(', ');
 }
 
 function isPublishableBranch(branch: string | null | undefined): boolean {
