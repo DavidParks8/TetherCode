@@ -147,11 +147,10 @@ export function BridgeProfileManagerSheet({
             <View style={[styles.sheetCard, { maxHeight: cardMaxHeight }]}>
               <View style={styles.handle} />
               <View style={styles.header}>
-                <Text style={styles.eyebrow}>Bridge Profiles</Text>
-                <Text style={styles.title}>Manage saved bridges</Text>
+                <Text style={styles.eyebrow}>Saved Connections</Text>
+                <Text style={styles.title}>Manage connections</Text>
                 <Text style={styles.subtitle}>
-                  Switch the active server, rename profiles so they are easier to recognize, or
-                  remove old bridges you no longer use.
+                  Switch the active connection, rename it, or remove old entries.
                 </Text>
               </View>
 
@@ -199,7 +198,7 @@ export function BridgeProfileManagerSheet({
                                 <Text style={styles.metaBadgeText}>
                                   {isGitHubBridgeProfile(profile)
                                     ? 'GitHub Codespace'
-                                    : 'Bridge token'}
+                                    : 'Private connection'}
                                 </Text>
                               </View>
                               {profile.githubUserLogin ? (
@@ -278,7 +277,7 @@ export function BridgeProfileManagerSheet({
                             <TextInput
                               value={renameDraft}
                               onChangeText={setRenameDraft}
-                              placeholder="Name this bridge"
+                              placeholder="Name this connection"
                               placeholderTextColor={theme.colors.textMuted}
                               autoFocus
                               returnKeyType="done"
@@ -320,9 +319,9 @@ export function BridgeProfileManagerSheet({
                           <View style={styles.deleteConfirm}>
                             <Text style={styles.deleteConfirmTitle}>Delete this profile?</Text>
                             <Text style={styles.deleteConfirmBody}>
-                              This removes the saved bridge URL and token from the device. If it is
-                              active, Clawdex will switch to another saved profile or return to
-                              onboarding if none remain.
+                              This removes the saved connection from the device. If it is active,
+                              Clawdex will switch to another saved connection or return to
+                              onboarding.
                             </Text>
                             <View style={styles.inlineActions}>
                               <Pressable
@@ -357,9 +356,9 @@ export function BridgeProfileManagerSheet({
                   })
                 ) : (
                   <View style={styles.emptyState}>
-                    <Text style={styles.emptyStateTitle}>No saved profiles</Text>
+                    <Text style={styles.emptyStateTitle}>No saved connections</Text>
                     <Text style={styles.emptyStateBody}>
-                      Add a bridge or connect a GitHub Codespace to create your first saved profile.
+                      Add a private connection or connect a GitHub Codespace to create one.
                     </Text>
                   </View>
                 )}

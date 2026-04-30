@@ -131,7 +131,9 @@ function isPendingGitHubCodespacesSession(
   );
 }
 
-const DRAWER_WIDTH = 280;
+const DRAWER_MIN_WIDTH = 300;
+const DRAWER_MAX_WIDTH = 360;
+const DRAWER_SCREEN_RATIO = 0.88;
 const EDGE_SWIPE_WIDTH = 24;
 const CHAT_GIT_BACK_DISTANCE = 56;
 const CHAT_GIT_BACK_VELOCITY = 900;
@@ -306,13 +308,14 @@ export default function App() {
     [resolvedThemeMode, themeFontPreference]
   );
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const contentShiftOpen = Math.min(DRAWER_WIDTH - 12, screenWidth * 0.74);
-  const drawerOffset = useSharedValue(-DRAWER_WIDTH);
-  const drawerDragStartOffset = useSharedValue(-DRAWER_WIDTH);
+  const drawerWidth = useMemo(() => getDrawerWidth(screenWidth), [screenWidth]);
+  const contentShiftOpen = Math.min(drawerWidth - 12, screenWidth * 0.74);
+  const drawerOffset = useSharedValue(-drawerWidth);
+  const drawerDragStartOffset = useSharedValue(-drawerWidth);
   const drawerGestureDidSettle = useSharedValue(true);
 
   const screenFrameAnimatedStyle = useAnimatedStyle(() => {
-    const progress = getDrawerOpenProgress(drawerOffset.value);
+    const progress = getDrawerOpenProgress(drawerOffset.value, drawerWidth);
     return {
       transform: [
         { translateX: progress * contentShiftOpen },
@@ -326,7 +329,7 @@ export default function App() {
   }, [contentShiftOpen]);
 
   const overlayAnimatedStyle = useAnimatedStyle(() => ({
-    opacity: getDrawerOpenProgress(drawerOffset.value),
+    opacity: getDrawerOpenProgress(drawerOffset.value, drawerWidth),
   }));
 
   const drawerAnimatedStyle = useAnimatedStyle(() => ({
@@ -334,7 +337,7 @@ export default function App() {
   }));
 
   const drawerContentAnimatedStyle = useAnimatedStyle(() => {
-    const progress = getDrawerOpenProgress(drawerOffset.value);
+    const progress = getDrawerOpenProgress(drawerOffset.value, drawerWidth);
     return {
       opacity: 0.88 + progress * 0.12,
       transform: [
@@ -343,6 +346,12 @@ export default function App() {
       ],
     };
   });
+
+  useEffect(() => {
+    const nextOffset = drawerOpenRef.current ? 0 : -drawerWidth;
+    drawerOffset.value = nextOffset;
+    drawerDragStartOffset.value = nextOffset;
+  }, [drawerDragStartOffset, drawerOffset, drawerWidth]);
 
   useEffect(() => {
     if (!ws) {
@@ -877,7 +886,7 @@ export default function App() {
 
       ensureDrawerVisible();
       drawerOffset.value = withSpring(
-        shouldOpen ? 0 : -DRAWER_WIDTH,
+        shouldOpen ? 0 : -drawerWidth,
         buildDrawerSpringConfig(velocityX),
         (finished) => {
           if (finished) {
@@ -886,7 +895,7 @@ export default function App() {
         }
       );
     },
-    [dismissKeyboard, drawerOffset, ensureDrawerVisible, handleDrawerSettled]
+    [dismissKeyboard, drawerOffset, drawerWidth, ensureDrawerVisible, handleDrawerSettled]
   );
 
   const openDrawer = useCallback(() => {
@@ -985,19 +994,24 @@ export default function App() {
         })
         .onUpdate((event) => {
           drawerOffset.value = applyDrawerRubberBand(
-            drawerDragStartOffset.value + event.translationX
+            drawerDragStartOffset.value + event.translationX,
+            drawerWidth
           );
         })
         .onEnd((event) => {
           drawerGestureDidSettle.value = true;
-          const nextOffset = clampDrawerOffset(drawerDragStartOffset.value + event.translationX);
+          const nextOffset = clampDrawerOffset(
+            drawerDragStartOffset.value + event.translationX,
+            drawerWidth
+          );
           const shouldOpen = shouldSettleDrawerOpen(
             nextOffset,
             event.velocityX,
+            drawerWidth,
             drawerDragStartOffset.value
           );
           drawerOffset.value = withSpring(
-            shouldOpen ? 0 : -DRAWER_WIDTH,
+            shouldOpen ? 0 : -drawerWidth,
             buildDrawerSpringConfig(event.velocityX),
             (finished) => {
               if (finished) {
@@ -1011,14 +1025,15 @@ export default function App() {
             return;
           }
           drawerGestureDidSettle.value = true;
-          const nextOffset = clampDrawerOffset(drawerOffset.value);
+          const nextOffset = clampDrawerOffset(drawerOffset.value, drawerWidth);
           const shouldOpen = shouldSettleDrawerOpen(
             nextOffset,
             event.velocityX,
+            drawerWidth,
             drawerDragStartOffset.value
           );
           drawerOffset.value = withSpring(
-            shouldOpen ? 0 : -DRAWER_WIDTH,
+            shouldOpen ? 0 : -drawerWidth,
             buildDrawerSpringConfig(event.velocityX),
             (finished) => {
               if (finished) {
@@ -1034,6 +1049,7 @@ export default function App() {
       drawerDragStartOffset,
       drawerGestureDidSettle,
       drawerOffset,
+      drawerWidth,
       handleDrawerSettled,
       ensureDrawerCapturesTouches,
       settingsAllowsDrawerGesture,
@@ -1060,19 +1076,24 @@ export default function App() {
         })
         .onUpdate((event) => {
           drawerOffset.value = applyDrawerRubberBand(
-            drawerDragStartOffset.value + event.translationX
+            drawerDragStartOffset.value + event.translationX,
+            drawerWidth
           );
         })
         .onEnd((event) => {
           drawerGestureDidSettle.value = true;
-          const nextOffset = clampDrawerOffset(drawerDragStartOffset.value + event.translationX);
+          const nextOffset = clampDrawerOffset(
+            drawerDragStartOffset.value + event.translationX,
+            drawerWidth
+          );
           const shouldOpen = shouldSettleDrawerOpen(
             nextOffset,
             event.velocityX,
+            drawerWidth,
             drawerDragStartOffset.value
           );
           drawerOffset.value = withSpring(
-            shouldOpen ? 0 : -DRAWER_WIDTH,
+            shouldOpen ? 0 : -drawerWidth,
             buildDrawerSpringConfig(event.velocityX),
             (finished) => {
               if (finished) {
@@ -1086,14 +1107,15 @@ export default function App() {
             return;
           }
           drawerGestureDidSettle.value = true;
-          const nextOffset = clampDrawerOffset(drawerOffset.value);
+          const nextOffset = clampDrawerOffset(drawerOffset.value, drawerWidth);
           const shouldOpen = shouldSettleDrawerOpen(
             nextOffset,
             event.velocityX,
+            drawerWidth,
             drawerDragStartOffset.value
           );
           drawerOffset.value = withSpring(
-            shouldOpen ? 0 : -DRAWER_WIDTH,
+            shouldOpen ? 0 : -drawerWidth,
             buildDrawerSpringConfig(event.velocityX),
             (finished) => {
               if (finished) {
@@ -1106,6 +1128,7 @@ export default function App() {
       drawerDragStartOffset,
       drawerGestureDidSettle,
       drawerOffset,
+      drawerWidth,
       drawerVisible,
       ensureDrawerCapturesTouches,
       handleDrawerSettled,
@@ -2123,7 +2146,7 @@ export default function App() {
                     <Animated.View style={[styles.overlay, overlayAnimatedStyle]} />
                   </GestureDetector>
 
-                  <Animated.View style={[styles.drawer, drawerAnimatedStyle]}>
+                  <Animated.View style={[styles.drawer, { width: drawerWidth }, drawerAnimatedStyle]}>
                     <Animated.View
                       style={[styles.drawerContentShell, drawerContentAnimatedStyle]}
                     >
@@ -2245,38 +2268,44 @@ function normalizeApprovalMode(value: unknown): ApprovalMode {
   return value === 'yolo' ? 'yolo' : 'normal';
 }
 
-function clampDrawerOffset(value: number): number {
-  'worklet';
-  return Math.max(-DRAWER_WIDTH, Math.min(0, value));
+function getDrawerWidth(screenWidth: number): number {
+  const targetWidth = screenWidth * DRAWER_SCREEN_RATIO;
+  return Math.min(DRAWER_MAX_WIDTH, Math.max(DRAWER_MIN_WIDTH, targetWidth));
 }
 
-function getDrawerOpenProgress(value: number): number {
+function clampDrawerOffset(value: number, drawerWidth: number): number {
   'worklet';
-  return (clampDrawerOffset(value) + DRAWER_WIDTH) / DRAWER_WIDTH;
+  return Math.max(-drawerWidth, Math.min(0, value));
 }
 
-function applyDrawerRubberBand(value: number): number {
+function getDrawerOpenProgress(value: number, drawerWidth: number): number {
+  'worklet';
+  return (clampDrawerOffset(value, drawerWidth) + drawerWidth) / drawerWidth;
+}
+
+function applyDrawerRubberBand(value: number, drawerWidth: number): number {
   'worklet';
   if (value > 0) {
     return value * DRAWER_RUBBER_BAND_STRENGTH;
   }
 
-  if (value < -DRAWER_WIDTH) {
-    return -DRAWER_WIDTH + (value + DRAWER_WIDTH) * DRAWER_RUBBER_BAND_STRENGTH;
+  if (value < -drawerWidth) {
+    return -drawerWidth + (value + drawerWidth) * DRAWER_RUBBER_BAND_STRENGTH;
   }
 
   return value;
 }
 
-function projectDrawerOffset(value: number, velocityX: number): number {
+function projectDrawerOffset(value: number, velocityX: number, drawerWidth: number): number {
   'worklet';
-  return clampDrawerOffset(value + velocityX * DRAWER_VELOCITY_PROJECTION);
+  return clampDrawerOffset(value + velocityX * DRAWER_VELOCITY_PROJECTION, drawerWidth);
 }
 
 function shouldSettleDrawerOpen(
   value: number,
   velocityX: number,
-  startOffset = -DRAWER_WIDTH
+  drawerWidth: number,
+  startOffset: number
 ): boolean {
   'worklet';
   if (velocityX >= DRAWER_SNAP_VELOCITY) {
@@ -2287,8 +2316,11 @@ function shouldSettleDrawerOpen(
     return false;
   }
 
-  const projectedProgress = getDrawerOpenProgress(projectDrawerOffset(value, velocityX));
-  const startedOpen = getDrawerOpenProgress(startOffset) > 0.5;
+  const projectedProgress = getDrawerOpenProgress(
+    projectDrawerOffset(value, velocityX, drawerWidth),
+    drawerWidth
+  );
+  const startedOpen = getDrawerOpenProgress(startOffset, drawerWidth) > 0.5;
   const settleThreshold = startedOpen
     ? 1 - DRAWER_SNAP_OPEN_PROGRESS
     : DRAWER_SNAP_OPEN_PROGRESS;
@@ -2394,7 +2426,6 @@ const createStyles = (theme: ReturnType<typeof createAppTheme>) =>
       top: 0,
       left: 0,
       bottom: 0,
-      width: DRAWER_WIDTH,
       zIndex: 20,
     },
     drawerContentShell: {

@@ -60,12 +60,12 @@ type PairingPayload = { bridgeToken: string; bridgeUrl?: string };
 const BRIDGE_SETUP_COMMANDS = 'npm install -g clawdex-mobile@latest\nclawdex init';
 const SETUP_STAGES = [
   {
-    title: 'Start bridge',
+    title: 'Start desktop service',
     description: 'Run the CLI on your server and wait for the pairing QR.',
   },
   {
-    title: 'Pair bridge',
-    description: 'Scan QR or paste the bridge URL and token.',
+    title: 'Pair private connection',
+    description: 'Scan QR or paste the URL and token.',
   },
   {
     title: 'Verify auth',
@@ -225,7 +225,7 @@ export function OnboardingScreen({
 
     const normalizedToken = tokenInput.trim();
     if (!normalizedToken) {
-      setFormError('Bridge token is required.');
+      setFormError('Connection token is required.');
       return null;
     }
 
@@ -284,7 +284,7 @@ export function OnboardingScreen({
           : '';
       setConnectionCheck({
         kind: 'error',
-        message: `Bridge verification failed: ${baseMessage}${hint}`,
+      message: `Connection verification failed: ${baseMessage}${hint}`,
       });
       return false;
     } finally {
@@ -315,7 +315,7 @@ export function OnboardingScreen({
     } catch (error) {
       setConnectionCheck({
         kind: 'error',
-        message: (error as Error).message || 'Saving the bridge profile failed.',
+        message: (error as Error).message || 'Saving the connection failed.',
       });
     }
   }, [normalizeTokenInput, onSave, runConnectionCheck, validateInput]);
@@ -355,7 +355,7 @@ export function OnboardingScreen({
     if (!cameraPermission?.granted) {
       const result = await requestCameraPermission();
       if (!result.granted) {
-        setFormError('Camera permission is required to scan bridge QR.');
+        setFormError('Camera permission is required to scan the pairing QR.');
         return;
       }
     }
@@ -488,10 +488,10 @@ export function OnboardingScreen({
                     </View>
                     <View style={styles.choiceCopy}>
                       <Text style={styles.choiceTitlePrimary}>
-                        {githubCodespacesLoading ? 'Opening GitHub…' : 'Sign in with GitHub'}
+                        {githubCodespacesLoading ? 'Opening GitHub…' : 'GitHub Codespaces'}
                       </Text>
                       <Text style={styles.choiceMetaPrimary}>
-                        {githubCodespacesLoading ? 'Returning here automatically' : 'Recommended path'}
+                        {githubCodespacesLoading ? 'Returning here automatically' : 'Hosted workspace'}
                       </Text>
                     </View>
                     <Ionicons name="arrow-forward" size={18} color={theme.colors.black} />
@@ -513,8 +513,8 @@ export function OnboardingScreen({
                     />
                   </View>
                   <View style={styles.choiceCopy}>
-                    <Text style={styles.choiceTitleSecondary}>Use self-hosted bridge</Text>
-                    <Text style={styles.choiceMetaSecondary}>Your own machine or server</Text>
+                    <Text style={styles.choiceTitleSecondary}>Private connection</Text>
+                    <Text style={styles.choiceMetaSecondary}>Your machine</Text>
                   </View>
                   <Ionicons name="arrow-forward" size={18} color={theme.colors.textMuted} />
                 </Pressable>
@@ -582,7 +582,7 @@ export function OnboardingScreen({
                 <BlurView intensity={55} tint={theme.blurTint} style={styles.formCard}>
                   <View style={styles.commandPanel}>
                     <View style={styles.formSectionHeader}>
-                      <Text style={styles.formSectionEyebrow}>1. Start bridge</Text>
+                      <Text style={styles.formSectionEyebrow}>1. Start desktop service</Text>
                       <Text style={styles.formSectionTitle}>
                         Run this on your machine or server.
                       </Text>
@@ -613,15 +613,15 @@ export function OnboardingScreen({
                       ]}
                     >
                       <Ionicons name="qr-code-outline" size={16} color={theme.colors.textPrimary} />
-                      <Text style={styles.scanButtonText}>Scan bridge QR</Text>
+                      <Text style={styles.scanButtonText}>Scan pairing QR</Text>
                     </Pressable>
                   </View>
                   <Text style={styles.helperText}>
-                    QR fills the bridge URL and token together.
+                    QR fills the URL and token together.
                   </Text>
 
                   <View style={styles.fieldGroup}>
-                    <Text style={styles.label}>Bridge URL</Text>
+                    <Text style={styles.label}>Connection URL</Text>
                     <View style={styles.inputRow}>
                       <View style={styles.inputIconWrap}>
                         <Ionicons name="globe-outline" size={16} color={theme.colors.textSecondary} />
@@ -650,7 +650,7 @@ export function OnboardingScreen({
 
                   <View style={styles.fieldGroup}>
                     <View style={styles.tokenHeaderRow}>
-                      <Text style={styles.label}>Bridge Token</Text>
+                      <Text style={styles.label}>Connection Token</Text>
                       <Text style={styles.optionalLabel}>Required</Text>
                     </View>
                     <View style={styles.tokenInputWrap}>
@@ -668,7 +668,7 @@ export function OnboardingScreen({
                           autoCapitalize="none"
                           autoCorrect={false}
                           keyboardType="default"
-                          placeholder="Paste bridge token"
+                          placeholder="Paste connection token"
                           placeholderTextColor={theme.colors.textMuted}
                           style={styles.inputText}
                           secureTextEntry={tokenHidden}
@@ -739,7 +739,7 @@ export function OnboardingScreen({
                   <View style={styles.formSectionHeader}>
                     <Text style={styles.formSectionEyebrow}>3. Test and save</Text>
                     <Text style={styles.formSectionTitle}>
-                      Save it once the bridge responds.
+                      Save it once the connection responds.
                     </Text>
                   </View>
 
@@ -800,7 +800,7 @@ export function OnboardingScreen({
             <View style={styles.scannerModalRoot}>
               <View style={styles.scannerSheet}>
                 <View style={styles.scannerHeader}>
-                  <Text style={styles.scannerTitle}>Scan Bridge QR</Text>
+                  <Text style={styles.scannerTitle}>Scan Pairing QR</Text>
                   <Pressable
                     onPress={closeScanner}
                     hitSlop={8}
@@ -822,13 +822,13 @@ export function OnboardingScreen({
                   ) : (
                     <View style={styles.scannerPermissionWrap}>
                       <Text style={styles.scannerPermissionText}>
-                        Camera permission is required to scan bridge QR.
+                        Camera permission is required to scan the pairing QR.
                       </Text>
                     </View>
                   )}
                 </View>
                 <Text style={styles.scannerHintText}>
-                  Scan the bridge QR to autofill URL and token (or token-only fallback).
+                  Scan the pairing QR to fill the URL and token.
                 </Text>
                 {scannerError ? <Text style={styles.errorText}>{scannerError}</Text> : null}
               </View>

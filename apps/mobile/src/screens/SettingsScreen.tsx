@@ -212,6 +212,7 @@ export function SettingsScreen({
   const [appearanceModalVisible, setAppearanceModalVisible] = useState(false);
   const [fontModalVisible, setFontModalVisible] = useState(false);
   const [bridgeProfileModalVisible, setBridgeProfileModalVisible] = useState(false);
+  const [showConnectionTroubleshooting, setShowConnectionTroubleshooting] = useState(false);
   const [account, setAccount] = useState<AccountSnapshot | null>(null);
   const [accountLoading, setAccountLoading] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
@@ -330,7 +331,7 @@ export function SettingsScreen({
     ? isGitHubBridgeProfile(activeBridgeProfile)
       ? 'GitHub Codespace'
       : 'Private bridge'
-    : 'Bridge';
+    : 'Connection';
   const shouldOpenPrivateBridgeEditor = Boolean(
     activeBridgeProfile && !isGitHubBridgeProfile(activeBridgeProfile) && onEditBridgeProfile
   );
@@ -380,7 +381,7 @@ export function SettingsScreen({
         : route === 'limits'
           ? ('speedometer-outline' as const)
           : route === 'bridge'
-          ? ('server-outline' as const)
+          ? ('link-outline' as const)
           : route === 'appearance'
             ? ('color-palette-outline' as const)
             : route === 'tips'
@@ -394,7 +395,7 @@ export function SettingsScreen({
   const appearanceSummary = `${appearancePreferenceLabel} theme · ${fontPreferenceLabel}`;
   const accountSummary = 'See sign-in status and plan';
   const usageLimitsSummary = 'View weekly usage and reset times';
-  const bridgeSummary = 'Add GitHub Codespaces or private bridges';
+  const bridgeSummary = 'Add GitHub Codespaces or private connections';
   const tipJarSummary = isTipJarAvailable()
     ? 'Support development with a one-time tip'
     : 'Configure RevenueCat to enable tips';
@@ -1496,8 +1497,8 @@ export function SettingsScreen({
             title="Private bridge"
             description={
               shouldOpenPrivateBridgeEditor
-                ? 'Update the URL or token for the bridge you host yourself.'
-                : 'Add your own machine or server with a bridge URL and token.'
+                ? 'Update the private connection on this device.'
+                : 'Connect to your own machine.'
             }
             onPress={
               shouldOpenPrivateBridgeEditor
@@ -1518,109 +1519,123 @@ export function SettingsScreen({
         Saved connections stay in secure device storage so you can switch later without
         re-entering everything.
       </Text>
-      {onClearSavedBridges ? (
+
+      <Text style={[styles.sectionLabel, styles.sectionLabelGap]}>Troubleshooting</Text>
+      <BlurView intensity={50} tint={theme.blurTint} style={styles.card}>
         <Pressable
-          onPress={() => {
-            void onClearSavedBridges();
-          }}
+          onPress={() => setShowConnectionTroubleshooting((current) => !current)}
           style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
         >
           <View style={styles.linkRowLeft}>
-            <Ionicons name="refresh-circle-outline" size={15} color={colors.error} />
-            <Text style={[styles.linkRowLabel, { color: colors.error }]}>
-              Clear all saved connections
-            </Text>
+            <Ionicons name="construct-outline" size={16} color={colors.textPrimary} />
+            <Text style={styles.linkRowLabel}>Connection tools</Text>
           </View>
+          <Ionicons
+            name={showConnectionTroubleshooting ? 'chevron-up' : 'chevron-down'}
+            size={16}
+            color={colors.textMuted}
+          />
         </Pressable>
-      ) : null}
 
-      <Text style={[styles.sectionLabel, styles.sectionLabelGap]}>Server tools</Text>
-      <BlurView intensity={50} tint={theme.blurTint} style={styles.card}>
-        {bridgeRuntimeLoading ? (
-          <View style={styles.accountLoadingState}>
-            <ActivityIndicator color={colors.textPrimary} />
-            <Text style={styles.settingValue}>Loading server tools…</Text>
-          </View>
-        ) : (
+        {showConnectionTroubleshooting ? (
           <>
-            <Row label="Service version" value={bridgeRuntime?.version ?? 'Unknown'} />
-            <Row label="Status" value={serverToolsStatus} isLast />
+            {onClearSavedBridges ? (
+              <Pressable
+                onPress={() => {
+                  void onClearSavedBridges();
+                }}
+                style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
+              >
+                <View style={styles.linkRowLeft}>
+                  <Ionicons name="refresh-circle-outline" size={15} color={colors.error} />
+                  <Text style={[styles.linkRowLabel, { color: colors.error }]}>
+                    Clear all saved connections
+                  </Text>
+                </View>
+              </Pressable>
+            ) : null}
+
+            {bridgeRuntimeLoading ? (
+              <View style={styles.accountLoadingState}>
+                <ActivityIndicator color={colors.textPrimary} />
+                <Text style={styles.settingValue}>Loading connection tools…</Text>
+              </View>
+            ) : (
+              <>
+                <Row label="Service version" value={bridgeRuntime?.version ?? 'Unknown'} />
+                <Row label="Status" value={serverToolsStatus} />
+              </>
+            )}
+            <Row label="Connection status" value={connectionStatusSummary} />
+            <Row label="Chat engines" value={engineSummary} />
+            <Row
+              label="Install type"
+              value={formatInstallKind(bridgeRuntime?.installKind ?? 'unknown')}
+              isLast
+            />
+
+            <Pressable
+              disabled={!canSafeRestartBridge || bridgeMaintenanceBusy || bridgeMaintenanceActive}
+              onPress={() => setBridgeRestartModalVisible(true)}
+              style={({ pressed }) => [
+                styles.bridgeEditBtn,
+                (!canSafeRestartBridge || bridgeMaintenanceBusy || bridgeMaintenanceActive) &&
+                  styles.settingRowDisabled,
+                pressed &&
+                  canSafeRestartBridge &&
+                  !bridgeMaintenanceBusy &&
+                  !bridgeMaintenanceActive &&
+                  styles.bridgeEditBtnPressed,
+              ]}
+            >
+              <Ionicons name="refresh-outline" size={15} color={colors.textPrimary} />
+              <Text style={styles.bridgeEditBtnText}>
+                {bridgeRestartStarting ? 'Scheduling restart…' : 'Restart service'}
+              </Text>
+            </Pressable>
+            <Pressable
+              disabled={!canSelfUpdateBridge || bridgeMaintenanceBusy || bridgeMaintenanceActive}
+              onPress={() => setBridgeUpdateModalVisible(true)}
+              style={({ pressed }) => [
+                styles.bridgeEditBtn,
+                (!canSelfUpdateBridge || bridgeMaintenanceBusy || bridgeMaintenanceActive) &&
+                  styles.settingRowDisabled,
+                pressed &&
+                  canSelfUpdateBridge &&
+                  !bridgeMaintenanceBusy &&
+                  !bridgeMaintenanceActive &&
+                  styles.bridgeEditBtnPressed,
+              ]}
+            >
+              <Ionicons name="cloud-download-outline" size={15} color={colors.textPrimary} />
+              <Text style={styles.bridgeEditBtnText}>
+                {bridgeUpdateStarting ? 'Starting update…' : 'Update service'}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => {
+                void checkHealth();
+                void loadBridgeCapabilities();
+                void loadBridgeRuntime();
+                void refreshModelOptions();
+                void loadAccount();
+                void loadRateLimits();
+              }}
+              style={({ pressed }) => [styles.refreshBtn, pressed && styles.refreshBtnPressed]}
+            >
+              <Ionicons name="refresh" size={16} color={colors.white} />
+              <Text style={styles.refreshBtnText}>Refresh connection details</Text>
+            </Pressable>
           </>
-        )}
-        <Pressable
-          disabled={!canSafeRestartBridge || bridgeMaintenanceBusy || bridgeMaintenanceActive}
-          onPress={() => setBridgeRestartModalVisible(true)}
-          style={({ pressed }) => [
-            styles.bridgeEditBtn,
-            (!canSafeRestartBridge || bridgeMaintenanceBusy || bridgeMaintenanceActive) &&
-              styles.settingRowDisabled,
-            pressed &&
-              canSafeRestartBridge &&
-              !bridgeMaintenanceBusy &&
-              !bridgeMaintenanceActive &&
-              styles.bridgeEditBtnPressed,
-          ]}
-        >
-          <Ionicons name="refresh-outline" size={15} color={colors.textPrimary} />
-          <Text style={styles.bridgeEditBtnText}>
-            {bridgeRestartStarting ? 'Scheduling restart…' : 'Restart service'}
-          </Text>
-        </Pressable>
-        <Pressable
-          disabled={!canSelfUpdateBridge || bridgeMaintenanceBusy || bridgeMaintenanceActive}
-          onPress={() => setBridgeUpdateModalVisible(true)}
-          style={({ pressed }) => [
-            styles.bridgeEditBtn,
-            (!canSelfUpdateBridge || bridgeMaintenanceBusy || bridgeMaintenanceActive) &&
-              styles.settingRowDisabled,
-            pressed &&
-              canSelfUpdateBridge &&
-              !bridgeMaintenanceBusy &&
-              !bridgeMaintenanceActive &&
-              styles.bridgeEditBtnPressed,
-          ]}
-        >
-          <Ionicons name="cloud-download-outline" size={15} color={colors.textPrimary} />
-          <Text style={styles.bridgeEditBtnText}>
-            {bridgeUpdateStarting ? 'Starting update…' : 'Update service'}
-          </Text>
-        </Pressable>
+        ) : null}
       </BlurView>
       <Text style={styles.subtleHintText}>
-        Use these only if support asks you to restart or update the connection service.
+        Use these only when you are fixing a connection problem.
       </Text>
       {bridgeRestartActionError ? <Text style={styles.errorText}>{bridgeRestartActionError}</Text> : null}
       {bridgeUpdateActionError ? <Text style={styles.errorText}>{bridgeUpdateActionError}</Text> : null}
       {bridgeRuntimeError ? <Text style={styles.errorText}>{bridgeRuntimeError}</Text> : null}
-
-      <Text style={[styles.sectionLabel, styles.sectionLabelGap]}>Advanced</Text>
-      <BlurView intensity={50} tint={theme.blurTint} style={styles.card}>
-        <Row label="Connection status" value={connectionStatusSummary} />
-        <Row label="Chat engines" value={engineSummary} />
-        <Row
-          label="Install type"
-          value={formatInstallKind(bridgeRuntime?.installKind ?? 'unknown')}
-          isLast
-        />
-      </BlurView>
-      <Text style={styles.subtleHintText}>
-        Most people can ignore this unless they are troubleshooting or changing backend setup.
-      </Text>
-
-      <Pressable
-        onPress={() => {
-          void checkHealth();
-          void loadBridgeCapabilities();
-          void loadBridgeRuntime();
-          void refreshModelOptions();
-          void loadAccount();
-          void loadRateLimits();
-        }}
-        style={({ pressed }) => [styles.refreshBtn, pressed && styles.refreshBtnPressed]}
-      >
-        <Ionicons name="refresh" size={16} color={colors.white} />
-        <Text style={styles.refreshBtnText}>Refresh connection details</Text>
-      </Pressable>
     </>
   );
 
