@@ -1377,30 +1377,19 @@ export const DrawerContent = memo(function DrawerContentComponent({
                             isSubAgent && styles.chatTitleSubAgent,
                             isSelected && styles.chatTitleSelected,
                           ]}
-                          numberOfLines={1}
+                          numberOfLines={chatSubtitle ? 1 : 2}
                         >
                           {chat.title || 'Untitled'}
                         </Text>
-                        {isPinnedChat ? (
-                          <Ionicons
-                            name="pin-outline"
-                            size={10}
-                            color={theme.colors.textMuted}
-                            style={styles.chatPinnedIcon}
-                          />
-                        ) : null}
-                      </View>
-                      <View style={styles.chatItemBottomRow}>
-                        <Text
-                          style={[
-                            styles.chatSubtitle,
-                            isSelected && styles.chatSubtitleSelected,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {chatSubtitle || ''}
-                        </Text>
-                        <View style={styles.chatItemBottomMeta}>
+                        <View style={styles.chatItemMeta}>
+                          {isPinnedChat ? (
+                            <Ionicons
+                              name="pin-outline"
+                              size={10}
+                              color={theme.colors.textMuted}
+                              style={styles.chatPinnedIcon}
+                            />
+                          ) : null}
                           {engineBadgeColors ? (
                             <View
                               style={[
@@ -1430,6 +1419,17 @@ export const DrawerContent = memo(function DrawerContentComponent({
                           </Text>
                         </View>
                       </View>
+                      {chatSubtitle ? (
+                        <Text
+                          style={[
+                            styles.chatSubtitle,
+                            isSelected && styles.chatSubtitleSelected,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {chatSubtitle}
+                        </Text>
+                      ) : null}
                     </View>
                   </Pressable>
                 );
@@ -2301,19 +2301,15 @@ const createStyles = (theme: AppTheme) => {
   },
   chatItemTopRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: theme.spacing.xs,
   },
-  chatItemBottomRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-  },
-  chatItemBottomMeta: {
+  chatItemMeta: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.xs,
     flexShrink: 0,
+    marginTop: 2,
   },
   chatIconTile: {
     width: DRAWER_ICON_TILE_SIZE,
