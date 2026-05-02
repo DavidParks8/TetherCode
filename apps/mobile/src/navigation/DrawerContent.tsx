@@ -1370,30 +1370,17 @@ export const DrawerContent = memo(function DrawerContentComponent({
                       />
                     </View>
                     <View style={styles.chatItemContent}>
-                      <View style={styles.chatItemTextBlock}>
+                      <View style={styles.chatItemTopRow}>
                         <Text
                           style={[
                             styles.chatTitle,
                             isSubAgent && styles.chatTitleSubAgent,
                             isSelected && styles.chatTitleSelected,
                           ]}
-                          numberOfLines={chatSubtitle ? 1 : 2}
+                          numberOfLines={1}
                         >
                           {chat.title || 'Untitled'}
                         </Text>
-                        {chatSubtitle ? (
-                          <Text
-                            style={[
-                              styles.chatSubtitle,
-                              isSelected && styles.chatSubtitleSelected,
-                            ]}
-                            numberOfLines={1}
-                          >
-                            {chatSubtitle}
-                          </Text>
-                        ) : null}
-                      </View>
-                      <View style={styles.chatItemMeta}>
                         {isPinnedChat ? (
                           <Ionicons
                             name="pin-outline"
@@ -1402,33 +1389,46 @@ export const DrawerContent = memo(function DrawerContentComponent({
                             style={styles.chatPinnedIcon}
                           />
                         ) : null}
-                        {engineBadgeColors ? (
-                          <View
-                            style={[
-                              styles.engineBadge,
-                              {
-                                backgroundColor: engineBadgeColors.backgroundColor,
-                                borderColor: engineBadgeColors.borderColor,
-                              },
-                            ]}
-                          >
-                            <Text
+                      </View>
+                      <View style={styles.chatItemBottomRow}>
+                        <Text
+                          style={[
+                            styles.chatSubtitle,
+                            isSelected && styles.chatSubtitleSelected,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {chatSubtitle || ''}
+                        </Text>
+                        <View style={styles.chatItemBottomMeta}>
+                          {engineBadgeColors ? (
+                            <View
                               style={[
-                                styles.engineBadgeText,
+                                styles.engineBadge,
                                 {
-                                  color: engineBadgeColors.textColor,
+                                  backgroundColor: engineBadgeColors.backgroundColor,
+                                  borderColor: engineBadgeColors.borderColor,
                                 },
                               ]}
                             >
-                              {getChatEngineLabel(chat.engine)}
-                            </Text>
-                          </View>
-                        ) : null}
-                        <Text
-                          style={[styles.chatAge, isSelected && styles.chatAgeSelected]}
-                        >
-                          {relativeTime(chat.updatedAt)}
-                        </Text>
+                              <Text
+                                style={[
+                                  styles.engineBadgeText,
+                                  {
+                                    color: engineBadgeColors.textColor,
+                                  },
+                                ]}
+                              >
+                                {getChatEngineLabel(chat.engine)}
+                              </Text>
+                            </View>
+                          ) : null}
+                          <Text
+                            style={[styles.chatAge, isSelected && styles.chatAgeSelected]}
+                          >
+                            {relativeTime(chat.updatedAt)}
+                          </Text>
+                        </View>
                       </View>
                     </View>
                   </Pressable>
@@ -2296,9 +2296,24 @@ const createStyles = (theme: AppTheme) => {
   chatItemContent: {
     flex: 1,
     minWidth: 0,
+    justifyContent: 'center',
+    gap: 2,
+  },
+  chatItemTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+  },
+  chatItemBottomRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.sm,
+  },
+  chatItemBottomMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    flexShrink: 0,
   },
   chatIconTile: {
     width: DRAWER_ICON_TILE_SIZE,
@@ -2321,11 +2336,6 @@ const createStyles = (theme: AppTheme) => {
   chatIconTileError: {
     borderColor: theme.colors.statusError,
     backgroundColor: theme.colors.errorBg,
-  },
-  chatItemTextBlock: {
-    flex: 1,
-    minWidth: 0,
-    justifyContent: 'center',
   },
   chatPinnedIcon: {
     flexShrink: 0,
@@ -2351,18 +2361,10 @@ const createStyles = (theme: AppTheme) => {
     color: theme.colors.textMuted,
     fontSize: 10,
     lineHeight: 13,
+    flex: 1,
   },
   chatSubtitleSelected: {
     color: theme.colors.textSecondary,
-  },
-  chatItemMeta: {
-    flexShrink: 0,
-    minWidth: 86,
-    maxWidth: 104,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: theme.spacing.xs,
   },
   engineBadge: {
     borderRadius: 999,
