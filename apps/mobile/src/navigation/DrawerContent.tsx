@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import {
   ActivityIndicator,
   ActionSheetIOS,
@@ -79,6 +79,7 @@ const DRAWER_ROW_HEIGHT = 52;
 const DRAWER_ROW_RADIUS = 14;
 const DRAWER_ACTION_HEIGHT = 36;
 const DRAWER_FOOTER_ACTION_HEIGHT = 36;
+const DRAWER_ICON_TILE_SIZE = 26;
 const CHAT_FILTER_OPTIONS: ReadonlyArray<{
   key: ChatEngine;
   label: string;
@@ -90,6 +91,10 @@ const CHAT_FILTER_OPTIONS: ReadonlyArray<{
   {
     key: 'opencode',
     label: 'OpenCode',
+  },
+  {
+    key: 'cursor',
+    label: 'Cursor',
   },
 ];
 
@@ -104,7 +109,6 @@ export const DrawerContent = memo(function DrawerContentComponent({
   onNavigate,
 }: DrawerContentProps) {
   const theme = useAppTheme();
-  const subAgentColor = theme.colors.warning;
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingOlderChats, setLoadingOlderChats] = useState(false);
@@ -1314,11 +1318,13 @@ export const DrawerContent = memo(function DrawerContentComponent({
                 const isRunning = isDrawerChatRunning(chat, runIndicatorsByThread);
                 const isSubAgent = item.indentLevel > 0 || Boolean(chat.parentThreadId);
                 const isPinnedChat = pinnedChatIdSet.has(chat.id);
+                const chatEngine = resolveChatEngine(chat.engine);
                 const showEngineBadge =
-                  showEngineBadges || resolveChatEngine(chat.engine) !== 'codex';
+                  showEngineBadges || chatEngine !== 'codex';
                 const engineBadgeColors = showEngineBadge
                   ? getChatEngineBadgeColors(chat.engine, theme.mode)
                   : null;
+                const chatSubtitle = getDrawerChatSubtitle(chat);
                 return (
                   <Pressable
                     style={({ pressed }) => [
@@ -1341,26 +1347,53 @@ export const DrawerContent = memo(function DrawerContentComponent({
                         chat.status === 'error' && styles.chatItemAccentError,
                       ]}
                     />
+                    <View
+                      style={[
+                        styles.chatIconTile,
+                        isSelected && styles.chatIconTileSelected,
+                        isRunning && styles.chatIconTileRunning,
+                        chat.status === 'error' && styles.chatIconTileError,
+                      ]}
+                    >
+                      <Ionicons
+                        name={getChatEngineIconName(chatEngine, isSubAgent)}
+                        size={13}
+                        color={
+                          chat.status === 'error'
+                            ? theme.colors.statusError
+                            : isRunning
+                              ? theme.colors.statusRunning
+                              : isSelected
+                                ? theme.colors.textPrimary
+                                : theme.colors.textMuted
+                        }
+                      />
+                    </View>
                     <View style={styles.chatItemContent}>
-                      <View style={styles.chatItemTopRow}>
-                        {isSubAgent ? (
-                          <Ionicons
-                            name="git-branch-outline"
-                            size={12}
-                            color={subAgentColor}
-                            style={styles.chatSubAgentIcon}
-                          />
-                        ) : null}
+                      <View style={styles.chatItemTextBlock}>
                         <Text
                           style={[
                             styles.chatTitle,
                             isSubAgent && styles.chatTitleSubAgent,
                             isSelected && styles.chatTitleSelected,
                           ]}
-                          numberOfLines={2}
+                          numberOfLines={chatSubtitle ? 1 : 2}
                         >
                           {chat.title || 'Untitled'}
                         </Text>
+                        {chatSubtitle ? (
+                          <Text
+                            style={[
+                              styles.chatSubtitle,
+                              isSelected && styles.chatSubtitleSelected,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {chatSubtitle}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <View style={styles.chatItemMeta}>
                         {isPinnedChat ? (
                           <Ionicons
                             name="pin-outline"
@@ -1622,6 +1655,40 @@ function relativeTime(iso: string): string {
   if (days < 7) return `${days}d`;
   if (weeks < 5) return `${weeks}w`;
   return `${Math.floor(days / 30)}mo`;
+}
+
+function getDrawerChatSubtitle(chat: ChatSummary): string | null {
+  const error = chat.lastError?.trim();
+  if (error) {
+    return error;
+  }
+
+  const preview = chat.lastMessagePreview?.trim();
+  const title = chat.title?.trim();
+  if (preview && preview !== title) {
+    return preview;
+  }
+
+  return chat.cwd?.trim() || null;
+}
+
+function getChatEngineIconName(
+  engine: ChatEngine,
+  isSubAgent: boolean
+): ComponentProps<typeof Ionicons>['name'] {
+  if (isSubAgent) {
+    return 'git-branch-outline';
+  }
+
+  if (engine === 'cursor') {
+    return 'sparkles-outline';
+  }
+
+  if (engine === 'opencode') {
+    return 'terminal-outline';
+  }
+
+  return 'chatbubble-outline';
 }
 
 function formatCompactCount(value: number): string {
@@ -2097,8 +2164,8 @@ const createStyles = (theme: AppTheme) => {
     opacity: 0.75,
   },
   workspaceGroupIconTile: {
-    width: 26,
-    height: 26,
+    width: DRAWER_ICON_TILE_SIZE,
+    height: DRAWER_ICON_TILE_SIZE,
     borderRadius: 9,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.borderLight,
@@ -2159,7 +2226,8 @@ const createStyles = (theme: AppTheme) => {
     marginRight: theme.spacing.lg,
     marginTop: -2,
     marginBottom: theme.spacing.lg,
-    borderRadius: 12,
+    minHeight: DRAWER_ACTION_HEIGHT,
+    borderRadius: DRAWER_ROW_RADIUS,
     borderWidth: 1,
     borderColor: theme.colors.borderLight,
     backgroundColor: theme.colors.bgItem,
@@ -2190,7 +2258,7 @@ const createStyles = (theme: AppTheme) => {
     padding: theme.spacing.sm,
     flexDirection: 'row',
     gap: theme.spacing.xs + 2,
-    alignItems: 'stretch',
+    alignItems: 'center',
   },
   chatItemSubAgent: {
     backgroundColor: theme.isDark ? 'rgba(255, 255, 255, 0.025)' : 'rgba(180, 83, 9, 0.04)',
@@ -2208,6 +2276,7 @@ const createStyles = (theme: AppTheme) => {
   },
   chatItemAccent: {
     width: 4,
+    alignSelf: 'stretch',
     borderRadius: 999,
     backgroundColor: theme.colors.bgCanvasAccent,
   },
@@ -2226,15 +2295,37 @@ const createStyles = (theme: AppTheme) => {
   },
   chatItemContent: {
     flex: 1,
-    justifyContent: 'center',
-  },
-  chatItemTopRow: {
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.xs + 2,
+    gap: theme.spacing.sm,
   },
-  chatSubAgentIcon: {
-    marginRight: -2,
+  chatIconTile: {
+    width: DRAWER_ICON_TILE_SIZE,
+    height: DRAWER_ICON_TILE_SIZE,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderLight,
+    backgroundColor: theme.colors.bgElevated,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  chatIconTileSelected: {
+    borderColor: theme.colors.borderHighlight,
+    backgroundColor: theme.colors.bgItem,
+  },
+  chatIconTileRunning: {
+    borderColor: theme.colors.borderHighlight,
+  },
+  chatIconTileError: {
+    borderColor: theme.colors.statusError,
+    backgroundColor: theme.colors.errorBg,
+  },
+  chatItemTextBlock: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
   },
   chatPinnedIcon: {
     flexShrink: 0,
@@ -2255,10 +2346,28 @@ const createStyles = (theme: AppTheme) => {
     color: theme.colors.textPrimary,
     fontWeight: '700',
   },
+  chatSubtitle: {
+    ...theme.typography.caption,
+    color: theme.colors.textMuted,
+    fontSize: 10,
+    lineHeight: 13,
+  },
+  chatSubtitleSelected: {
+    color: theme.colors.textSecondary,
+  },
+  chatItemMeta: {
+    flexShrink: 0,
+    minWidth: 86,
+    maxWidth: 104,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: theme.spacing.xs,
+  },
   engineBadge: {
     borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 7,
+    paddingHorizontal: 6,
     paddingVertical: 3,
     flexShrink: 0,
   },
@@ -2301,13 +2410,11 @@ const createStyles = (theme: AppTheme) => {
     backgroundColor: theme.colors.bgInput,
   },
   footerSettingsText: {
-    ...theme.typography.caption,
+    ...theme.typography.body,
     color: theme.colors.textPrimary,
-    fontSize: 10,
-    lineHeight: 12,
+    fontSize: 13,
+    lineHeight: 18,
     fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
   },
 });
 };

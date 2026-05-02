@@ -1930,12 +1930,12 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
   },
   fileAdded: {
     ...theme.typography.mono,
-    color: '#88DA95',
+    color: theme.colors.statusSuccess,
     fontSize: 12,
   },
   fileRemoved: {
     ...theme.typography.mono,
-    color: '#F29B9B',
+    color: theme.colors.statusError,
     fontSize: 12,
   },
   diffSummaryRow: {
@@ -2057,8 +2057,8 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
   },
   hunkHeader: {
     ...theme.typography.mono,
-    color: '#AFC6F7',
-    backgroundColor: 'rgba(175, 198, 247, 0.14)',
+    color: theme.colors.accent,
+    backgroundColor: theme.isDark ? 'rgba(175, 198, 247, 0.14)' : 'rgba(175, 198, 247, 0.3)',
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.xs,
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -2099,13 +2099,13 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     lineHeight: 17,
   },
   diffLinePrefixAdd: {
-    color: '#88DA95',
+    color: theme.colors.statusSuccess,
   },
   diffLinePrefixRemove: {
-    color: '#F29B9B',
+    color: theme.colors.statusError,
   },
   diffLinePrefixMeta: {
-    color: '#B8C4D8',
+    color: theme.colors.textMuted,
   },
   diffLineText: {
     ...theme.typography.mono,

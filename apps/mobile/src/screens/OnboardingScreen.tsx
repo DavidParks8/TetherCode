@@ -1378,8 +1378,8 @@ const createStyles = (theme: AppTheme) => {
     gap: theme.spacing.sm,
   },
   choiceCardPrimary: {
-    backgroundColor: '#0F172A',
-    borderColor: '#0F172A',
+    backgroundColor: theme.colors.bgCanvasAccent,
+    borderColor: theme.colors.bgCanvasAccent,
     boxShadow: theme.isDark
       ? '0px 14px 28px rgba(0, 0, 0, 0.34)'
       : '0px 14px 28px rgba(15, 23, 42, 0.18)',
@@ -1414,7 +1414,7 @@ const createStyles = (theme: AppTheme) => {
   },
   choiceTitlePrimary: {
     ...theme.typography.headline,
-    color: '#FFFFFF',
+    color: theme.colors.accentText,
     fontSize: 17,
   },
   choiceTitleSecondary: {
