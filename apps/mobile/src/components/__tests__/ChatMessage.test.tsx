@@ -193,7 +193,7 @@ describe('ChatMessage Cursor rendering', () => {
     expect(text).not.toContain('Called tool');
   });
 
-  it('uses Cursor activity grouping instead of Codex tool summary cards', () => {
+  it('groups Cursor tools into the collapsible tool card like Codex', () => {
     const messages: ApiChatMessage[] = [
       {
         id: 'tool_read',
@@ -225,7 +225,7 @@ describe('ChatMessage Cursor rendering', () => {
     expect(text).toContain('Reading package.json');
     expect(text).toContain('Searching MainScreen');
     expect(text).not.toContain('running');
-    expect(text).not.toContain('2 tool calls');
+    expect(text).toContain('2 tool steps');
   });
 
   it('renders Cursor thinking without Codex tap helper text', () => {

@@ -624,16 +624,6 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
     return null;
   }
 
-  if (engine === 'cursor') {
-    return (
-      <CursorActivityMessage
-        entries={entries}
-        bridgeUrl={bridgeUrl}
-        bridgeToken={bridgeToken}
-      />
-    );
-  }
-
   if (entriesAreComputerUseTimeline(entries)) {
     return (
       <ComputerUseTimeline
@@ -663,6 +653,12 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
             const hasDetails = textDetails.length > 0;
             const entryExpanded = expandedEntryIds[entry.id] === true;
             const rowVisual = toTimelineVisual(entry.title);
+            const cursorVisual =
+              engine === 'cursor'
+                ? toCursorActivityVisual(entry.title, textDetails, 'tool')
+                : null;
+            const rowTitle = cursorVisual?.title ?? entry.title;
+            const rowError = Boolean(cursorVisual?.isError || rowVisual.isError);
 
             if (!expanded) {
               const previewImage = detailPreview.images[0] ?? null;
@@ -672,13 +668,11 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
                     <Ionicons
                       name={rowVisual.icon}
                       size={13}
-                      color={
-                        rowVisual.isError ? theme.colors.statusError : theme.colors.textMuted
-                      }
+                      color={rowError ? theme.colors.statusError : theme.colors.textMuted}
                       style={styles.toolGroupPreviewIcon}
                     />
                     <Text style={styles.toolGroupRowText} numberOfLines={1}>
-                      {entry.title}
+                      {rowTitle}
                     </Text>
                   </View>
                   {previewImage ? (
@@ -710,7 +704,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
                   style={({ pressed }) => [
                     styles.toolGroupEntryCard,
                     hasDetails && styles.toolGroupEntryCardInteractive,
-                    rowVisual.isError && styles.timelineCardError,
+                    rowError && styles.timelineCardError,
                     pressed && hasDetails && styles.toolGroupEntryCardPressed,
                   ]}
                 >
@@ -719,9 +713,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
                       name={rowVisual.icon}
                       size={14}
                       color={
-                        rowVisual.isError
-                          ? theme.colors.statusError
-                          : theme.colors.statusRunning
+                        rowError ? theme.colors.statusError : theme.colors.statusRunning
                       }
                     />
                     <Text
@@ -731,7 +723,7 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
                       ]}
                       numberOfLines={entryExpanded ? 3 : 1}
                     >
-                      {entry.title}
+                      {rowTitle}
                     </Text>
                     {hasDetails ? (
                       <Ionicons
