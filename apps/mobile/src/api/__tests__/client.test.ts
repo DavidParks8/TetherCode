@@ -534,6 +534,48 @@ describe('HostBridgeApiClient', () => {
     expect(pageSnapshots).toEqual([]);
   });
 
+  it('does not let generated Cursor names override summary titles in chat lists', async () => {
+    const ws = createWsMock();
+    ws.request
+      .mockResolvedValueOnce({
+        thread: {
+          id: 'cursor:a7f3b2c1',
+          engine: 'cursor',
+          name: 'Analyzed the Clawdex mobile bridge.',
+          title: 'Analyzed the Clawdex mobile bridge.',
+          preview: 'Analyzed the Clawdex mobile bridge.',
+          createdAt: 1700000000,
+          updatedAt: 1700000003,
+          status: { type: 'idle' },
+          turns: [],
+        },
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: 'cursor:a7f3b2c1',
+            engine: 'cursor',
+            name: 'Chat cursor:a7f3b2c1',
+            title: 'Chat cursor:a7f3b2c1',
+            preview: 'Analyzed the Clawdex mobile bridge.',
+            createdAt: 1700000000,
+            updatedAt: 1700000003,
+            status: { type: 'idle' },
+            turns: [],
+          },
+        ],
+        nextCursor: null,
+      });
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+
+    const headerSummary = await client.getChatSummary('cursor:a7f3b2c1');
+    const drawerChats = await client.listChats({ forceRefresh: true });
+
+    expect(headerSummary.title).toBe('Analyzed the Clawdex mobile bridge.');
+    expect(drawerChats[0]?.title).toBe('Analyzed the Clawdex mobile bridge.');
+  });
+
   it('rememberChats() keeps an already-loaded full chat list monotonic', () => {
     const ws = createWsMock();
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });

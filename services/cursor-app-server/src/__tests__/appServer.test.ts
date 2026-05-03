@@ -445,6 +445,48 @@ describe('CursorAppServer', () => {
     expect(agentItems?.[0]?.text).toBe('Exploring the code.');
   });
 
+  it('ignores generated Cursor chat names when deriving a useful title', async () => {
+    const driver = new MockDriver();
+    const now = Date.UTC(2026, 4, 1, 10, 0, 0);
+    driver.agentInfos.set('cursor:a7f3b2c1', {
+      agentId: 'cursor:a7f3b2c1',
+      name: 'Chat cursor:a7f3b2c1',
+      summary: 'Inspecting the sidebar implementation.',
+      lastModified: now,
+      createdAt: now,
+      status: 'finished',
+      runtime: 'local',
+      cwd: '/workspace/app',
+    });
+    driver.messages.set('cursor:a7f3b2c1', [
+      {
+        type: 'user',
+        uuid: 'message-user',
+        agent_id: 'cursor:a7f3b2c1',
+        message: 'Improve the sidebar spacing',
+      },
+      {
+        type: 'assistant',
+        uuid: 'message-assistant',
+        agent_id: 'cursor:a7f3b2c1',
+        message: 'Tightened the drawer spacing.',
+      },
+    ]);
+    const server = new CursorAppServer({
+      runtime: 'local',
+      cwd: '/workspace/app',
+      apiKey: 'cursor-key',
+      defaultModel: 'cursor-small',
+      driver,
+    });
+
+    const read = await server.request('thread/read', { threadId: 'cursor:a7f3b2c1' });
+    const readThread = read.thread as { title: string | null; preview: string };
+
+    expect(readThread.title).toBe('Inspecting the sidebar implementation.');
+    expect(readThread.preview).toBe('Inspecting the sidebar implementation.');
+  });
+
   it('projects nested historical Cursor conversation turns', async () => {
     const driver = new MockDriver();
     const now = Date.UTC(2026, 4, 1, 10, 0, 0);

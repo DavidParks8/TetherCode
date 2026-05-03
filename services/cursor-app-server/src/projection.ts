@@ -22,9 +22,10 @@ export function projectAgentInfoToThread(
         ? 'complete'
         : 'idle';
 
+  const summaryPreview = toPreview(agent.summary || '');
   const lastPreview = lastTurnPreview(turns);
-  const preview = toPreview(agent.summary || lastPreview || '');
-  const titlePreview = firstUserPreview(turns) ?? preview;
+  const preview = summaryPreview || toPreview(lastPreview || '');
+  const titlePreview = summaryPreview || firstUserPreview(turns) || preview;
   const name = displayableCursorAgentName(agent.name, agent.agentId) ?? titlePreview ?? null;
 
   return {
@@ -340,9 +341,14 @@ export function isGenericCursorAgentName(
   }
 
   const agentPrefix = agentId.slice(0, 8).toLowerCase();
+  const normalizedAgentId = agentId.trim().toLowerCase();
+  const normalizedAgentIdWithoutCursorPrefix = normalizedAgentId.replace(/^cursor:/u, '');
   return (
     value === `cursor ${agentPrefix}` ||
-    value === `cursor ${agentId.toLowerCase()}` ||
+    value === `cursor ${normalizedAgentId}` ||
+    value === `chat ${normalizedAgentId}` ||
+    value === `chat cursor:${normalizedAgentIdWithoutCursorPrefix}` ||
+    /^chat\s+cursor:[a-z0-9_-]+$/u.test(value) ||
     /^cursor\s+agent[-\s][0-9a-f]{2,}/u.test(value)
   );
 }

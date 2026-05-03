@@ -149,6 +149,25 @@ describe('chatMapping', () => {
     expect(systemMessages[0].content).toContain('clawdex-mobile');
   });
 
+  it('uses Cursor summary preview instead of generated Cursor chat names', () => {
+    const chat = mapChat(
+      toRawThread({
+        id: 'cursor:a7f3b2c1',
+        engine: 'cursor',
+        name: 'Chat cursor:a7f3b2c1',
+        title: 'Chat cursor:a7f3b2c1',
+        preview: 'Analyzed the Clawdex mobile bridge.',
+        createdAt: 1700000000,
+        updatedAt: 1700000002,
+        status: { type: 'idle' },
+        turns: [],
+      })
+    );
+
+    expect(chat.title).toBe('Analyzed the Clawdex mobile bridge.');
+    expect(chat.lastMessagePreview).toBe('Analyzed the Clawdex mobile bridge.');
+  });
+
   it('maps reasoning items into visible transcript system messages', () => {
     const chat = mapChat(
       toRawThread({

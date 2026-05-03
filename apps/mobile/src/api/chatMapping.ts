@@ -297,7 +297,13 @@ export function mapChatSummary(raw: RawThread): ChatSummary | null {
   const sourceMetadata = readThreadSourceMetadata(raw.source);
 
   const lastError = extractLastError(turns);
-  const displayTitle = raw.name ?? raw.preview;
+  const previewTitle = toPreview(raw.preview || '');
+  const firstUserTitle = firstUserMessagePreview(turns);
+  const rawTitle = raw.name?.trim() || null;
+  const displayTitle =
+    rawTitle && !isGeneratedCursorThreadTitle(rawTitle, raw.id, raw.engine)
+      ? rawTitle
+      : previewTitle || firstUserTitle || rawTitle;
 
   return {
     id: raw.id,
@@ -317,6 +323,88 @@ export function mapChatSummary(raw: RawThread): ChatSummary | null {
     subAgentDepth: sourceMetadata.subAgentDepth,
     lastError: lastError ?? undefined,
   };
+}
+
+export function isGeneratedCursorThreadTitle(
+  title: string | null | undefined,
+  threadId: string | null | undefined,
+  engine?: unknown
+): boolean {
+  const value = title?.trim().toLowerCase();
+  if (!value) {
+    return true;
+  }
+
+  const normalizedThreadId = threadId?.trim().toLowerCase() ?? '';
+  const isCursorThread =
+    readChatEngine(engine) === 'cursor' ||
+    normalizedThreadId.startsWith('cursor:') ||
+    value.startsWith('chat cursor:') ||
+    value.startsWith('cursor agent');
+  if (!isCursorThread) {
+    return false;
+  }
+
+  if (
+    value === 'new agent' ||
+    value === 'cursor agent' ||
+    value === 'untitled' ||
+    value === 'untitled agent'
+  ) {
+    return true;
+  }
+
+  const unqualifiedThreadId = normalizedThreadId.replace(/^cursor:/u, '');
+  const threadPrefix = unqualifiedThreadId.slice(0, 8);
+  return (
+    (Boolean(threadPrefix) && value === `cursor ${threadPrefix}`) ||
+    value === `cursor ${normalizedThreadId}` ||
+    value === `cursor ${unqualifiedThreadId}` ||
+    value === `chat ${normalizedThreadId}` ||
+    value === `chat cursor:${unqualifiedThreadId}` ||
+    /^chat\s+cursor:[a-z0-9_-]+$/u.test(value) ||
+    /^cursor\s+agent[-\s][0-9a-f]{2,}/u.test(value)
+  );
+}
+
+function firstUserMessagePreview(turns: RawTurn[]): string | null {
+  for (const turn of turns) {
+    for (const item of turn.items ?? []) {
+      if (item.type !== 'userMessage') {
+        continue;
+      }
+      const text = readThreadItemText(item);
+      const preview = toPreview(text);
+      if (preview) {
+        return preview;
+      }
+    }
+  }
+
+  return null;
+}
+
+function readThreadItemText(item: RawThreadItem): string {
+  const record = toRecord(item);
+  const text = readString(record?.text);
+  if (text) {
+    return text;
+  }
+
+  const content = Array.isArray(record?.content) ? record.content : [];
+  if (content.length === 0) {
+    return '';
+  }
+
+  return content
+    .map((entry) => {
+      const contentEntry = toRecord(entry);
+      return readString(contentEntry?.type) === 'text'
+        ? readString(contentEntry?.text) ?? ''
+        : '';
+    })
+    .filter((entry) => entry.length > 0)
+    .join('');
 }
 
 function readChatEngine(value: unknown): ChatEngine {

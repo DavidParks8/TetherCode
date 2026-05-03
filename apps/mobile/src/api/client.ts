@@ -1,4 +1,5 @@
 import {
+  isGeneratedCursorThreadTitle,
   mapChat,
   mapChatSummary,
   readString,
@@ -759,24 +760,14 @@ export class HostBridgeApiClient {
     return listRaw
       .map((item) => {
         const rawThread = toRawThread(item);
-        if (rawThread.id && rawThread.name?.trim()) {
-          this.renamedTitles.set(rawThread.id, rawThread.name.trim());
-        }
+        this.rememberRawThreadTitle(rawThread);
 
         const mapped = mapChatSummary(rawThread);
         if (!mapped) {
           return null;
         }
 
-        const cachedTitle = this.renamedTitles.get(mapped.id);
-        if (cachedTitle) {
-          return {
-            ...mapped,
-            title: cachedTitle,
-          };
-        }
-
-        return mapped;
+        return this.applyRememberedTitle(mapped);
       })
       .filter((item): item is ChatSummary => item !== null)
       .filter((item) => includeSubAgents || !isSubAgentSource(item.sourceKind))
@@ -959,20 +950,14 @@ export class HostBridgeApiClient {
       includeTurns: false,
     });
     const rawThread = toRawThread(response.thread);
-    if (rawThread.id && rawThread.name?.trim()) {
-      this.renamedTitles.set(rawThread.id, rawThread.name.trim());
-    }
+    this.rememberRawThreadTitle(rawThread);
 
     const mapped = mapChatSummary(rawThread);
     if (!mapped) {
       throw new Error('chat id missing in app-server response');
     }
 
-    const cachedTitle = this.renamedTitles.get(mapped.id);
-    const summary = cachedTitle ? {
-      ...mapped,
-      title: cachedTitle,
-    } : mapped;
+    const summary = this.applyRememberedTitle(mapped);
     const cachedChat = this.peekChat(summary.id);
     this.rememberChat(
       cachedChat
@@ -1688,18 +1673,54 @@ export class HostBridgeApiClient {
 
   private mapChatWithCachedTitle(rawThreadValue: unknown): Chat {
     const rawThread = toRawThread(rawThreadValue);
-    if (rawThread.id && rawThread.name?.trim()) {
-      this.renamedTitles.set(rawThread.id, rawThread.name.trim());
-    }
+    this.rememberRawThreadTitle(rawThread);
 
     const mapped = mapChat(rawThread);
-    const cachedTitle = this.renamedTitles.get(mapped.id);
-    const chat = cachedTitle ? {
-      ...mapped,
-      title: cachedTitle,
-    } : mapped;
+    const chat = this.applyRememberedTitle(mapped);
     this.rememberChat(chat);
     return chat;
+  }
+
+  private rememberRawThreadTitle(rawThread: RawThread): void {
+    const threadId = rawThread.id?.trim();
+    const rawTitle = rawThread.name?.trim();
+    if (!threadId || !rawTitle) {
+      return;
+    }
+
+    if (isGeneratedCursorThreadTitle(rawTitle, threadId, rawThread.engine)) {
+      const cachedTitle = this.renamedTitles.get(threadId);
+      if (isGeneratedCursorThreadTitle(cachedTitle, threadId, rawThread.engine)) {
+        this.renamedTitles.delete(threadId);
+      }
+      return;
+    }
+
+    this.renamedTitles.set(threadId, rawTitle);
+  }
+
+  private applyRememberedTitle<T extends ChatSummary>(mapped: T): T {
+    const cachedTitle = this.renamedTitles.get(mapped.id);
+    if (!cachedTitle) {
+      return mapped;
+    }
+
+    if (isGeneratedCursorThreadTitle(cachedTitle, mapped.id, mapped.engine)) {
+      this.renamedTitles.delete(mapped.id);
+      return mapped;
+    }
+
+    if (
+      mapped.engine === 'cursor' &&
+      !isGeneratedCursorThreadTitle(mapped.title, mapped.id, mapped.engine)
+    ) {
+      return mapped;
+    }
+
+    return {
+      ...mapped,
+      title: cachedTitle,
+    };
   }
 
   private async trySetThreadName(
