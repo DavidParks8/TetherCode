@@ -5,6 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   Platform,
   Pressable,
   ScrollView,
@@ -41,6 +42,7 @@ import type {
   ReasoningEffort,
 } from '../api/types';
 import type { HostBridgeWsClient } from '../api/ws';
+import clawdexMark from '../../assets/brand/mark.png';
 import { isGitHubBridgeProfile, type BridgeProfile } from '../bridgeProfiles';
 import { BridgeProfileManagerSheet } from '../components/bridge-profile-manager-sheet';
 import { SelectionSheet, type SelectionSheetOption } from '../components/SelectionSheet';
@@ -1615,6 +1617,7 @@ export function SettingsScreen({
         {onConnectGitHubCodespaces ? (
           <MenuEntry
             icon="logo-github"
+            logo="github"
             title="GitHub Codespaces"
             description="Sign in with GitHub and add or manage a Codespace connection."
             onPress={onConnectGitHubCodespaces}
@@ -1623,6 +1626,7 @@ export function SettingsScreen({
         {(onAddBridgeProfile || shouldOpenPrivateBridgeEditor) ? (
           <MenuEntry
             icon="hardware-chip-outline"
+            logo="clawdex"
             title="Private bridge"
             description={
               shouldOpenPrivateBridgeEditor
@@ -2241,12 +2245,14 @@ function Row({
 
 function MenuEntry({
   icon,
+  logo,
   title,
   description,
   onPress,
   isLast,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
+  logo?: 'github' | 'clawdex';
   title: string;
   description: string;
   onPress: () => void;
@@ -2267,7 +2273,17 @@ function MenuEntry({
     >
       <View style={styles.menuRowLeft}>
         <View style={styles.menuIconWrap}>
-          <Ionicons name={icon} size={16} color={colors.textPrimary} />
+          {logo === 'github' ? (
+            <Ionicons name="logo-github" size={17} color={colors.textPrimary} />
+          ) : logo === 'clawdex' ? (
+            <Image
+              source={clawdexMark}
+              resizeMode="contain"
+              style={[styles.menuLogoImage, { tintColor: colors.textPrimary }]}
+            />
+          ) : (
+            <Ionicons name={icon} size={16} color={colors.textPrimary} />
+          )}
         </View>
         <View style={styles.menuTextWrap}>
           <Text style={styles.menuTitle}>{title}</Text>
@@ -2401,8 +2417,6 @@ const createStyles = (theme: AppTheme) => {
       paddingHorizontal: theme.spacing.lg,
       paddingVertical: theme.spacing.md,
       backgroundColor: theme.colors.bgMain,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: theme.colors.borderHighlight,
     },
     menuBtn: { padding: theme.spacing.xs },
     headerTitle: { ...theme.typography.headline, color: theme.colors.textPrimary },
@@ -2619,6 +2633,10 @@ const createStyles = (theme: AppTheme) => {
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: neutralControlBackground,
+    },
+    menuLogoImage: {
+      width: 18,
+      height: 18,
     },
     menuTextWrap: {
       flex: 1,

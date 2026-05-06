@@ -10,6 +10,12 @@ export interface ComposerUsageLimitBadgeModel {
   tone: ComposerUsageLimitTone;
 }
 
+export interface ComposerUsageLimitAlertModel {
+  title: string;
+  body: string;
+  status: string | null;
+}
+
 export function buildComposerUsageLimitBadges(
   snapshot: AccountRateLimitSnapshot | null
 ): ComposerUsageLimitBadgeModel[] {
@@ -29,6 +35,42 @@ export function buildComposerUsageLimitBadges(
   }
 
   return badges;
+}
+
+export function buildComposerUsageLimitAlert(
+  snapshot: AccountRateLimitSnapshot | null
+): ComposerUsageLimitAlertModel | null {
+  const exhaustedBadges = buildComposerUsageLimitBadges(snapshot).filter(
+    (badge) => badge.remainingPercent <= 0
+  );
+  if (exhaustedBadges.length === 0) {
+    return null;
+  }
+
+  const specificLabels = uniqueLabels(
+    exhaustedBadges
+      .map((badge) => badge.label.trim())
+      .filter((label) => label.length > 0 && label !== 'limit')
+  );
+  const body =
+    specificLabels.length === 0
+      ? 'Your Codex usage limit is reached. Try again after it resets.'
+      : `Your ${formatUsageLimitLabelList(specificLabels)} Codex ${
+          specificLabels.length === 1 ? 'limit is' : 'limits are'
+        } reached. Try again after the reset.`;
+  const resetTimes = uniqueResetTimes(exhaustedBadges);
+  const status =
+    resetTimes.length === 1
+      ? `Resets ${formatComposerUsageLimitResetAt(resetTimes[0])}.`
+      : resetTimes.length > 1
+        ? `Next reset ${formatComposerUsageLimitResetAt(resetTimes[0])}.`
+        : null;
+
+  return {
+    title: 'Rate limit reached',
+    body,
+    status,
+  };
 }
 
 export function formatComposerUsageLimitLabel(windowDurationMins: number | null): string {
@@ -134,4 +176,46 @@ function clampPercent(value: number): number {
   }
 
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function uniqueLabels(labels: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const label of labels) {
+    const key = label.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(label);
+  }
+  return result;
+}
+
+function uniqueResetTimes(badges: ComposerUsageLimitBadgeModel[]): number[] {
+  const seen = new Set<number>();
+  const result: number[] = [];
+  for (const badge of badges) {
+    if (badge.resetsAt === null || !Number.isFinite(badge.resetsAt)) {
+      continue;
+    }
+    if (seen.has(badge.resetsAt)) {
+      continue;
+    }
+    seen.add(badge.resetsAt);
+    result.push(badge.resetsAt);
+  }
+  return result.sort((a, b) => a - b);
+}
+
+function formatUsageLimitLabelList(labels: string[]): string {
+  if (labels.length <= 1) {
+    return labels[0] ?? 'usage';
+  }
+
+  if (labels.length === 2) {
+    return `${labels[0]} and ${labels[1]}`;
+  }
+
+  return `${labels.slice(0, -1).join(', ')}, and ${labels[labels.length - 1]}`;
 }

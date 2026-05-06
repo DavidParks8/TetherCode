@@ -181,6 +181,9 @@ const MOBILE_DEVELOPER_INSTRUCTIONS =
 const MOBILE_DEFAULT_SANDBOX = 'danger-full-access';
 const THREAD_LIST_STREAM_BATCH_METHOD = 'bridge/thread/list/stream/batch';
 const THREAD_LIST_STREAM_ERROR_METHOD = 'bridge/thread/list/stream/error';
+const DEFAULT_CHAT_SUMMARY_HYDRATION_CONCURRENCY = 4;
+const MAX_CHAT_SUMMARY_HYDRATION_CONCURRENCY = 8;
+const TRANSIENT_THREAD_READ_RETRY_DELAYS_MS = [50, 100, 200, 400, 800];
 
 interface ChatSnapshot {
   rawThread: RawThread;
@@ -284,6 +287,10 @@ interface AccountRateLimitsReadOptions {
 interface ChatReadOptions {
   cacheTtlMs?: number;
   forceRefresh?: boolean;
+}
+
+interface ChatSummariesReadOptions {
+  concurrency?: number;
 }
 
 interface CacheEntry<T> {
@@ -945,10 +952,7 @@ export class HostBridgeApiClient {
   }
 
   async getChatSummary(id: string): Promise<ChatSummary> {
-    const response = await this.ws.request<AppServerReadResponse>('thread/read', {
-      threadId: id,
-      includeTurns: false,
-    });
+    const response = await this.readAppServerThread(id, false);
     const rawThread = toRawThread(response.thread);
     this.rememberRawThreadTitle(rawThread);
 
@@ -970,6 +974,42 @@ export class HostBridgeApiClient {
     );
 
     return summary;
+  }
+
+  async getChatSummaries(
+    ids: readonly string[],
+    options: ChatSummariesReadOptions = {}
+  ): Promise<ChatSummary[]> {
+    const uniqueIds = normalizeUniqueThreadIds(ids);
+    if (uniqueIds.length === 0) {
+      return [];
+    }
+
+    const concurrency = normalizeConcurrency(
+      options.concurrency,
+      DEFAULT_CHAT_SUMMARY_HYDRATION_CONCURRENCY,
+      MAX_CHAT_SUMMARY_HYDRATION_CONCURRENCY
+    );
+    const results: Array<ChatSummary | null> = Array(uniqueIds.length).fill(null);
+    let nextIndex = 0;
+
+    const workers = Array.from(
+      { length: Math.min(concurrency, uniqueIds.length) },
+      async () => {
+        while (nextIndex < uniqueIds.length) {
+          const index = nextIndex;
+          nextIndex += 1;
+          try {
+            results[index] = await this.getChatSummary(uniqueIds[index]);
+          } catch {
+            results[index] = null;
+          }
+        }
+      }
+    );
+
+    await Promise.all(workers);
+    return results.filter((summary): summary is ChatSummary => summary !== null);
   }
 
   async renameChat(id: string, name: string): Promise<Chat> {
@@ -1763,10 +1803,7 @@ export class HostBridgeApiClient {
 
   private async readChatSnapshot(id: string): Promise<ChatSnapshot> {
     try {
-      const response = await this.ws.request<AppServerReadResponse>('thread/read', {
-        threadId: id,
-        includeTurns: true,
-      });
+      const response = await this.readAppServerThread(id, true);
       const rawThread = toRawThread(response.thread);
       return {
         rawThread,
@@ -1777,16 +1814,40 @@ export class HostBridgeApiClient {
         throw error;
       }
 
-      const response = await this.ws.request<AppServerReadResponse>('thread/read', {
-        threadId: id,
-        includeTurns: false,
-      });
+      const response = await this.readAppServerThread(id, false);
       const rawThread = toRawThread(response.thread);
       return {
         rawThread,
         chat: this.mapChatWithCachedTitle(rawThread),
       };
     }
+  }
+
+  private async readAppServerThread(
+    threadId: string,
+    includeTurns: boolean
+  ): Promise<AppServerReadResponse> {
+    let lastTransientError: unknown = null;
+    for (let attempt = 0; attempt <= TRANSIENT_THREAD_READ_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        return await this.ws.request<AppServerReadResponse>('thread/read', {
+          threadId,
+          includeTurns,
+        });
+      } catch (error) {
+        if (!isTransientThreadReadError(error)) {
+          throw error;
+        }
+        lastTransientError = error;
+        const retryDelayMs = TRANSIENT_THREAD_READ_RETRY_DELAYS_MS[attempt];
+        if (retryDelayMs === undefined) {
+          throw error;
+        }
+        await sleep(retryDelayMs);
+      }
+    }
+
+    throw lastTransientError;
   }
 
   private async getChatWithUserMessage(
@@ -1876,6 +1937,29 @@ function normalizeCursor(cursor: unknown): string | null {
   }
   const trimmed = cursor.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeUniqueThreadIds(ids: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const id of ids) {
+    if (typeof id !== 'string') {
+      continue;
+    }
+    const trimmed = id.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+function normalizeConcurrency(value: unknown, fallback: number, max: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(1, Math.min(max, Math.round(value)))
+    : fallback;
 }
 
 function normalizeChatListStreamLimits(limits: unknown, fallbackLimit: number): number[] {
@@ -2642,5 +2726,15 @@ function isMaterializationGapError(error: unknown): boolean {
   return (
     message.includes('includeTurns') &&
     (message.includes('material') || message.includes('materialis'))
+  );
+}
+
+function isTransientThreadReadError(error: unknown): boolean {
+  const message = String((error as Error).message ?? error).toLowerCase();
+  return (
+    message.includes('failed to read thread') &&
+    message.includes('thread-store internal error') &&
+    message.includes('rollout') &&
+    message.includes('is empty')
   );
 }

@@ -5,6 +5,7 @@ const GITHUB_API_BASE_URL = 'https://api.github.com';
 const GITHUB_API_ACCEPT = 'application/vnd.github+json';
 const GITHUB_API_VERSION = '2022-11-28';
 const GITHUB_ACCESS_TOKEN_REFRESH_BUFFER_MS = 90_000;
+const GITHUB_CODESPACE_DEFAULT_IDLE_TIMEOUT_MINUTES = 45;
 
 export interface GitHubDeviceCodeGrant {
   deviceCode: string;
@@ -44,6 +45,8 @@ export interface GitHubAppInstallationRepository {
   fullName: string;
   private: boolean;
   permissions: string[];
+  canReadContents: boolean;
+  canWriteContents: boolean;
 }
 
 export interface GitHubAppAccessSnapshot {
@@ -74,6 +77,16 @@ export interface GitHubCodespace {
   repositoryFullName: string | null;
   repositoryName: string | null;
   ownerLogin: string | null;
+}
+
+export class GitHubApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'GitHubApiError';
+    this.status = status;
+  }
 }
 
 export interface GitHubCodespacesRepositoryReference {
@@ -293,9 +306,22 @@ export async function fetchGitHubUser(accessToken: string): Promise<GitHubUser> 
 export async function fetchGitHubAppInstallations(
   accessToken: string
 ): Promise<GitHubAppInstallation[]> {
-  const payload = await githubApiRequest('/user/installations?per_page=100', accessToken);
-  const record = asRecord(payload);
-  const installations = record && Array.isArray(record.installations) ? record.installations : [];
+  const installations: unknown[] = [];
+  const perPage = 100;
+  for (let page = 1; ; page += 1) {
+    const payload = await githubApiRequest(
+      `/user/installations?per_page=${String(perPage)}&page=${String(page)}`,
+      accessToken
+    );
+    const record = asRecord(payload);
+    const pageInstallations =
+      record && Array.isArray(record.installations) ? record.installations : [];
+    installations.push(...pageInstallations);
+    if (pageInstallations.length < perPage) {
+      break;
+    }
+  }
+
   return installations
     .map((entry) => normalizeGitHubAppInstallation(entry))
     .filter((entry): entry is GitHubAppInstallation => entry !== null);
@@ -305,12 +331,22 @@ export async function fetchGitHubAppInstallationRepositories(
   accessToken: string,
   installationId: number
 ): Promise<GitHubAppInstallationRepository[]> {
-  const payload = await githubApiRequest(
-    `/user/installations/${String(installationId)}/repositories?per_page=100`,
-    accessToken
-  );
-  const record = asRecord(payload);
-  const repositories = record && Array.isArray(record.repositories) ? record.repositories : [];
+  const repositories: unknown[] = [];
+  const perPage = 100;
+  for (let page = 1; ; page += 1) {
+    const payload = await githubApiRequest(
+      `/user/installations/${String(installationId)}/repositories?per_page=${String(perPage)}&page=${String(page)}`,
+      accessToken
+    );
+    const record = asRecord(payload);
+    const pageRepositories =
+      record && Array.isArray(record.repositories) ? record.repositories : [];
+    repositories.push(...pageRepositories);
+    if (pageRepositories.length < perPage) {
+      break;
+    }
+  }
+
   return repositories
     .map((entry) => normalizeGitHubAppInstallationRepository(entry, installationId))
     .filter((entry): entry is GitHubAppInstallationRepository => entry !== null);
@@ -334,6 +370,9 @@ export async function fetchGitHubAppAccessSnapshot(
 
   const uniqueRepositories = new Map<string, GitHubAppInstallationRepository>();
   repositories.forEach((repository) => {
+    if (!repository.canReadContents || !repository.canWriteContents) {
+      return;
+    }
     uniqueRepositories.set(repository.fullName.toLowerCase(), repository);
   });
 
@@ -551,9 +590,14 @@ export async function createGitHubCodespaceInRepository(
     ref?: string | null;
     devcontainerPath?: string | null;
     location?: string | null;
+    idleTimeoutMinutes?: number | null;
   } = {}
 ): Promise<GitHubCodespace> {
-  const body: Record<string, string> = {};
+  const body: Record<string, number | string> = {
+    idle_timeout_minutes:
+      normalizeGitHubCodespaceIdleTimeoutMinutes(options.idleTimeoutMinutes) ??
+      GITHUB_CODESPACE_DEFAULT_IDLE_TIMEOUT_MINUTES,
+  };
   const normalizedRef = options.ref?.trim();
   if (normalizedRef) {
     body.ref = normalizedRef;
@@ -589,6 +633,7 @@ export async function createGitHubCodespaceForAuthenticatedUser(
     ref?: string | null;
     devcontainerPath?: string | null;
     location?: string | null;
+    idleTimeoutMinutes?: number | null;
   } = {}
 ): Promise<GitHubCodespace> {
   if (!Number.isFinite(repositoryId) || repositoryId <= 0) {
@@ -597,6 +642,9 @@ export async function createGitHubCodespaceForAuthenticatedUser(
 
   const body: Record<string, number | string> = {
     repository_id: repositoryId,
+    idle_timeout_minutes:
+      normalizeGitHubCodespaceIdleTimeoutMinutes(options.idleTimeoutMinutes) ??
+      GITHUB_CODESPACE_DEFAULT_IDLE_TIMEOUT_MINUTES,
   };
   const normalizedRef = options.ref?.trim();
   if (normalizedRef) {
@@ -753,7 +801,10 @@ export function hasGitHubAppRepositoryAccess(
 
   return (
     snapshot?.repositories.some(
-      (repository) => repository.fullName.trim().toLowerCase() === normalizedFullName
+      (repository) =>
+        repository.fullName.trim().toLowerCase() === normalizedFullName &&
+        repository.canReadContents &&
+        repository.canWriteContents
     ) ?? false
   );
 }
@@ -869,7 +920,10 @@ async function githubApiRequest(
   });
   const payload = await readJsonResponse(response);
   if (!response.ok) {
-    throw new Error(readGitHubErrorMessage(payload) ?? `GitHub request failed (${response.status})`);
+    throw new GitHubApiError(
+      readGitHubErrorMessage(payload) ?? `GitHub request failed (${response.status})`,
+      response.status
+    );
   }
 
   return payload;
@@ -907,6 +961,14 @@ function normalizeGitHubCodespace(value: unknown): GitHubCodespace | null {
     repositoryName: readOptionalString(repository, 'name'),
     ownerLogin: readOptionalString(owner, 'login'),
   };
+}
+
+function normalizeGitHubCodespaceIdleTimeoutMinutes(value: number | null | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return Math.max(5, Math.min(240, Math.round(value)));
 }
 
 function normalizeGitHubRepository(value: unknown): GitHubRepository | null {
@@ -970,13 +1032,7 @@ function normalizeGitHubAppInstallationRepository(
     return null;
   }
 
-  const permissionsRecord = asRecord(record.permissions);
-  const permissions = permissionsRecord
-    ? Object.entries(permissionsRecord)
-        .filter((entry): entry is [string, boolean] => typeof entry[0] === 'string' && entry[1] === true)
-        .map(([permission]) => permission)
-        .sort()
-    : [];
+  const repositoryPermissions = normalizeGitHubAppRepositoryPermissions(record.permissions);
 
   return {
     id,
@@ -985,7 +1041,74 @@ function normalizeGitHubAppInstallationRepository(
     name,
     fullName,
     private: Boolean(record.private),
-    permissions,
+    permissions: repositoryPermissions.permissions,
+    canReadContents: repositoryPermissions.canReadContents,
+    canWriteContents: repositoryPermissions.canWriteContents,
+  };
+}
+
+function normalizeGitHubAppRepositoryPermissions(value: unknown): {
+  permissions: string[];
+  canReadContents: boolean;
+  canWriteContents: boolean;
+} {
+  const record = asRecord(value);
+  if (!record) {
+    return {
+      permissions: [],
+      canReadContents: false,
+      canWriteContents: false,
+    };
+  }
+
+  const permissions = new Set<string>();
+  let canReadContents = false;
+  let canWriteContents = false;
+
+  Object.entries(record).forEach(([rawPermission, rawLevel]) => {
+    const permission = rawPermission.trim().toLowerCase();
+    if (!permission) {
+      return;
+    }
+
+    const level =
+      typeof rawLevel === 'string'
+        ? rawLevel.trim().toLowerCase()
+        : rawLevel === true
+          ? 'true'
+          : rawLevel === false
+            ? 'false'
+            : '';
+    if (!level || level === 'false') {
+      return;
+    }
+
+    permissions.add(permission);
+
+    if (permission === 'contents') {
+      if (level === 'read' || level === 'write' || level === 'admin') {
+        canReadContents = true;
+      }
+      if (level === 'write' || level === 'admin') {
+        canWriteContents = true;
+      }
+      return;
+    }
+
+    if (level === 'true') {
+      if (permission === 'pull' || permission === 'push' || permission === 'maintain' || permission === 'admin') {
+        canReadContents = true;
+      }
+      if (permission === 'push' || permission === 'maintain' || permission === 'admin') {
+        canWriteContents = true;
+      }
+    }
+  });
+
+  return {
+    permissions: [...permissions].sort(),
+    canReadContents,
+    canWriteContents,
   };
 }
 

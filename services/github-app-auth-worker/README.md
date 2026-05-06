@@ -10,6 +10,8 @@ Routes:
   - exchanges the GitHub App authorization `code` for a user access token
 - `POST /api/github/refresh`
   - refreshes a GitHub App user access token
+- `POST /api/github/installations/token`
+  - optional: mints a short-lived installation token for repositories the signed-in user can access
 
 Required secrets:
 
@@ -18,6 +20,10 @@ Required secrets:
 
 Optional vars:
 
+- `GITHUB_APP_ID`
+  - required only for `/api/github/installations/token`
+- `GITHUB_APP_PRIVATE_KEY`
+  - required only for `/api/github/installations/token`
 - `GITHUB_APP_WEB_CALLBACK_URL`
   - exact GitHub callback URL if it differs from `https://<worker-domain>/github/callback`
 - `GITHUB_APP_NATIVE_CALLBACK_URL`
@@ -35,4 +41,3 @@ npx wrangler deploy
 GitHub App settings should use:
 
 - `Callback URL`: `https://<your-domain>/github/callback`
-- `Request user authorization (OAuth) during installation`: enabled

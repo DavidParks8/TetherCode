@@ -3,6 +3,8 @@ import { BlurView } from 'expo-blur';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   Linking,
   Platform,
   Pressable,
@@ -17,6 +19,7 @@ import { HostBridgeApiClient } from '../api/client';
 import { HostBridgeWsClient } from '../api/ws';
 import { toBridgeHealthUrl } from '../bridgeUrl';
 import type { BridgeProfile, BridgeProfileDraft } from '../bridgeProfiles';
+import { ChoiceAction } from '../components/ChoiceAction';
 import {
   getFreshChatGptAuthTokens,
   isNativeChatGptLoginAvailable,
@@ -36,14 +39,14 @@ import {
   fetchGitHubCodespaceDefaults,
   fetchGitHubCodespaces,
   fetchGitHubRepository,
-  requestGitHubInstallationAccessToken,
   fetchGitHubUser,
   getReusableGitHubBridgeProfile,
+  requestGitHubInstallationAccessToken,
   sortGitHubCodespaces,
   startGitHubCodespace,
   stopGitHubCodespace,
   shouldRefreshGitHubUserAccessToken,
-  type GitHubAppAccessSnapshot,
+  type GitHubAppInstallationRepository,
   type GitHubCodespace,
   type GitHubUserAccessToken,
   type GitHubUser,
@@ -59,6 +62,7 @@ interface GitHubCodespacesScreenProps {
   } | null;
   onBack: () => void;
   onConnect: (draft: BridgeProfileDraft) => void | Promise<void>;
+  onOpenPrivateConnection?: () => void;
   onSyncGitHubAuthToken?: (
     userLogin: string | null | undefined,
     token: GitHubUserAccessToken
@@ -78,7 +82,22 @@ type ConnectionPhase =
   | 'codexLoginRequired';
 
 type ConnectionStepState = 'pending' | 'active' | 'done';
-type OnboardingStage = 'github' | 'codespace' | 'connect';
+type OnboardingStage = 'github' | 'codespace' | 'success';
+type CodespaceSelectionMode = 'recommended' | 'list';
+type GitHubSetupStep =
+  | 'chooseConnection'
+  | 'githubLogin'
+  | 'createCodespace'
+  | 'repositoryChoice'
+  | 'codexLogin';
+type RepositoryChoice = 'clone' | 'fresh';
+type RecoveryKind =
+  | 'githubToken'
+  | 'repoAccess'
+  | 'privatePorts'
+  | 'bridgeStart'
+  | 'codexLogin'
+  | 'generic';
 
 interface PendingCodexLogin {
   runId: number;
@@ -156,6 +175,78 @@ function formatConnectionPhaseTitle(
   }
 }
 
+function classifyRecovery(error: string | null | undefined): RecoveryKind | null {
+  const normalized = error?.trim().toLowerCase() ?? '';
+  if (!normalized) {
+    return null;
+  }
+  if (
+    normalized.includes('session expired') ||
+    normalized.includes('bad credentials') ||
+    normalized.includes('token') ||
+    normalized.includes('401')
+  ) {
+    return 'githubToken';
+  }
+  if (
+    normalized.includes('repository access') ||
+    normalized.includes('not expose') ||
+    normalized.includes('resource not accessible') ||
+    normalized.includes('installation')
+  ) {
+    return 'repoAccess';
+  }
+  if (normalized.includes('ports') || normalized.includes('public')) {
+    return 'privatePorts';
+  }
+  if (
+    normalized.includes('bridge did not become ready') ||
+    normalized.includes('health check') ||
+    normalized.includes('network request failed')
+  ) {
+    return 'bridgeStart';
+  }
+  if (normalized.includes('codex') || normalized.includes('chatgpt')) {
+    return 'codexLogin';
+  }
+  return 'generic';
+}
+
+function formatRecovery(kind: RecoveryKind): { title: string; body: string } {
+  switch (kind) {
+    case 'githubToken':
+      return {
+        title: 'GitHub session expired',
+        body: 'Sign in again so Clawdex can refresh Codespaces access.',
+      };
+    case 'repoAccess':
+      return {
+        title: 'Repository unavailable',
+        body: 'Use a Codespace repository this GitHub account can access, then try again.',
+      };
+    case 'privatePorts':
+      return {
+        title: 'Ports may be private',
+        body: 'Open the Codespace and make ports 8787 and 8788 public, then check again.',
+      };
+    case 'bridgeStart':
+      return {
+        title: 'Bridge is still starting',
+        body: 'Codespaces can take a few minutes after resume. Open GitHub if it keeps waiting.',
+      };
+    case 'codexLogin':
+      return {
+        title: 'Codex login required',
+        body: 'Finish ChatGPT login from this phone or open the Codespace as a fallback.',
+      };
+    case 'generic':
+      return {
+        title: 'Could not finish setup',
+        body: 'Check the current step, then try again.',
+      };
+  }
+}
+
 function ConnectionStep({
   label,
   state,
@@ -199,23 +290,151 @@ function ConnectionStep({
   );
 }
 
+function SetupMotionScene({
+  icon,
+  busy,
+  styles,
+  theme,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  busy: boolean;
+  styles: ReturnType<typeof createStyles>;
+  theme: AppTheme;
+}) {
+  const pulse = useRef(new Animated.Value(0)).current;
+  const float = useRef(new Animated.Value(0)).current;
+  const scan = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const pulseLoop = Animated.loop(
+      Animated.timing(pulse, {
+        toValue: 1,
+        duration: busy ? 1050 : 1900,
+        easing: Easing.inOut(Easing.quad),
+        useNativeDriver: true,
+      })
+    );
+    const floatLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(float, {
+          toValue: 1,
+          duration: 1500,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(float, {
+          toValue: 0,
+          duration: 1500,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    const scanLoop = Animated.loop(
+      Animated.timing(scan, {
+        toValue: 1,
+        duration: busy ? 950 : 1800,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      })
+    );
+
+    pulseLoop.start();
+    floatLoop.start();
+    scanLoop.start();
+    return () => {
+      pulseLoop.stop();
+      floatLoop.stop();
+      scanLoop.stop();
+    };
+  }, [busy, float, pulse, scan]);
+
+  const pulseStyle = {
+    opacity: pulse.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0.28, 0.05],
+    }),
+    transform: [
+      {
+        scale: pulse.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.92, 1.18],
+        }),
+      },
+    ],
+  };
+  const floatStyle = {
+    transform: [
+      {
+        translateY: float.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0, -7],
+        }),
+      },
+    ],
+  };
+  const scanStyle = {
+    opacity: scan.interpolate({
+      inputRange: [0, 0.18, 0.82, 1],
+      outputRange: [0, 0.95, 0.95, 0],
+    }),
+    transform: [
+      {
+        translateY: scan.interpolate({
+          inputRange: [0, 1],
+          outputRange: [-22, 38],
+        }),
+      },
+    ],
+  };
+
+  return (
+    <View style={styles.setupMotionScene}>
+      <Animated.View style={[styles.setupMotionPulseFrame, pulseStyle]} />
+      <View style={styles.setupMotionBackplate} />
+      <View style={styles.setupMotionBridgeLine}>
+        <Animated.View style={[styles.setupMotionBridgeSignal, scanStyle]} />
+      </View>
+      <Animated.View style={[styles.setupMotionIconWrap, floatStyle]}>
+        <Ionicons name={icon} size={30} color={theme.colors.textPrimary} />
+      </Animated.View>
+      <View style={styles.setupMotionCard}>
+        <View style={styles.setupMotionCardHeader} />
+        <View style={styles.setupMotionCardLineWide} />
+        <View style={styles.setupMotionCardLineShort} />
+      </View>
+    </View>
+  );
+}
+
 export function GitHubCodespacesScreen({
   bridgeProfiles,
   activeBridgeProfileId = null,
   initialSession = null,
   onBack,
   onConnect,
+  onOpenPrivateConnection,
   onSyncGitHubAuthToken,
 }: GitHubCodespacesScreenProps) {
   const theme = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const [setupStep, setSetupStep] = useState<GitHubSetupStep>(
+    initialSession ? 'createCodespace' : 'chooseConnection'
+  );
+  const [createdCodespace, setCreatedCodespace] = useState<GitHubCodespace | null>(null);
+  const [repositoryChoice, setRepositoryChoice] = useState<RepositoryChoice | null>(null);
+  const [availableCloneRepositories, setAvailableCloneRepositories] = useState<
+    GitHubAppInstallationRepository[]
+  >([]);
+  const [cloneRepositoriesLoading, setCloneRepositoriesLoading] = useState(false);
+  const [cloneRepositoriesError, setCloneRepositoriesError] = useState<string | null>(null);
+  const [selectedCloneRepository, setSelectedCloneRepository] =
+    useState<GitHubAppInstallationRepository | null>(null);
+  const [cloningRepositoryFullName, setCloningRepositoryFullName] = useState<string | null>(null);
   const [session, setSession] = useState<GitHubSession | null>(null);
   const [restoringSession, setRestoringSession] = useState(true);
   const [authorizing, setAuthorizing] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [appAccess, setAppAccess] = useState<GitHubAppAccessSnapshot | null>(null);
-  const [, setAppAccessLoading] = useState(false);
-  const [appAccessError, setAppAccessError] = useState<string | null>(null);
   const [codespaces, setCodespaces] = useState<GitHubCodespace[]>([]);
   const [codespacesLoading, setCodespacesLoading] = useState(false);
   const [codespacesError, setCodespacesError] = useState<string | null>(null);
@@ -227,21 +446,30 @@ export function GitHubCodespacesScreen({
   const [restartingBridgeCodespaceName, setRestartingBridgeCodespaceName] = useState<string | null>(null);
   const [creatingCodespace, setCreatingCodespace] = useState(false);
   const [showAllCodespaces, setShowAllCodespaces] = useState(false);
+  const [codespaceSelectionMode, setCodespaceSelectionMode] =
+    useState<CodespaceSelectionMode>('recommended');
   const [expandedCodespaceName, setExpandedCodespaceName] = useState<string | null>(null);
   const [creationTargetLabel, setCreationTargetLabel] = useState<string | null>(null);
+  const [creationMessage, setCreationMessage] = useState<string | null>(null);
   const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [connectionPhase, setConnectionPhase] = useState<ConnectionPhase | null>(null);
   const [pendingCodexLogin, setPendingCodexLogin] = useState<PendingCodexLogin | null>(null);
+  const [connectedProfileDraft, setConnectedProfileDraft] = useState<BridgeProfileDraft | null>(null);
   const [codexLoginChecking, setCodexLoginChecking] = useState(false);
   const [codexLoginSubmitting, setCodexLoginSubmitting] = useState(false);
   const authFlowRef = useRef(0);
   const connectFlowRef = useRef(0);
-  const githubConfigured = Boolean(env.githubClientId);
+  const githubConfigured = Boolean(env.githubClientId && env.githubAppAuthBaseUrl);
   const preferredRepositoryName = env.githubCodespacesPreferredRepositoryName;
   const configuredSourceOwner = env.githubCodespacesSourceRepositoryOwner;
   const configuredRepositoryRef = env.githubCodespacesRepositoryRef;
   const nativeChatGptLoginAvailable = isNativeChatGptLoginAvailable();
+  const reusableBridgeProfile = useMemo(
+    () => getReusableGitHubBridgeProfile(bridgeProfiles, activeBridgeProfileId),
+    [activeBridgeProfileId, bridgeProfiles]
+  );
+  const savedCodespaceName = reusableBridgeProfile?.githubCodespaceName ?? null;
 
   const loadCodespaces = useCallback(
     async (accessToken: string) => {
@@ -259,21 +487,8 @@ export function GitHubCodespacesScreen({
     [preferredRepositoryName]
   );
 
-  const loadGitHubAppAccess = useCallback(async (accessToken: string) => {
-    setAppAccessLoading(true);
-    setAppAccessError(null);
-    try {
-      setAppAccess(await fetchGitHubAppAccessSnapshot(accessToken));
-    } catch (error) {
-      setAppAccessError((error as Error).message);
-    } finally {
-      setAppAccessLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
-    const reusableProfile = getReusableGitHubBridgeProfile(bridgeProfiles, activeBridgeProfileId);
 
     if (!githubConfigured) {
       setRestoringSession(false);
@@ -292,8 +507,8 @@ export function GitHubCodespacesScreen({
           };
         } else {
           let restoredToken =
-            reusableProfile
-              ? bridgeProfileToGitHubToken(reusableProfile)
+            reusableBridgeProfile
+              ? bridgeProfileToGitHubToken(reusableBridgeProfile)
               : await loadStoredGitHubAppAuthTokens();
           if (!restoredToken) {
             return;
@@ -307,7 +522,7 @@ export function GitHubCodespacesScreen({
               env.githubAppAuthBaseUrl,
               restoredToken.refreshToken
             );
-            await onSyncGitHubAuthToken?.(reusableProfile?.githubUserLogin, restoredToken);
+            await onSyncGitHubAuthToken?.(reusableBridgeProfile?.githubUserLogin, restoredToken);
           }
 
           const user = await fetchGitHubUser(restoredToken.accessToken);
@@ -324,10 +539,7 @@ export function GitHubCodespacesScreen({
           return;
         }
         setSession(nextSession);
-        await Promise.all([
-          loadCodespaces(nextSession.accessToken),
-          loadGitHubAppAccess(nextSession.accessToken),
-        ]);
+        await loadCodespaces(nextSession.accessToken);
       } catch (error) {
         if (!cancelled) {
           setAuthError(
@@ -348,22 +560,12 @@ export function GitHubCodespacesScreen({
       connectFlowRef.current += 1;
     };
   }, [
-    activeBridgeProfileId,
-    bridgeProfiles,
     githubConfigured,
     initialSession,
     loadCodespaces,
-    loadGitHubAppAccess,
     onSyncGitHubAuthToken,
+    reusableBridgeProfile,
   ]);
-
-  const approvedRepositories = useMemo(
-    () =>
-      [...(appAccess?.repositories ?? [])].sort((left, right) =>
-        left.fullName.localeCompare(right.fullName)
-      ),
-    [appAccess]
-  );
   const templateRepository = useMemo(() => {
     const owner = configuredSourceOwner?.trim();
     const repo = preferredRepositoryName?.trim();
@@ -380,13 +582,24 @@ export function GitHubCodespacesScreen({
   }, [configuredSourceOwner, preferredRepositoryName]);
   const createEnabled = Boolean(templateRepository);
 
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    if (setupStep === 'githubLogin') {
+      setSetupStep('createCodespace');
+    }
+  }, [session, setupStep]);
+
+  useEffect(() => {
+    if (pendingCodexLogin || connectedProfileDraft) {
+      setSetupStep('codexLogin');
+    }
+  }, [connectedProfileDraft, pendingCodexLogin]);
+
   const beginGitHubSignIn = useCallback(async () => {
     if (!env.githubClientId) {
       setAuthError('GitHub login is not configured in this build.');
-      return;
-    }
-    if (!env.githubAppSlug) {
-      setAuthError('GitHub App slug is not configured in this build.');
       return;
     }
     if (!env.githubAppAuthBaseUrl) {
@@ -400,6 +613,7 @@ export function GitHubCodespacesScreen({
     setAuthError(null);
     setConnectionError(null);
     setSession(null);
+    setConnectedProfileDraft(null);
 
     try {
       const token = await loginWithGitHubApp({
@@ -416,11 +630,9 @@ export function GitHubCodespacesScreen({
       }
 
       await onSyncGitHubAuthToken?.(nextSession.user.login, token);
+      setCodespaceSelectionMode('recommended');
       setSession(nextSession);
-      await Promise.all([
-        loadCodespaces(nextSession.accessToken),
-        loadGitHubAppAccess(nextSession.accessToken),
-      ]);
+      await loadCodespaces(nextSession.accessToken);
     } catch (error) {
       if (authFlowRef.current === runId) {
         setAuthError((error as Error).message);
@@ -430,24 +642,17 @@ export function GitHubCodespacesScreen({
         setAuthorizing(false);
       }
     }
-  }, [
-    loadCodespaces,
-    loadGitHubAppAccess,
-    onSyncGitHubAuthToken,
-  ]);
+  }, [loadCodespaces, onSyncGitHubAuthToken]);
 
   const refreshGitHubState = useCallback(async () => {
     if (!session) {
       return;
     }
 
-    await Promise.all([
-      loadCodespaces(session.accessToken),
-      loadGitHubAppAccess(session.accessToken),
-    ]);
-  }, [loadCodespaces, loadGitHubAppAccess, session]);
+    await loadCodespaces(session.accessToken);
+  }, [loadCodespaces, session]);
 
-  const refreshGitHubSessionForBridgeInstall = useCallback(
+  const refreshGitHubSessionForBridge = useCallback(
     async (activeSession: GitHubSession): Promise<GitHubSession> => {
       if (!env.githubAppAuthBaseUrl || !activeSession.refreshToken) {
         return activeSession;
@@ -469,43 +674,6 @@ export function GitHubCodespacesScreen({
     [onSyncGitHubAuthToken]
   );
 
-  const buildGitHubInstallationAuthGrants = useCallback(
-    async (activeSession: GitHubSession) => {
-      if (!env.githubAppAuthBaseUrl) {
-        throw new Error('GitHub auth backend URL is not configured.');
-      }
-
-      const repositoriesByInstallation = new Map<number, string[]>();
-      approvedRepositories.forEach((repository) => {
-        const current = repositoriesByInstallation.get(repository.installationId) ?? [];
-        current.push(repository.fullName);
-        repositoriesByInstallation.set(repository.installationId, current);
-      });
-
-      if (repositoriesByInstallation.size === 0) {
-        return [];
-      }
-
-      const grants = await Promise.all(
-        [...repositoriesByInstallation.entries()].map(async ([installationId, repositories]) => {
-          const token = await requestGitHubInstallationAccessToken({
-            authBaseUrl: env.githubAppAuthBaseUrl!,
-            userAccessToken: activeSession.accessToken,
-            installationId,
-            repositories,
-          });
-          return {
-            accessToken: token.accessToken,
-            repositories: token.repositoryNames,
-          };
-        })
-      );
-
-      return grants.filter((grant) => grant.repositories.length > 0 && grant.accessToken.trim());
-    },
-    [approvedRepositories]
-  );
-
   const cancelCodespaceConnection = useCallback(() => {
     connectFlowRef.current += 1;
     setCreatingCodespace(false);
@@ -513,20 +681,34 @@ export function GitHubCodespacesScreen({
     setPendingStopCodespaceName(null);
     setStoppingCodespaceName(null);
     setCreationTargetLabel(null);
+    setCreationMessage(null);
     setConnectionMessage(null);
     setConnectionError(null);
     setConnectionPhase(null);
     setPendingCodexLogin(null);
+    setConnectedProfileDraft(null);
     setCodexLoginChecking(false);
     setCodexLoginSubmitting(false);
+    setCloningRepositoryFullName(null);
   }, []);
 
   const finalizeConnectedBridgeProfile = useCallback(
     async (draft: BridgeProfileDraft) => {
-      await onConnect(draft);
+      setPendingCodexLogin(null);
+      setConnectionMessage(null);
+      setConnectionError(null);
+      setConnectionPhase(null);
+      setConnectedProfileDraft(draft);
     },
-    [onConnect]
+    []
   );
+
+  const completeConnectedFlow = useCallback(async () => {
+    if (!connectedProfileDraft) {
+      return;
+    }
+    await onConnect(connectedProfileDraft);
+  }, [connectedProfileDraft, onConnect]);
 
   const completeCodexLoginIfReady = useCallback(
     async (pending: PendingCodexLogin) => {
@@ -631,9 +813,10 @@ export function GitHubCodespacesScreen({
     async (
       runId: number,
       codespace: GitHubCodespace,
-      activeSession: GitHubSession
+      activeSession: GitHubSession,
+      cloneRepository: GitHubAppInstallationRepository | null = null
     ): Promise<'connected' | 'codexLogin'> => {
-      const bridgeSession = await refreshGitHubSessionForBridgeInstall(activeSession);
+      const bridgeSession = await refreshGitHubSessionForBridge(activeSession);
       if (connectFlowRef.current !== runId) {
         return 'connected';
       }
@@ -655,23 +838,6 @@ export function GitHubCodespacesScreen({
         return 'connected';
       }
 
-      const gitAuthGrants = await buildGitHubInstallationAuthGrants(bridgeSession);
-      if (connectFlowRef.current !== runId) {
-        return 'connected';
-      }
-
-      if (gitAuthGrants.length > 0) {
-        setConnectionMessage('Codex is up. Enabling GitHub clone and push access...');
-        await withBridgeApiClient(bridgeUrl, bridgeSession.accessToken, (api) =>
-          api.installGitHubAuth({
-            grants: gitAuthGrants,
-          })
-        );
-      }
-      if (connectFlowRef.current !== runId) {
-        return 'connected';
-      }
-
       const profileDraft: BridgeProfileDraft = {
         name: buildCodespaceProfileName(codespace),
         bridgeUrl,
@@ -687,6 +853,63 @@ export function GitHubCodespacesScreen({
         ),
         activate: true,
       };
+
+      if (cloneRepository) {
+        if (!env.githubAppAuthBaseUrl) {
+          throw new Error('GitHub auth backend URL is not configured in this build.');
+        }
+
+        setConnectionMessage(`Preparing GitHub access for ${cloneRepository.fullName}...`);
+        const installationToken = await requestGitHubInstallationAccessToken({
+          authBaseUrl: env.githubAppAuthBaseUrl,
+          userAccessToken: bridgeSession.accessToken,
+          installationId: cloneRepository.installationId,
+          repositories: [cloneRepository.fullName],
+        });
+        if (connectFlowRef.current !== runId) {
+          return 'connected';
+        }
+
+        const authorizedRepositories =
+          installationToken.repositoryNames.length > 0
+            ? installationToken.repositoryNames
+            : [cloneRepository.fullName];
+        setConnectionMessage(`Cloning ${cloneRepository.fullName}...`);
+        setCloningRepositoryFullName(cloneRepository.fullName);
+        await withBridgeApiClient(
+          bridgeUrl,
+          bridgeSession.accessToken,
+          async (api) => {
+            await api.installGitHubAuth({
+              grants: [
+                {
+                  accessToken: installationToken.accessToken,
+                  repositories: authorizedRepositories,
+                },
+              ],
+            });
+            const cloneResult = await api.gitClone({
+              url: `https://github.com/${cloneRepository.fullName}.git`,
+              parentPath: null,
+              directoryName: cloneRepository.name,
+            });
+            if (!cloneResult.cloned || (cloneResult.code !== null && cloneResult.code !== 0)) {
+              const detail = (cloneResult.stderr || cloneResult.stdout).trim();
+              throw new Error(
+                detail.length > 0
+                  ? detail
+                  : `Git clone failed for ${cloneRepository.fullName}.`
+              );
+            }
+          },
+          { requestTimeoutMs: 5 * 60 * 1000 }
+        );
+        if (connectFlowRef.current !== runId) {
+          return 'connected';
+        }
+        setCloningRepositoryFullName(null);
+        setConnectionMessage(`Cloned ${cloneRepository.fullName}. Checking Codex login...`);
+      }
 
       setConnectionMessage('Codex is up. Checking whether login is still required...');
       const account = await withBridgeApiClient(bridgeUrl, bridgeSession.accessToken, (api) =>
@@ -719,15 +942,17 @@ export function GitHubCodespacesScreen({
       return 'codexLogin';
     },
     [
-      buildGitHubInstallationAuthGrants,
       finalizeConnectedBridgeProfile,
       nativeChatGptLoginAvailable,
-      refreshGitHubSessionForBridgeInstall,
+      refreshGitHubSessionForBridge,
     ]
   );
 
   const handleConnectCodespace = useCallback(
-    async (codespace: GitHubCodespace) => {
+    async (
+      codespace: GitHubCodespace,
+      options: { cloneRepository?: GitHubAppInstallationRepository | null } = {}
+    ) => {
       if (!session) {
         setConnectionError('Sign in with GitHub first.');
         return;
@@ -744,6 +969,7 @@ export function GitHubCodespacesScreen({
       setPendingCodexLogin(null);
       setCodexLoginChecking(false);
       setCodexLoginSubmitting(false);
+      setCloningRepositoryFullName(options.cloneRepository?.fullName ?? null);
       setConnectionPhase(
         codespace.state.trim().toLowerCase() === 'available' ? 'codespaceReady' : 'startingCodespace'
       );
@@ -760,7 +986,12 @@ export function GitHubCodespacesScreen({
         }
 
         keepConnectionStatus =
-          (await finalizeCodespaceConnection(runId, currentCodespace, session)) === 'codexLogin';
+          (await finalizeCodespaceConnection(
+            runId,
+            currentCodespace,
+            session,
+            options.cloneRepository ?? null
+          )) === 'codexLogin';
       } catch (error) {
         if (connectFlowRef.current === runId) {
           setConnectionError((error as Error).message);
@@ -772,6 +1003,7 @@ export function GitHubCodespacesScreen({
             setConnectionMessage(null);
             setConnectionPhase(null);
           }
+          setCloningRepositoryFullName(null);
         }
       }
     },
@@ -784,7 +1016,7 @@ export function GitHubCodespacesScreen({
       return;
     }
     if (!templateRepository) {
-      setConnectionError('The Claudex template repository is not configured in this build.');
+      setConnectionError('The Clawdex template repository is not configured in this build.');
       return;
     }
 
@@ -793,16 +1025,18 @@ export function GitHubCodespacesScreen({
     connectFlowRef.current = runId;
     setCreatingCodespace(true);
     setPendingStopCodespaceName(null);
+    setPendingDeleteCodespaceName(null);
     setConnectingCodespaceName(null);
     setCreationTargetLabel(templateRepository.fullName);
     setConnectionError(null);
+    setConnectionMessage(null);
+    setConnectionPhase(null);
+    setCreationMessage('Preparing the Clawdex template…');
     setPendingCodexLogin(null);
     setCodexLoginChecking(false);
     setCodexLoginSubmitting(false);
-    setConnectionPhase('creatingCodespace');
 
     try {
-      setConnectionMessage('Preparing the Claudex template…');
       const defaults = await fetchGitHubCodespaceDefaults(
         session.accessToken,
         templateRepository,
@@ -817,7 +1051,7 @@ export function GitHubCodespacesScreen({
         return;
       }
 
-      setConnectionMessage('Creating your new Codespace…');
+      setCreationMessage('Creating your new Codespace…');
       const codespace = await createGitHubCodespaceForAuthenticatedUser(
         session.accessToken,
         repository.id,
@@ -832,6 +1066,7 @@ export function GitHubCodespacesScreen({
       }
 
       setCreatingCodespace(false);
+      setCreationMessage(null);
       setConnectingCodespaceName(codespace.name);
       setConnectionPhase('codespaceReady');
       keepConnectionStatus =
@@ -842,13 +1077,14 @@ export function GitHubCodespacesScreen({
         const message = (error as Error).message;
         setConnectionError(
           message.toLowerCase().includes('resource not accessible by integration')
-            ? 'This GitHub App still cannot create Codespaces from the Claudex template. Install the app on the template owner once, then try again.'
+            ? 'GitHub cannot create a Codespace from the configured Clawdex template. Make sure the template repository is public or accessible to this account, then try again.'
             : message
         );
       }
     } finally {
       if (connectFlowRef.current === runId) {
         setCreatingCodespace(false);
+        setCreationMessage(null);
         setConnectingCodespaceName(null);
         setCreationTargetLabel(null);
         if (!keepConnectionStatus) {
@@ -864,6 +1100,161 @@ export function GitHubCodespacesScreen({
     session,
     templateRepository,
   ]);
+
+  const handleCreateCodespaceForSetup = useCallback(async () => {
+    if (!session) {
+      setConnectionError('Sign in with GitHub first.');
+      setSetupStep('githubLogin');
+      return;
+    }
+    if (!templateRepository) {
+      setConnectionError('The Clawdex template repository is not configured in this build.');
+      return;
+    }
+
+    const runId = connectFlowRef.current + 1;
+    connectFlowRef.current = runId;
+    setCreatingCodespace(true);
+    setPendingStopCodespaceName(null);
+    setPendingDeleteCodespaceName(null);
+    setConnectingCodespaceName(null);
+    setCreatedCodespace(null);
+    setRepositoryChoice(null);
+    setAvailableCloneRepositories([]);
+    setCloneRepositoriesError(null);
+    setSelectedCloneRepository(null);
+    setCloningRepositoryFullName(null);
+    setCreationTargetLabel(templateRepository.fullName);
+    setConnectionError(null);
+    setConnectionMessage(null);
+    setConnectionPhase('creatingCodespace');
+    setCreationMessage('Preparing Codespace...');
+    setPendingCodexLogin(null);
+    setCodexLoginChecking(false);
+    setCodexLoginSubmitting(false);
+
+    try {
+      const defaults = await fetchGitHubCodespaceDefaults(
+        session.accessToken,
+        templateRepository,
+        configuredRepositoryRef
+      );
+      if (connectFlowRef.current !== runId) {
+        return;
+      }
+
+      const repository = await fetchGitHubRepository(session.accessToken, templateRepository);
+      if (connectFlowRef.current !== runId) {
+        return;
+      }
+
+      setCreationMessage('Creating Codespace...');
+      const codespace = await createGitHubCodespaceForAuthenticatedUser(
+        session.accessToken,
+        repository.id,
+        {
+          ref: configuredRepositoryRef,
+          devcontainerPath: defaults.devcontainerPath,
+          location: defaults.location,
+        }
+      );
+      if (connectFlowRef.current !== runId) {
+        return;
+      }
+
+      setCreatedCodespace(codespace);
+      setCodespaces((current) => sortGitHubCodespaces([codespace, ...current], preferredRepositoryName));
+      setSetupStep('repositoryChoice');
+      void loadCodespaces(session.accessToken);
+    } catch (error) {
+      if (connectFlowRef.current === runId) {
+        const message = (error as Error).message;
+        setConnectionError(
+          message.toLowerCase().includes('resource not accessible by integration')
+            ? 'GitHub cannot create a Codespace from the configured Clawdex template. Make sure the template repository is public or accessible to this account, then try again.'
+            : message
+        );
+      }
+    } finally {
+      if (connectFlowRef.current === runId) {
+        setCreatingCodespace(false);
+        setCreationMessage(null);
+        setCreationTargetLabel(null);
+        setConnectionPhase(null);
+      }
+    }
+  }, [
+    configuredRepositoryRef,
+    loadCodespaces,
+    preferredRepositoryName,
+    session,
+    templateRepository,
+  ]);
+
+  const loadCloneRepositoriesForSetup = useCallback(async (options: { force?: boolean } = {}) => {
+    if (!session) {
+      setConnectionError('Sign in with GitHub first.');
+      setSetupStep('githubLogin');
+      return;
+    }
+
+    setRepositoryChoice('clone');
+    setSelectedCloneRepository(null);
+    setCloneRepositoriesError(null);
+
+    if (!options.force && availableCloneRepositories.length > 0) {
+      return;
+    }
+
+    setCloneRepositoriesLoading(true);
+    try {
+      const snapshot = await fetchGitHubAppAccessSnapshot(session.accessToken);
+      const repositories = [...snapshot.repositories].sort((a, b) =>
+        a.fullName.localeCompare(b.fullName)
+      );
+      setAvailableCloneRepositories(repositories);
+      if (repositories.length === 0) {
+        setCloneRepositoriesError(
+          'No repositories with read and write access are available. Check the GitHub App installation access, then try again.'
+        );
+      }
+    } catch (error) {
+      setCloneRepositoriesError((error as Error).message);
+    } finally {
+      setCloneRepositoriesLoading(false);
+    }
+  }, [availableCloneRepositories.length, session]);
+
+  const handleStartFreshForSetup = useCallback(async () => {
+    const targetCodespace = createdCodespace;
+    if (!targetCodespace) {
+      setConnectionError('Create a Codespace first.');
+      setSetupStep('createCodespace');
+      return;
+    }
+
+    setRepositoryChoice('fresh');
+    setSelectedCloneRepository(null);
+    setSetupStep('codexLogin');
+    await handleConnectCodespace(targetCodespace);
+  }, [createdCodespace, handleConnectCodespace]);
+
+  const handleCloneRepositoryForSetup = useCallback(
+    async (repository: GitHubAppInstallationRepository) => {
+      const targetCodespace = createdCodespace;
+      if (!targetCodespace) {
+        setConnectionError('Create a Codespace first.');
+        setSetupStep('createCodespace');
+        return;
+      }
+
+      setRepositoryChoice('clone');
+      setSelectedCloneRepository(repository);
+      setSetupStep('codexLogin');
+      await handleConnectCodespace(targetCodespace, { cloneRepository: repository });
+    },
+    [createdCodespace, handleConnectCodespace]
+  );
 
   const handleOpenCodespace = useCallback((codespace: GitHubCodespace) => {
     if (!codespace.webUrl) {
@@ -881,7 +1272,7 @@ export function GitHubCodespacesScreen({
         return;
       }
 
-      const bridgeSession = await refreshGitHubSessionForBridgeInstall(session);
+      const bridgeSession = await refreshGitHubSessionForBridge(session);
       const bridgeUrl = buildGitHubCodespacesBridgeUrl(
         codespace.name,
         env.githubCodespacesPortForwardingDomain
@@ -914,7 +1305,7 @@ export function GitHubCodespacesScreen({
         setConnectionPhase(null);
       }
     },
-    [refreshGitHubSessionForBridgeInstall, session]
+    [refreshGitHubSessionForBridge, session]
   );
 
   const handleStopCodespace = useCallback(
@@ -964,14 +1355,13 @@ export function GitHubCodespacesScreen({
       const startedAt = Date.now();
       try {
         await deleteGitHubCodespace(session.accessToken, codespace.name);
+        const remainingVisibleMs = 1_500 - (Date.now() - startedAt);
+        if (remainingVisibleMs > 0) {
+          await sleep(remainingVisibleMs);
+        }
         setCodespaces((current) =>
           current.filter((candidate) => candidate.name !== codespace.name)
         );
-        const nextCodespaces = sortGitHubCodespaces(
-          await fetchGitHubCodespaces(session.accessToken),
-          preferredRepositoryName
-        ).filter((candidate) => candidate.name !== codespace.name);
-        setCodespaces(nextCodespaces);
         setExpandedCodespaceName((current) => (current === codespace.name ? null : current));
         setPendingDeleteCodespaceName((current) => (current === codespace.name ? null : current));
         setConnectionMessage(null);
@@ -982,37 +1372,61 @@ export function GitHubCodespacesScreen({
       } catch (error) {
         setConnectionError((error as Error).message);
       } finally {
-        const remainingVisibleMs = 1_500 - (Date.now() - startedAt);
-        if (remainingVisibleMs > 0) {
-          await sleep(remainingVisibleMs);
-        }
         setDeletingCodespaceName(null);
       }
     },
-    [preferredRepositoryName, session]
+    [session]
   );
 
-  const busy =
+  const connectionBusy =
     Boolean(connectingCodespaceName) ||
-    Boolean(stoppingCodespaceName) ||
-    Boolean(deletingCodespaceName) ||
     Boolean(restartingBridgeCodespaceName) ||
     codexLoginChecking ||
     codexLoginSubmitting;
-  const statusCardVisible =
-    Boolean(connectionPhase) || busy || Boolean(connectionMessage) || Boolean(pendingCodexLogin);
-  const connectionStepStates = buildConnectionStepStates(connectionPhase);
+  const busy =
+    connectionBusy ||
+    creatingCodespace ||
+    Boolean(stoppingCodespaceName) ||
+    Boolean(deletingCodespaceName);
+  const connectionStatusVisible =
+    Boolean(connectionPhase) ||
+    connectionBusy ||
+    Boolean(connectionMessage) ||
+    Boolean(pendingCodexLogin);
+  const codespaceActionsLocked = busy || connectionStatusVisible;
   const activeCodespaceLabel =
     connectingCodespaceName ??
     pendingCodexLogin?.profileDraft.githubCodespaceName ??
     creationTargetLabel ??
     null;
   const suggestedCodespace = codespaces[0] ?? null;
+  const activeConnectingCodespace =
+    connectingCodespaceName
+      ? codespaces.find((codespace) => codespace.name === connectingCodespaceName) ?? null
+      : null;
+  const savedCodespace =
+    savedCodespaceName
+      ? codespaces.find((codespace) => codespace.name === savedCodespaceName) ?? null
+      : null;
+  const guidedCodespace = savedCodespace ?? suggestedCodespace;
+  const onboardingStage: OnboardingStage = connectedProfileDraft
+    ? 'success'
+    : !session
+      ? 'github'
+      : 'codespace';
+  const showGuidedCodespaceChoice =
+    onboardingStage === 'codespace' &&
+    codespaceSelectionMode === 'recommended' &&
+    guidedCodespace !== null &&
+    !codespacesLoading;
+  const connectionStepStates = buildConnectionStepStates(connectionPhase);
   const availableCodespaceCount = codespaces.filter((codespace) =>
     isCodespaceAvailable(codespace)
   ).length;
   const visibleCodespaces = showAllCodespaces ? codespaces : codespaces.slice(0, 4);
   const hiddenCodespaceCount = Math.max(codespaces.length - visibleCodespaces.length, 0);
+  const recoveryKind = classifyRecovery(connectionError ?? authError ?? codespacesError);
+  const recovery = recoveryKind ? formatRecovery(recoveryKind) : null;
   const codespacesSummary = codespacesLoading
     ? 'Loading Codespaces…'
     : codespaces.length === 0
@@ -1022,12 +1436,535 @@ export function GitHubCodespacesScreen({
       : availableCodespaceCount > 0
         ? `${availableCodespaceCount} ready now • ${codespaces.length} total`
         : `${codespaces.length} saved • none running`;
-  const onboardingStage: OnboardingStage = session
-    ? statusCardVisible
-      ? 'connect'
-      : 'codespace'
-    : 'github';
+  const stageIntro =
+    onboardingStage === 'github'
+      ? {
+          icon: 'logo-github' as const,
+          title: 'Connect GitHub',
+          body: 'Sign in to see your Codespaces, then choose the workspace Clawdex should use.',
+        }
+      : onboardingStage === 'success' && connectedProfileDraft
+        ? {
+            icon: 'checkmark-circle-outline' as const,
+            title: 'Codespace connected',
+            body: `${
+              connectedProfileDraft.githubCodespaceName ?? connectedProfileDraft.name
+            } is ready for Clawdex.`,
+          }
+        : {
+            icon: 'cloud-outline' as const,
+            title: showGuidedCodespaceChoice ? 'Connect your Codespace' : 'Choose a Codespace',
+            body: showGuidedCodespaceChoice
+              ? 'Use the suggested workspace, choose another, or create a fresh one.'
+              : 'Pick the workspace Clawdex should use. Paused Codespaces can take a few minutes to start.',
+          };
+  const connectionProgressPanel = connectionStatusVisible ? (
+    <View style={styles.stagePanel}>
+      <Text style={styles.stagePanelEyebrow}>
+        {connectionPhase === 'startingCodespace' ? 'Starting Codespace' : 'Connection progress'}
+      </Text>
+      <View style={styles.connectionStatusHeader}>
+        <View style={styles.loadingRow}>
+          {connectionBusy ? (
+            <ActivityIndicator color={theme.colors.textPrimary} />
+          ) : (
+            <Ionicons
+              name="checkmark-circle-outline"
+              size={16}
+              color={theme.colors.statusComplete}
+            />
+          )}
+          <View style={styles.connectionStatusCopy}>
+            <Text style={styles.stagePanelTitle}>
+              {formatConnectionPhaseTitle(connectionPhase, activeCodespaceLabel)}
+            </Text>
+          </View>
+        </View>
+      </View>
+      {connectionMessage ? (
+        <View style={styles.connectionConsole}>
+          <Text selectable style={styles.connectionConsoleText}>
+            {connectionMessage}
+          </Text>
+        </View>
+      ) : (
+        <Text style={styles.cardBody}>
+          {connectionPhase === 'startingCodespace'
+            ? 'GitHub paused this workspace. Starting it can take a few minutes.'
+            : 'GitHub is connected. Clawdex is finishing setup.'}
+        </Text>
+      )}
 
+      <View style={styles.connectionStepRow}>
+        <ConnectionStep
+          theme={theme}
+          styles={styles}
+          label="GitHub"
+          state={connectionStepStates.github}
+        />
+        <ConnectionStep
+          theme={theme}
+          styles={styles}
+          label="Codespace"
+          state={connectionStepStates.codespace}
+        />
+        <ConnectionStep
+          theme={theme}
+          styles={styles}
+          label="Codex"
+          state={connectionStepStates.bridge}
+        />
+      </View>
+
+      <View style={styles.actionRow}>
+        {pendingCodexLogin ? (
+          <>
+            <Pressable
+              onPress={() => {
+                void loginToCodexWithChatGpt();
+              }}
+              disabled={codexLoginSubmitting}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                pressed && !codexLoginSubmitting && styles.primaryButtonPressed,
+              ]}
+            >
+              {codexLoginSubmitting ? (
+                <ActivityIndicator size="small" color={theme.colors.accentText} />
+              ) : (
+                <Ionicons name="log-in-outline" size={15} color={theme.colors.accentText} />
+              )}
+              <Text style={styles.primaryButtonText}>Login with ChatGPT</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                void openCodespaceForCodexLogin();
+              }}
+              disabled={codexLoginSubmitting}
+              style={({ pressed }) => [
+                styles.secondaryButton,
+                pressed && !codexLoginSubmitting && styles.secondaryButtonPressed,
+              ]}
+            >
+              {codexLoginSubmitting ? (
+                <ActivityIndicator size="small" color={theme.colors.textPrimary} />
+              ) : (
+                <Ionicons name="open-outline" size={15} color={theme.colors.textPrimary} />
+              )}
+              <Text style={styles.secondaryButtonText}>Open Codespace</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                void completeCodexLoginIfReady(pendingCodexLogin);
+              }}
+              disabled={codexLoginChecking}
+              style={({ pressed }) => [
+                styles.secondaryButton,
+                pressed && !codexLoginChecking && styles.secondaryButtonPressed,
+              ]}
+            >
+              {codexLoginChecking ? (
+                <ActivityIndicator size="small" color={theme.colors.textPrimary} />
+              ) : (
+                <Ionicons
+                  name="checkmark-done-outline"
+                  size={15}
+                  color={theme.colors.textPrimary}
+                />
+              )}
+              <Text style={styles.secondaryButtonText}>Check again</Text>
+            </Pressable>
+          </>
+        ) : null}
+        {connectionPhase === 'startingCodespace' && activeConnectingCodespace?.webUrl ? (
+          <Pressable
+            onPress={() => handleOpenCodespace(activeConnectingCodespace)}
+            style={({ pressed }) => [
+              styles.secondaryButton,
+              pressed && styles.secondaryButtonPressed,
+            ]}
+          >
+            <Ionicons name="open-outline" size={15} color={theme.colors.textPrimary} />
+            <Text style={styles.secondaryButtonText}>Open in GitHub</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          onPress={() => {
+            void refreshGitHubState();
+          }}
+          disabled={codespacesLoading}
+          style={({ pressed }) => [
+            styles.secondaryButton,
+            pressed && !codespacesLoading && styles.secondaryButtonPressed,
+          ]}
+        >
+          <Ionicons name="refresh-outline" size={15} color={theme.colors.textPrimary} />
+          <Text style={styles.secondaryButtonText}>Refresh status</Text>
+        </Pressable>
+        {connectionBusy || pendingCodexLogin ? (
+          <Pressable
+            onPress={cancelCodespaceConnection}
+            style={({ pressed }) => [
+              styles.secondaryButton,
+              pressed && styles.secondaryButtonPressed,
+            ]}
+          >
+            <Ionicons name="close-outline" size={15} color={theme.colors.textPrimary} />
+            <Text style={styles.secondaryButtonText}>Cancel wait</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  ) : null;
+  const setupActionLocked =
+    authorizing ||
+    creatingCodespace ||
+    cloneRepositoriesLoading ||
+    Boolean(connectingCodespaceName) ||
+    Boolean(cloningRepositoryFullName) ||
+    codexLoginChecking ||
+    codexLoginSubmitting;
+  const setupScreen =
+    setupStep === 'chooseConnection'
+      ? {
+          icon: 'git-branch-outline' as const,
+          title: 'Choose connection',
+          body: 'Use a hosted GitHub workspace, or connect to your own machine.',
+        }
+      : setupStep === 'githubLogin'
+        ? {
+            icon: 'logo-github' as const,
+            title: 'Connect GitHub',
+            body: 'Sign in once so Clawdex can create and manage your Codespace.',
+          }
+        : setupStep === 'createCodespace'
+          ? {
+              icon: 'cloud-outline' as const,
+              title: 'Create Codespace',
+              body: session
+                ? `Signed in as @${session.user.login}. Create the hosted workspace next.`
+                : 'Sign in with GitHub first, then create the hosted workspace.',
+            }
+          : setupStep === 'repositoryChoice'
+            ? {
+                icon: repositoryChoice === 'clone' ? 'git-branch-outline' as const : 'folder-open-outline' as const,
+                title: repositoryChoice === 'clone' ? 'Choose repository' : 'Project setup',
+                body:
+                  repositoryChoice === 'clone'
+                    ? 'Select a repository this GitHub account can clone into the Codespace.'
+                    : createdCodespace
+                      ? `${createdCodespace.name} is ready. Choose how this workspace should start.`
+                      : 'Choose whether to clone a repository or start fresh.',
+              }
+            : {
+                icon: connectedProfileDraft ? 'checkmark-circle-outline' as const : 'terminal-outline' as const,
+                title: connectedProfileDraft ? 'Codex is ready' : 'Codex login',
+                body: connectedProfileDraft
+                  ? 'Your Codespace is connected to Clawdex.'
+                  : selectedCloneRepository
+                    ? `Finish Codex login after cloning ${selectedCloneRepository.fullName}.`
+                    : 'Finish Codex login to use this fresh workspace from your phone.',
+              };
+  const setupStatusMessage =
+    connectionMessage ??
+    creationMessage ??
+    (cloneRepositoriesLoading ? 'Loading repositories...' : null) ??
+    (authorizing
+      ? 'Opening GitHub...'
+      : restoringSession
+        ? 'Checking saved GitHub session...'
+        : null);
+  const setupActions =
+    setupStep === 'chooseConnection' ? (
+      <>
+        <ChoiceAction
+          variant="primary"
+          logo="github"
+          title="GitHub Codespaces"
+          meta="Hosted workspace"
+          disabled={setupActionLocked}
+          onPress={() => {
+            setSetupStep('githubLogin');
+            void beginGitHubSignIn();
+          }}
+        />
+        <ChoiceAction
+          variant="secondary"
+          logo="clawdex"
+          title="Private bridge"
+          meta="Your machine"
+          disabled={setupActionLocked}
+          onPress={onOpenPrivateConnection ?? onBack}
+        />
+      </>
+    ) : setupStep === 'githubLogin' ? (
+      <ChoiceAction
+        variant="primary"
+        logo="github"
+        title={authorizing ? 'Opening GitHub...' : authError ? 'Try GitHub again' : 'Sign in with GitHub'}
+        meta="Return here automatically"
+        loading={authorizing}
+        disabled={setupActionLocked}
+        onPress={() => {
+          void beginGitHubSignIn();
+        }}
+      />
+    ) : setupStep === 'createCodespace' ? (
+      <ChoiceAction
+        variant="primary"
+        iconName="add-circle-outline"
+        title={creatingCodespace ? 'Creating Codespace...' : 'Create Codespace'}
+        meta={templateRepository?.fullName ?? 'Clawdex workspace'}
+        loading={creatingCodespace}
+        disabled={setupActionLocked || !createEnabled}
+        onPress={() => {
+          void handleCreateCodespaceForSetup();
+        }}
+      />
+    ) : setupStep === 'repositoryChoice' && repositoryChoice === 'clone' ? (
+      <>
+        <ChoiceAction
+          variant="primary"
+          iconName="refresh-outline"
+          title={cloneRepositoriesLoading ? 'Loading repositories...' : 'Refresh repositories'}
+          meta="GitHub App access"
+          loading={cloneRepositoriesLoading}
+          disabled={setupActionLocked}
+          onPress={() => {
+            void loadCloneRepositoriesForSetup({ force: true });
+          }}
+        />
+        <ChoiceAction
+          variant="secondary"
+          iconName="document-outline"
+          title="Start fresh"
+          meta="Empty workspace"
+          disabled={setupActionLocked}
+          onPress={() => {
+            void handleStartFreshForSetup();
+          }}
+        />
+      </>
+    ) : setupStep === 'repositoryChoice' ? (
+      <>
+        <ChoiceAction
+          variant="primary"
+          iconName="git-branch-outline"
+          title="Clone repository"
+          meta="Bring an existing project"
+          disabled={setupActionLocked}
+          onPress={() => {
+            void loadCloneRepositoriesForSetup();
+          }}
+        />
+        <ChoiceAction
+          variant="secondary"
+          iconName="document-outline"
+          title="Start fresh"
+          meta="Empty workspace"
+          disabled={setupActionLocked}
+          onPress={() => {
+            void handleStartFreshForSetup();
+          }}
+        />
+      </>
+    ) : connectedProfileDraft ? (
+      <ChoiceAction
+        variant="primary"
+        logo="clawdex"
+        title="Start using Clawdex"
+        meta={connectedProfileDraft.githubCodespaceName ?? connectedProfileDraft.name ?? undefined}
+        disabled={setupActionLocked}
+        onPress={() => {
+          void completeConnectedFlow();
+        }}
+      />
+    ) : pendingCodexLogin ? (
+      <>
+        <ChoiceAction
+          variant="primary"
+          iconName="log-in-outline"
+          title={codexLoginSubmitting ? 'Opening ChatGPT...' : 'Login with ChatGPT'}
+          meta="Use your Codex subscription"
+          loading={codexLoginSubmitting}
+          disabled={setupActionLocked}
+          onPress={() => {
+            void loginToCodexWithChatGpt();
+          }}
+        />
+        <ChoiceAction
+          variant="secondary"
+          iconName="checkmark-done-outline"
+          title={codexLoginChecking ? 'Checking...' : 'Check again'}
+          meta="After login completes"
+          loading={codexLoginChecking}
+          disabled={setupActionLocked}
+          onPress={() => {
+            void completeCodexLoginIfReady(pendingCodexLogin);
+          }}
+        />
+      </>
+    ) : (
+      <ChoiceAction
+        variant="primary"
+        iconName="time-outline"
+        title="Waiting for Codex"
+        meta={activeCodespaceLabel ?? 'Codespace setup'}
+        disabled
+        loading
+        onPress={() => {}}
+      />
+    );
+  const githubSetupScreen = (
+    <View style={styles.githubOnboardingRoot}>
+      <ScrollView
+        style={styles.githubOnboardingScroll}
+        contentInsetAdjustmentBehavior="automatic"
+        contentContainerStyle={styles.githubOnboardingContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.githubHero}>
+          <SetupMotionScene
+            icon={setupScreen.icon}
+            busy={setupActionLocked}
+            styles={styles}
+            theme={theme}
+          />
+          <Text style={styles.githubHeroTitle}>{setupScreen.title}</Text>
+          <Text style={styles.githubHeroText}>{setupScreen.body}</Text>
+        </View>
+
+        {createdCodespace ? (
+          <View style={styles.accountStrip}>
+            <View style={styles.accountStripCopy}>
+              <Text style={styles.accountStripLabel}>Codespace</Text>
+              <Text style={styles.accountStripTitle}>{createdCodespace.name}</Text>
+              <Text style={styles.accountStripMeta}>
+                {createdCodespace.repositoryFullName ?? templateRepository?.fullName ?? 'Workspace'}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
+        {setupStep === 'repositoryChoice' && repositoryChoice === 'clone' ? (
+          <View style={styles.repositoryPickerPanel}>
+            <View style={styles.repositoryPickerHeader}>
+              <Text style={styles.repositoryPickerTitle}>Repositories</Text>
+              <Text style={styles.repositoryPickerMeta}>
+                {availableCloneRepositories.length > 0
+                  ? `${availableCloneRepositories.length} available`
+                  : 'Read/write access'}
+              </Text>
+            </View>
+            {cloneRepositoriesLoading ? (
+              <View style={styles.repositoryLoadingRow}>
+                <ActivityIndicator size="small" color={theme.colors.textPrimary} />
+                <Text style={styles.repositoryLoadingText}>Loading repositories...</Text>
+              </View>
+            ) : cloneRepositoriesError ? (
+              <View style={styles.repositoryEmptyState}>
+                <Ionicons name="alert-circle-outline" size={18} color={theme.colors.error} />
+                <Text selectable style={styles.repositoryEmptyText}>
+                  {cloneRepositoriesError}
+                </Text>
+              </View>
+            ) : availableCloneRepositories.length === 0 ? (
+              <View style={styles.repositoryEmptyState}>
+                <Ionicons name="git-branch-outline" size={18} color={theme.colors.textMuted} />
+                <Text style={styles.repositoryEmptyText}>
+                  Tap refresh to load repositories this GitHub App can read and write.
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.repositoryList}>
+                {availableCloneRepositories.map((repository) => {
+                  const cloningThisRepository =
+                    cloningRepositoryFullName === repository.fullName;
+                  return (
+                    <Pressable
+                      key={`${String(repository.installationId)}:${repository.fullName}`}
+                      style={({ pressed }) => [
+                        styles.repositoryRow,
+                        pressed && !setupActionLocked ? styles.repositoryRowPressed : null,
+                        selectedCloneRepository?.fullName === repository.fullName
+                          ? styles.repositoryRowSelected
+                          : null,
+                      ]}
+                      disabled={setupActionLocked}
+                      onPress={() => {
+                        void handleCloneRepositoryForSetup(repository);
+                      }}
+                    >
+                      <View style={styles.repositoryIconWrap}>
+                        {cloningThisRepository ? (
+                          <ActivityIndicator size="small" color={theme.colors.textPrimary} />
+                        ) : (
+                          <Ionicons
+                            name={repository.private ? 'lock-closed-outline' : 'git-branch-outline'}
+                            size={20}
+                            color={theme.colors.textPrimary}
+                          />
+                        )}
+                      </View>
+                      <View style={styles.repositoryRowCopy}>
+                        <Text style={styles.repositoryRowTitle} numberOfLines={1}>
+                          {repository.fullName}
+                        </Text>
+                        <Text style={styles.repositoryRowMeta}>
+                          {repository.private ? 'Private repository' : 'Public repository'}
+                        </Text>
+                      </View>
+                      <Ionicons name="arrow-forward" size={20} color={theme.colors.textPrimary} />
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
+          </View>
+        ) : null}
+
+        {setupStatusMessage ? (
+          <View style={styles.progressBanner}>
+            {setupActionLocked ? (
+              <ActivityIndicator size="small" color={theme.colors.textPrimary} />
+            ) : (
+              <Ionicons name="information-circle-outline" size={16} color={theme.colors.textPrimary} />
+            )}
+            <View style={styles.progressBannerCopy}>
+              <Text style={styles.progressBannerTitle}>Status</Text>
+              <Text style={styles.progressBannerText} numberOfLines={3}>
+                {setupStatusMessage}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
+        {authError ? (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle-outline" size={16} color={theme.colors.error} />
+            <Text selectable style={styles.errorBannerText}>
+              {authError}
+            </Text>
+          </View>
+        ) : null}
+        {connectionError ? (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle-outline" size={16} color={theme.colors.error} />
+            <Text selectable style={styles.errorBannerText}>
+              {connectionError}
+            </Text>
+          </View>
+        ) : null}
+      </ScrollView>
+
+      <SafeAreaView edges={['bottom']} style={styles.githubDockSafe}>
+        <BlurView intensity={70} tint={theme.blurTint} style={styles.githubBottomDock}>
+          <View style={styles.githubChoiceFooter}>{setupActions}</View>
+        </BlurView>
+      </SafeAreaView>
+    </View>
+  );
   return (
     <View style={styles.container}>
       <SafeAreaView edges={['top']} style={styles.safeArea}>
@@ -1040,6 +1977,9 @@ export function GitHubCodespacesScreen({
           </View>
         </View>
 
+        {githubConfigured ? (
+          githubSetupScreen
+        ) : (
         <ScrollView
           style={styles.scroll}
           contentInsetAdjustmentBehavior="automatic"
@@ -1051,7 +1991,7 @@ export function GitHubCodespacesScreen({
             <BlurView intensity={55} tint={theme.blurTint} style={styles.card}>
               <Text style={styles.cardTitle}>GitHub login not configured</Text>
               <Text style={styles.cardBody}>
-                Set `EXPO_PUBLIC_GITHUB_APP_CLIENT_ID`, `EXPO_PUBLIC_GITHUB_APP_SLUG`, and
+                Set `EXPO_PUBLIC_GITHUB_APP_CLIENT_ID` and
                 `EXPO_PUBLIC_GITHUB_APP_AUTH_BASE_URL` in the mobile app build environment, then
                 rebuild the app to enable direct Codespaces sign-in.
               </Text>
@@ -1059,28 +1999,26 @@ export function GitHubCodespacesScreen({
           ) : null}
 
           {githubConfigured ? (
-            <BlurView intensity={55} tint={theme.blurTint} style={styles.card}>
-              {onboardingStage === 'github' ? (
-                <View style={styles.simpleHeaderBlock}>
-                  <Text style={styles.cardHeadline}>Sign in with GitHub</Text>
-                  <Text style={styles.cardBody}>See your Codespaces and connect one to Clawdex.</Text>
+            <BlurView
+              intensity={55}
+              tint={theme.blurTint}
+              style={styles.card}
+            >
+              <View style={styles.stageIntro}>
+                <View style={styles.stageIntroIcon}>
+                  <Ionicons
+                    name={stageIntro.icon}
+                    size={22}
+                    color={theme.colors.textPrimary}
+                  />
                 </View>
-              ) : null}
-
-              {onboardingStage === 'connect' ? (
-                <View style={styles.simpleHeaderBlock}>
-                  <View style={styles.loadingRow}>
-                    <Ionicons
-                      name="git-network-outline"
-                      size={18}
-                      color={theme.colors.textSecondary}
-                    />
-                    <Text style={styles.cardHeadline}>Connecting workspace</Text>
-                  </View>
+                <View style={styles.stageIntroCopy}>
+                  <Text style={styles.stageIntroTitle}>{stageIntro.title}</Text>
+                  <Text style={styles.stageIntroBody}>{stageIntro.body}</Text>
                 </View>
-              ) : null}
+              </View>
 
-              {onboardingStage === 'codespace' && session ? (
+              {onboardingStage === 'codespace' && session && !showGuidedCodespaceChoice ? (
                 <View style={styles.accountStrip}>
                   <View style={styles.accountStripCopy}>
                     <Text style={styles.accountStripLabel}>GitHub</Text>
@@ -1093,10 +2031,11 @@ export function GitHubCodespacesScreen({
                         onPress={() => {
                           void handleCreateCodespace();
                         }}
-                        disabled={busy}
+                        disabled={codespaceActionsLocked}
                         style={({ pressed }) => [
                           styles.secondaryButton,
-                          pressed && !busy && styles.secondaryButtonPressed,
+                          codespaceActionsLocked && styles.codespaceActionDisabled,
+                          pressed && !codespaceActionsLocked && styles.secondaryButtonPressed,
                         ]}
                       >
                         {creatingCodespace ? (
@@ -1138,20 +2077,23 @@ export function GitHubCodespacesScreen({
                   </Text>
                 </View>
               ) : null}
-              {onboardingStage === 'codespace' && appAccessError ? (
-                <View style={styles.errorBanner}>
-                  <Ionicons name="alert-circle-outline" size={16} color={theme.colors.error} />
-                  <Text selectable style={styles.errorBannerText}>
-                    {appAccessError}
-                  </Text>
-                </View>
-              ) : null}
               {onboardingStage === 'codespace' && codespacesError ? (
                 <View style={styles.errorBanner}>
                   <Ionicons name="alert-circle-outline" size={16} color={theme.colors.error} />
                   <Text selectable style={styles.errorBannerText}>
                     {codespacesError}
                   </Text>
+                </View>
+              ) : null}
+              {onboardingStage === 'codespace' && creatingCodespace ? (
+                <View style={styles.progressBanner}>
+                  <ActivityIndicator size="small" color={theme.colors.textPrimary} />
+                  <View style={styles.progressBannerCopy}>
+                    <Text style={styles.progressBannerTitle}>Creating Codespace</Text>
+                    <Text style={styles.progressBannerText} numberOfLines={2}>
+                      {creationMessage ?? creationTargetLabel ?? 'Preparing workspace'}
+                    </Text>
+                  </View>
                 </View>
               ) : null}
               {onboardingStage === 'codespace' && deletingCodespaceName ? (
@@ -1165,56 +2107,116 @@ export function GitHubCodespacesScreen({
                   </View>
                 </View>
               ) : null}
-
-              {onboardingStage === 'github' ? (
-                <>
-                  <View style={styles.recommendedActionCard}>
-                    <Text style={styles.recommendedActionEyebrow}>Connecting GitHub</Text>
-                    <Text style={styles.recommendedActionTitle}>Sign in with GitHub</Text>
-                    <Text style={styles.recommendedActionMeta}>
-                      GitHub opens once, then returns here automatically.
-                    </Text>
+              {recovery ? (
+                <View style={styles.recoveryPanel}>
+                  <View style={styles.recoveryIconWrap}>
+                    <Ionicons name="construct-outline" size={16} color={theme.colors.textPrimary} />
                   </View>
-                  {restoringSession ? (
-                    <View style={styles.loadingRow}>
-                      <ActivityIndicator color={theme.colors.textPrimary} />
-                      <Text style={styles.cardBody}>Checking saved GitHub access…</Text>
-                    </View>
-                  ) : (
-                    <Pressable
-                      onPress={() => {
-                        void beginGitHubSignIn();
-                      }}
-                      disabled={authorizing}
-                      style={({ pressed }) => [
-                        styles.primaryButton,
-                        pressed && !authorizing && styles.primaryButtonPressed,
-                      ]}
-                    >
-                      {authorizing ? (
-                        <ActivityIndicator size="small" color={theme.colors.black} />
-                      ) : (
-                        <Ionicons name="logo-github" size={16} color={theme.colors.black} />
-                      )}
-                      <Text style={styles.primaryButtonText}>
-                        {authorizing
-                          ? 'Opening GitHub…'
-                          : authError
-                            ? 'Try GitHub again'
-                            : 'Sign in with GitHub'}
-                      </Text>
-                    </Pressable>
-                  )}
-                </>
+                  <View style={styles.recoveryCopy}>
+                    <Text style={styles.recoveryTitle}>{recovery.title}</Text>
+                    <Text style={styles.recoveryText}>{recovery.body}</Text>
+                  </View>
+                </View>
               ) : null}
 
               {onboardingStage === 'codespace' && session ? (
                 <>
+                  {connectionProgressPanel}
+
                   {codespacesLoading ? (
                     <View style={styles.loadingRow}>
                       <ActivityIndicator color={theme.colors.textPrimary} />
                       <Text style={styles.cardBody}>Loading Codespaces…</Text>
                     </View>
+                  ) : showGuidedCodespaceChoice && guidedCodespace ? (
+                    <>
+                      <View style={styles.reconnectPanel}>
+                        <View style={styles.reconnectPanelCopy}>
+                          <Text style={styles.reconnectPanelLabel}>
+                            {savedCodespace ? 'Last connection' : 'Recommended'}
+                          </Text>
+                          <Text style={styles.reconnectPanelTitle}>{guidedCodespace.name}</Text>
+                          <Text style={styles.reconnectPanelMeta}>
+                            {formatCodespaceStatusHint(guidedCodespace)}
+                          </Text>
+                        </View>
+                        <Pressable
+                          onPress={() => {
+                            void handleConnectCodespace(guidedCodespace);
+                          }}
+                          disabled={codespaceActionsLocked}
+                          style={({ pressed }) => [
+                            styles.reconnectButton,
+                            pressed && !codespaceActionsLocked && styles.codespaceButtonPressed,
+                            codespaceActionsLocked && styles.codespaceButtonBusy,
+                          ]}
+                        >
+                          {connectingCodespaceName === guidedCodespace.name ? (
+                            <ActivityIndicator size="small" color={theme.colors.accentText} />
+                          ) : (
+                            <Ionicons
+                              name={
+                                isCodespaceAvailable(guidedCodespace)
+                                  ? 'flash-outline'
+                                  : 'play-outline'
+                              }
+                              size={15}
+                              color={theme.colors.accentText}
+                            />
+                          )}
+                          <Text style={styles.codespacePrimaryActionText}>
+                            {formatCodespacePrimaryActionLabel(guidedCodespace, {
+                              bridgeRestarting:
+                                restartingBridgeCodespaceName === guidedCodespace.name,
+                              codespaceBusy: connectingCodespaceName === guidedCodespace.name,
+                              codespaceDeleting: deletingCodespaceName === guidedCodespace.name,
+                            })}
+                          </Text>
+                        </Pressable>
+                      </View>
+                      <View style={styles.actionRow}>
+                        <Pressable
+                          onPress={() => setCodespaceSelectionMode('list')}
+                          disabled={codespaceActionsLocked}
+                          style={({ pressed }) => [
+                            styles.secondaryButton,
+                            codespaceActionsLocked && styles.codespaceActionDisabled,
+                            pressed && !codespaceActionsLocked && styles.secondaryButtonPressed,
+                          ]}
+                        >
+                          <Ionicons
+                            name="list-outline"
+                            size={15}
+                            color={theme.colors.textPrimary}
+                          />
+                          <Text style={styles.secondaryButtonText}>Choose another</Text>
+                        </Pressable>
+                        {createEnabled ? (
+                          <Pressable
+                            onPress={() => {
+                              void handleCreateCodespace();
+                            }}
+                            disabled={codespaceActionsLocked}
+                            style={({ pressed }) => [
+                              styles.secondaryButton,
+                              codespaceActionsLocked && styles.codespaceActionDisabled,
+                              pressed && !codespaceActionsLocked && styles.secondaryButtonPressed,
+                            ]}
+                          >
+                            {creatingCodespace ? (
+                              <ActivityIndicator size="small" color={theme.colors.textPrimary} />
+                            ) : (
+                              <Ionicons
+                                name="add-circle-outline"
+                                size={15}
+                                color={theme.colors.textPrimary}
+                              />
+                            )}
+                            <Text style={styles.secondaryButtonText}>Create new</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    </>
                   ) : codespaces.length > 0 ? (
                     <>
                       <View style={styles.cardHeadlineBlock}>
@@ -1230,18 +2232,21 @@ export function GitHubCodespacesScreen({
                             pendingStopCodespaceName === codespace.name;
                           const deleteConfirmationVisible =
                             pendingDeleteCodespaceName === codespace.name;
-                          const isSuggested = suggestedCodespace?.name === codespace.name;
+                          const isSavedCodespace = savedCodespaceName === codespace.name;
+                          const isSuggested =
+                            isSavedCodespace || suggestedCodespace?.name === codespace.name;
                           const canStopCodespace = isCodespaceAvailable(codespace);
                           const secondaryActionsVisible =
                             expandedCodespaceName === codespace.name ||
                             stopConfirmationVisible ||
                             deleteConfirmationVisible;
-                          const actionLabel = codespaceDeleting
-                            ? 'Deleting...'
-                            : canStopCodespace
-                              ? 'Connect'
-                              : 'Start';
+                          const actionLabel = formatCodespacePrimaryActionLabel(codespace, {
+                            bridgeRestarting,
+                            codespaceBusy,
+                            codespaceDeleting,
+                          });
                           const actionIcon = canStopCodespace ? 'flash-outline' : 'play-outline';
+                          const statusHint = formatCodespaceStatusHint(codespace);
 
                           return (
                             <View
@@ -1259,6 +2264,10 @@ export function GitHubCodespacesScreen({
                                     <Text style={styles.codespaceRepository}>
                                       {codespace.repositoryFullName ?? 'Unknown repository'}
                                     </Text>
+                                    <Text style={styles.codespaceHint}>
+                                      {isSavedCodespace ? 'Last connected. ' : ''}
+                                      {statusHint}
+                                    </Text>
                                   </View>
                                   <View style={styles.codespaceStatePill}>
                                     <Text style={styles.codespaceStateText}>
@@ -1273,24 +2282,25 @@ export function GitHubCodespacesScreen({
                                   onPress={() => {
                                     void handleConnectCodespace(codespace);
                                   }}
-                                  disabled={busy}
+                                  disabled={codespaceActionsLocked}
                                   style={({ pressed }) => [
                                     styles.codespacePrimaryAction,
                                     (codespaceBusy ||
                                       codespaceStopping ||
                                       codespaceDeleting ||
-                                      bridgeRestarting) &&
+                                      bridgeRestarting ||
+                                      codespaceActionsLocked) &&
                                       styles.codespaceButtonBusy,
-                                    pressed && !busy && styles.codespaceButtonPressed,
+                                    pressed && !codespaceActionsLocked && styles.codespaceButtonPressed,
                                   ]}
                                 >
                                   {codespaceBusy || codespaceStopping || codespaceDeleting || bridgeRestarting ? (
-                                    <ActivityIndicator size="small" color={theme.colors.black} />
+                                    <ActivityIndicator size="small" color={theme.colors.accentText} />
                                   ) : (
                                     <Ionicons
                                       name={actionIcon}
                                       size={15}
-                                      color={theme.colors.black}
+                                      color={theme.colors.accentText}
                                     />
                                   )}
                                   <Text style={styles.codespacePrimaryActionText}>
@@ -1303,13 +2313,14 @@ export function GitHubCodespacesScreen({
                                       current === codespace.name ? null : codespace.name
                                     );
                                   }}
-                                  disabled={busy}
+                                  disabled={codespaceActionsLocked}
                                   style={({ pressed }) => [
                                     styles.codespaceMoreAction,
-                                    pressed && !busy && styles.secondaryButtonPressed,
+                                    codespaceActionsLocked && styles.codespaceActionDisabled,
+                                    pressed && !codespaceActionsLocked && styles.secondaryButtonPressed,
                                   ]}
                                 >
-                                  <Text style={styles.codespaceSecondaryActionText}>More</Text>
+                                  <Text style={styles.codespaceSecondaryActionText}>Options</Text>
                                   <Ionicons
                                     name={secondaryActionsVisible ? 'chevron-up' : 'chevron-down'}
                                     size={14}
@@ -1321,10 +2332,13 @@ export function GitHubCodespacesScreen({
                                     {codespace.webUrl ? (
                                       <Pressable
                                         onPress={() => handleOpenCodespace(codespace)}
-                                        disabled={busy}
+                                        disabled={codespaceActionsLocked}
                                         style={({ pressed }) => [
                                           styles.codespaceSecondaryAction,
-                                          pressed && styles.secondaryButtonPressed,
+                                          codespaceActionsLocked && styles.codespaceActionDisabled,
+                                          pressed &&
+                                            !codespaceActionsLocked &&
+                                            styles.secondaryButtonPressed,
                                         ]}
                                       >
                                         <Ionicons
@@ -1333,7 +2347,7 @@ export function GitHubCodespacesScreen({
                                           color={theme.colors.textPrimary}
                                         />
                                         <Text style={styles.codespaceSecondaryActionText}>
-                                          Open
+                                          Open in GitHub
                                         </Text>
                                       </Pressable>
                                     ) : null}
@@ -1342,10 +2356,13 @@ export function GitHubCodespacesScreen({
                                         onPress={() => {
                                           void handleRestartCodespaceBridge(codespace);
                                         }}
-                                        disabled={busy}
+                                        disabled={codespaceActionsLocked}
                                         style={({ pressed }) => [
                                           styles.codespaceSecondaryAction,
-                                          pressed && !busy && styles.secondaryButtonPressed,
+                                          codespaceActionsLocked && styles.codespaceActionDisabled,
+                                          pressed &&
+                                            !codespaceActionsLocked &&
+                                            styles.secondaryButtonPressed,
                                         ]}
                                       >
                                         {bridgeRestarting ? (
@@ -1361,7 +2378,7 @@ export function GitHubCodespacesScreen({
                                           />
                                         )}
                                         <Text style={styles.codespaceSecondaryActionText}>
-                                          Restart connection
+                                          Restart Clawdex
                                         </Text>
                                       </Pressable>
                                     ) : null}
@@ -1373,10 +2390,13 @@ export function GitHubCodespacesScreen({
                                             current === codespace.name ? null : codespace.name
                                           );
                                         }}
-                                        disabled={busy}
+                                        disabled={codespaceActionsLocked}
                                         style={({ pressed }) => [
                                           styles.codespaceStopAction,
-                                          pressed && !busy && styles.codespaceStopActionPressed,
+                                          codespaceActionsLocked && styles.codespaceActionDisabled,
+                                          pressed &&
+                                            !codespaceActionsLocked &&
+                                            styles.codespaceStopActionPressed,
                                         ]}
                                       >
                                         <Ionicons
@@ -1394,10 +2414,13 @@ export function GitHubCodespacesScreen({
                                           current === codespace.name ? null : codespace.name
                                         );
                                       }}
-                                      disabled={busy}
+                                      disabled={codespaceActionsLocked}
                                       style={({ pressed }) => [
                                         styles.codespaceStopAction,
-                                        pressed && !busy && styles.codespaceStopActionPressed,
+                                        codespaceActionsLocked && styles.codespaceActionDisabled,
+                                        pressed &&
+                                          !codespaceActionsLocked &&
+                                          styles.codespaceStopActionPressed,
                                       ]}
                                     >
                                       <Ionicons
@@ -1431,13 +2454,13 @@ export function GitHubCodespacesScreen({
                                         onPress={() => {
                                           void handleStopCodespace(codespace);
                                         }}
-                                        disabled={busy}
+                                        disabled={codespaceActionsLocked}
                                         style={({ pressed }) => [
                                           styles.codespaceStopConfirmButton,
                                           pressed &&
-                                            !busy &&
+                                            !codespaceActionsLocked &&
                                             styles.codespaceStopConfirmButtonPressed,
-                                          busy && styles.codespaceButtonBusy,
+                                          codespaceActionsLocked && styles.codespaceButtonBusy,
                                         ]}
                                       >
                                         {codespaceStopping ? (
@@ -1485,13 +2508,13 @@ export function GitHubCodespacesScreen({
                                         onPress={() => {
                                           void handleDeleteCodespace(codespace);
                                         }}
-                                        disabled={busy}
+                                        disabled={codespaceActionsLocked}
                                         style={({ pressed }) => [
                                           styles.codespaceStopConfirmButton,
                                           pressed &&
-                                            !busy &&
+                                            !codespaceActionsLocked &&
                                             styles.codespaceStopConfirmButtonPressed,
-                                          busy && styles.codespaceButtonBusy,
+                                          codespaceActionsLocked && styles.codespaceButtonBusy,
                                         ]}
                                       >
                                         {codespaceDeleting ? (
@@ -1546,23 +2569,24 @@ export function GitHubCodespacesScreen({
                       <Text style={styles.cardBody}>
                         {createEnabled
                           ? 'Create one and it will show up here.'
-                          : 'Configure the Claudex template repository in this build to continue.'}
+                          : 'Configure the Clawdex template repository in this build to continue.'}
                       </Text>
                       {createEnabled ? (
                         <Pressable
                           onPress={() => {
                             void handleCreateCodespace();
                           }}
-                          disabled={busy}
+                          disabled={codespaceActionsLocked}
                           style={({ pressed }) => [
                             styles.primaryButton,
-                            pressed && !busy && styles.primaryButtonPressed,
+                            codespaceActionsLocked && styles.codespaceButtonBusy,
+                            pressed && !codespaceActionsLocked && styles.primaryButtonPressed,
                           ]}
                         >
                           {creatingCodespace ? (
-                            <ActivityIndicator size="small" color={theme.colors.black} />
+                            <ActivityIndicator size="small" color={theme.colors.accentText} />
                           ) : (
-                            <Ionicons name="rocket-outline" size={16} color={theme.colors.black} />
+                            <Ionicons name="rocket-outline" size={16} color={theme.colors.accentText} />
                           )}
                           <Text style={styles.primaryButtonText}>Create Codespace</Text>
                         </Pressable>
@@ -1570,189 +2594,65 @@ export function GitHubCodespacesScreen({
                     </View>
                   )}
 
-                  <View style={styles.actionRow}>
-                    <Pressable
-                      onPress={() => {
-                        void refreshGitHubState();
-                      }}
-                      disabled={codespacesLoading}
-                      style={({ pressed }) => [
-                        styles.secondaryButton,
-                        pressed && !codespacesLoading && styles.secondaryButtonPressed,
-                      ]}
-                    >
-                      <Ionicons name="refresh-outline" size={15} color={theme.colors.textPrimary} />
-                      <Text style={styles.secondaryButtonText}>Refresh list</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        void beginGitHubSignIn();
-                      }}
-                      disabled={authorizing}
-                      style={({ pressed }) => [
-                        styles.secondaryButton,
-                        pressed && !authorizing && styles.secondaryButtonPressed,
-                      ]}
-                    >
-                      <Ionicons name="logo-github" size={15} color={theme.colors.textPrimary} />
-                      <Text style={styles.secondaryButtonText}>Use another account</Text>
-                    </Pressable>
-                  </View>
-
-                </>
-              ) : null}
-
-              {onboardingStage === 'connect' ? (
-                <>
-                  <View style={styles.stagePanel}>
-                    <Text style={styles.stagePanelEyebrow}>Connection progress</Text>
-                    <View style={styles.connectionStatusHeader}>
-                      <View style={styles.loadingRow}>
-                        {busy ? (
-                          <ActivityIndicator color={theme.colors.textPrimary} />
-                        ) : (
-                          <Ionicons
-                            name="checkmark-circle-outline"
-                            size={16}
-                            color={theme.colors.statusComplete}
-                          />
-                        )}
-                        <View style={styles.connectionStatusCopy}>
-                          <Text style={styles.stagePanelTitle}>
-                            {formatConnectionPhaseTitle(connectionPhase, activeCodespaceLabel)}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-                    {connectionMessage ? (
-                      <View style={styles.connectionConsole}>
-                        <Text selectable style={styles.connectionConsoleText}>
-                          {connectionMessage}
-                        </Text>
-                      </View>
-                    ) : (
-                      <Text style={styles.cardBody}>
-                        GitHub is connected. Clawdex is finishing setup.
-                      </Text>
-                    )}
-                  </View>
-
-                  <View style={styles.connectionStepRow}>
-                    <ConnectionStep
-                      theme={theme}
-                      styles={styles}
-                      label="GitHub"
-                      state={connectionStepStates.github}
-                    />
-                    <ConnectionStep
-                      theme={theme}
-                      styles={styles}
-                      label="Codespace"
-                      state={connectionStepStates.codespace}
-                    />
-                    <ConnectionStep
-                      theme={theme}
-                      styles={styles}
-                      label="Codex"
-                      state={connectionStepStates.bridge}
-                    />
-                  </View>
-
-                  <View style={styles.actionRow}>
-                    {pendingCodexLogin ? (
-                      <>
-                        <Pressable
-                          onPress={() => {
-                            void loginToCodexWithChatGpt();
-                          }}
-                          disabled={codexLoginSubmitting}
-                          style={({ pressed }) => [
-                            styles.primaryButton,
-                            pressed && !codexLoginSubmitting && styles.primaryButtonPressed,
-                          ]}
-                        >
-                          {codexLoginSubmitting ? (
-                            <ActivityIndicator size="small" color={theme.colors.black} />
-                          ) : (
-                            <Ionicons name="log-in-outline" size={15} color={theme.colors.black} />
-                          )}
-                          <Text style={styles.primaryButtonText}>Login with ChatGPT</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() => {
-                            void openCodespaceForCodexLogin();
-                          }}
-                          disabled={codexLoginSubmitting}
-                          style={({ pressed }) => [
-                            styles.secondaryButton,
-                            pressed && !codexLoginSubmitting && styles.secondaryButtonPressed,
-                          ]}
-                        >
-                          {codexLoginSubmitting ? (
-                            <ActivityIndicator size="small" color={theme.colors.textPrimary} />
-                          ) : (
-                            <Ionicons
-                              name="open-outline"
-                              size={15}
-                              color={theme.colors.textPrimary}
-                            />
-                          )}
-                          <Text style={styles.secondaryButtonText}>Open Codespace</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() => {
-                            void completeCodexLoginIfReady(pendingCodexLogin);
-                          }}
-                          disabled={codexLoginChecking}
-                          style={({ pressed }) => [
-                            styles.secondaryButton,
-                            pressed && !codexLoginChecking && styles.secondaryButtonPressed,
-                          ]}
-                        >
-                          {codexLoginChecking ? (
-                            <ActivityIndicator size="small" color={theme.colors.textPrimary} />
-                          ) : (
-                            <Ionicons
-                              name="checkmark-done-outline"
-                              size={15}
-                              color={theme.colors.textPrimary}
-                            />
-                          )}
-                          <Text style={styles.secondaryButtonText}>Check again</Text>
-                        </Pressable>
-                      </>
-                    ) : null}
-                    <Pressable
-                      onPress={() => {
-                        void refreshGitHubState();
-                      }}
-                      disabled={codespacesLoading}
-                      style={({ pressed }) => [
-                        styles.secondaryButton,
-                        pressed && !codespacesLoading && styles.secondaryButtonPressed,
-                      ]}
-                    >
-                      <Ionicons name="refresh-outline" size={15} color={theme.colors.textPrimary} />
-                      <Text style={styles.secondaryButtonText}>Refresh status</Text>
-                    </Pressable>
-                    {busy || pendingCodexLogin ? (
+                  {!connectionStatusVisible ? (
+                    <View style={styles.actionRow}>
                       <Pressable
-                        onPress={cancelCodespaceConnection}
+                        onPress={() => {
+                          void refreshGitHubState();
+                        }}
+                        disabled={codespacesLoading}
                         style={({ pressed }) => [
                           styles.secondaryButton,
-                          pressed && styles.secondaryButtonPressed,
+                          pressed && !codespacesLoading && styles.secondaryButtonPressed,
                         ]}
                       >
-                        <Ionicons name="close-outline" size={15} color={theme.colors.textPrimary} />
-                        <Text style={styles.secondaryButtonText}>Cancel wait</Text>
+                        <Ionicons
+                          name="refresh-outline"
+                          size={15}
+                          color={theme.colors.textPrimary}
+                        />
+                        <Text style={styles.secondaryButtonText}>Refresh list</Text>
                       </Pressable>
-                    ) : null}
-                  </View>
+                      <Pressable
+                        onPress={() => {
+                          void beginGitHubSignIn();
+                        }}
+                        disabled={authorizing}
+                        style={({ pressed }) => [
+                          styles.secondaryButton,
+                          pressed && !authorizing && styles.secondaryButtonPressed,
+                        ]}
+                      >
+                        <Ionicons name="logo-github" size={15} color={theme.colors.textPrimary} />
+                        <Text style={styles.secondaryButtonText}>Use another account</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+
                 </>
               ) : null}
+
+              {onboardingStage === 'success' && connectedProfileDraft ? (
+                <View style={styles.actionRow}>
+                  <Pressable
+                    onPress={() => {
+                      void completeConnectedFlow();
+                    }}
+                    style={({ pressed }) => [
+                      styles.primaryButton,
+                      pressed && styles.primaryButtonPressed,
+                    ]}
+                  >
+                    <Ionicons name="arrow-forward-outline" size={16} color={theme.colors.accentText} />
+                    <Text style={styles.primaryButtonText}>Start using Clawdex</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+
             </BlurView>
           ) : null}
         </ScrollView>
+        )}
       </SafeAreaView>
     </View>
   );
@@ -1804,12 +2704,13 @@ function isoStringToTimestampMs(value: string | null | undefined): number | null
 async function withBridgeApiClient<T>(
   bridgeUrl: string,
   accessToken: string,
-  task: (api: HostBridgeApiClient) => Promise<T>
+  task: (api: HostBridgeApiClient) => Promise<T>,
+  options: { requestTimeoutMs?: number } = {}
 ): Promise<T> {
   const ws = new HostBridgeWsClient(bridgeUrl, {
     authToken: accessToken,
     allowQueryTokenAuth: env.allowWsQueryTokenAuth,
-    requestTimeoutMs: 15_000,
+    requestTimeoutMs: options.requestTimeoutMs ?? 15_000,
   });
   const api = new HostBridgeApiClient({ ws });
 
@@ -1888,8 +2789,54 @@ function isCodespaceAvailable(codespace: Pick<GitHubCodespace, 'state'>): boolea
   return codespace.state.trim().toLowerCase() === 'available';
 }
 
+function isCodespacePaused(codespace: Pick<GitHubCodespace, 'state'>): boolean {
+  const normalized = codespace.state.trim().toLowerCase();
+  return normalized === 'shutdown' || normalized === 'stopped';
+}
+
+function formatCodespacePrimaryActionLabel(
+  codespace: Pick<GitHubCodespace, 'state'>,
+  options: {
+    bridgeRestarting: boolean;
+    codespaceBusy: boolean;
+    codespaceDeleting: boolean;
+  }
+): string {
+  if (options.codespaceDeleting) {
+    return 'Deleting...';
+  }
+  if (options.bridgeRestarting) {
+    return 'Restarting...';
+  }
+  if (options.codespaceBusy && isCodespacePaused(codespace)) {
+    return 'Starting...';
+  }
+  if (options.codespaceBusy) {
+    return 'Connecting...';
+  }
+  if (isCodespaceAvailable(codespace)) {
+    return 'Use this';
+  }
+  if (isCodespacePaused(codespace)) {
+    return 'Start and use';
+  }
+  return 'Use when ready';
+}
+
 function formatCodespaceStatus(codespace: Pick<GitHubCodespace, 'state'>): string {
   return isCodespaceAvailable(codespace) ? 'Ready' : formatCodespaceState(codespace.state);
+}
+
+function formatCodespaceStatusHint(codespace: Pick<GitHubCodespace, 'state'>): string {
+  if (isCodespaceAvailable(codespace)) {
+    return 'Ready to connect.';
+  }
+  if (isCodespacePaused(codespace)) {
+    return 'Paused by GitHub. Starting it can take a few minutes.';
+  }
+
+  const state = formatCodespaceState(codespace.state);
+  return `${state}. Clawdex will wait until GitHub finishes.`;
 }
 
 function formatCodespaceState(value: string): string {
@@ -1925,8 +2872,6 @@ const createStyles = (theme: AppTheme) => {
       gap: theme.spacing.md,
       paddingHorizontal: theme.spacing.lg,
       paddingVertical: theme.spacing.md,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: theme.colors.borderHighlight,
     },
     headerButton: {
       padding: theme.spacing.xs,
@@ -1948,6 +2893,7 @@ const createStyles = (theme: AppTheme) => {
       flex: 1,
     },
     content: {
+      flexGrow: 1,
       padding: theme.spacing.lg,
       paddingBottom: theme.spacing.xl * 1.5,
       gap: theme.spacing.md,
@@ -2056,6 +3002,227 @@ const createStyles = (theme: AppTheme) => {
         ? '0px 18px 48px rgba(0, 0, 0, 0.24)'
         : '0px 14px 32px rgba(15, 31, 54, 0.12)',
     },
+    githubOnboardingRoot: {
+      flex: 1,
+    },
+    githubOnboardingScroll: {
+      flex: 1,
+    },
+    githubOnboardingContent: {
+      flexGrow: 1,
+      justifyContent: 'center',
+      paddingHorizontal: theme.spacing.lg,
+      paddingTop: theme.spacing.lg,
+      paddingBottom: theme.spacing.lg,
+      gap: theme.spacing.lg,
+    },
+    githubHero: {
+      alignItems: 'center',
+      gap: theme.spacing.sm,
+    },
+    githubHeroIconWrap: {
+      width: 44,
+      height: 44,
+      borderRadius: 15,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: secondaryBackground,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    githubHeroTitle: {
+      ...theme.typography.largeTitle,
+      color: theme.colors.textPrimary,
+      fontSize: 22,
+      lineHeight: 28,
+      textAlign: 'center',
+    },
+    githubHeroText: {
+      ...theme.typography.body,
+      color: theme.colors.textSecondary,
+      fontSize: 13,
+      lineHeight: 19,
+      textAlign: 'center',
+    },
+    setupMotionScene: {
+      width: 176,
+      height: 132,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginBottom: theme.spacing.xs,
+    },
+    setupMotionPulseFrame: {
+      position: 'absolute',
+      top: 14,
+      width: 92,
+      height: 92,
+      borderRadius: 28,
+      borderWidth: 1,
+      borderColor: theme.colors.borderLight,
+      backgroundColor: theme.colors.bgInput,
+    },
+    setupMotionBackplate: {
+      position: 'absolute',
+      top: 25,
+      width: 72,
+      height: 72,
+      borderRadius: 24,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: theme.colors.bgItem,
+      opacity: 0.72,
+      transform: [{ rotate: '45deg' }],
+    },
+    setupMotionBridgeLine: {
+      position: 'absolute',
+      top: 74,
+      width: 2,
+      height: 54,
+      borderRadius: 999,
+      backgroundColor: theme.colors.borderLight,
+      overflow: 'hidden',
+    },
+    setupMotionBridgeSignal: {
+      width: 2,
+      height: 18,
+      borderRadius: 999,
+      backgroundColor: theme.colors.textPrimary,
+    },
+    setupMotionIconWrap: {
+      position: 'absolute',
+      top: 20,
+      width: 64,
+      height: 64,
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: secondaryBackground,
+      alignItems: 'center',
+      justifyContent: 'center',
+      boxShadow: theme.isDark
+        ? '0px 14px 32px rgba(0, 0, 0, 0.28)'
+        : '0px 12px 26px rgba(15, 31, 54, 0.12)',
+    },
+    setupMotionCard: {
+      position: 'absolute',
+      bottom: 0,
+      width: 128,
+      height: 40,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: theme.colors.bgElevated,
+      paddingHorizontal: theme.spacing.md,
+      paddingVertical: theme.spacing.sm,
+      gap: 5,
+    },
+    setupMotionCardHeader: {
+      width: 28,
+      height: 4,
+      borderRadius: 999,
+      backgroundColor: theme.colors.textPrimary,
+      opacity: 0.58,
+    },
+    setupMotionCardLineWide: {
+      width: 78,
+      height: 3,
+      borderRadius: 999,
+      backgroundColor: theme.colors.textMuted,
+      opacity: 0.4,
+    },
+    setupMotionCardLineShort: {
+      width: 48,
+      height: 3,
+      borderRadius: 999,
+      backgroundColor: theme.colors.textMuted,
+      opacity: 0.28,
+    },
+    githubStepsSection: {
+      gap: theme.spacing.md,
+    },
+    githubStepsHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: theme.spacing.md,
+    },
+    githubStepsEyebrow: {
+      ...theme.typography.caption,
+      color: theme.colors.textMuted,
+      textTransform: 'uppercase',
+      letterSpacing: 0,
+      fontWeight: '700',
+    },
+    githubStepDots: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
+    },
+    githubStepDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 999,
+      backgroundColor: theme.colors.textMuted,
+      opacity: 0.34,
+    },
+    githubStepDotActive: {
+      width: 18,
+      opacity: 0.9,
+      backgroundColor: theme.colors.textPrimary,
+    },
+    githubStepPanel: {
+      minHeight: 210,
+      borderRadius: 24,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: cardBackground,
+      paddingHorizontal: theme.spacing.lg,
+      paddingVertical: theme.spacing.xl,
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: theme.spacing.md,
+      boxShadow: theme.isDark
+        ? '0px 12px 26px rgba(0, 0, 0, 0.18)'
+        : '0px 10px 24px rgba(15, 31, 54, 0.08)',
+    },
+    githubStepIconLarge: {
+      width: 58,
+      height: 58,
+      borderRadius: 19,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: secondaryBackground,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    githubStepTitleLarge: {
+      ...theme.typography.headline,
+      color: theme.colors.textPrimary,
+      fontWeight: '700',
+      fontSize: 20,
+      textAlign: 'center',
+    },
+    githubStepBodyLarge: {
+      ...theme.typography.body,
+      color: theme.colors.textSecondary,
+      fontSize: 15,
+      lineHeight: 21,
+      textAlign: 'center',
+    },
+    githubDockSafe: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: cardBorder,
+      backgroundColor: theme.colors.bgMain,
+    },
+    githubBottomDock: {
+      paddingHorizontal: theme.spacing.lg,
+      paddingTop: theme.spacing.sm,
+      paddingBottom: theme.spacing.sm,
+      overflow: 'hidden',
+    },
+    githubChoiceFooter: {
+      gap: theme.spacing.sm,
+    },
     cardTitle: {
       ...theme.typography.caption,
       color: theme.colors.textPrimary,
@@ -2151,6 +3318,143 @@ const createStyles = (theme: AppTheme) => {
       color: theme.colors.textSecondary,
       lineHeight: 18,
     },
+    repositoryPickerPanel: {
+      borderRadius: theme.radius.lg,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: theme.colors.bgItem,
+      padding: theme.spacing.sm,
+      gap: theme.spacing.sm,
+    },
+    repositoryPickerHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: theme.spacing.xs,
+      gap: theme.spacing.md,
+    },
+    repositoryPickerTitle: {
+      ...theme.typography.caption,
+      color: theme.colors.textPrimary,
+      fontWeight: '700',
+      textTransform: 'uppercase',
+      letterSpacing: 0,
+    },
+    repositoryPickerMeta: {
+      ...theme.typography.caption,
+      color: theme.colors.textMuted,
+    },
+    repositoryList: {
+      gap: theme.spacing.xs,
+    },
+    repositoryRow: {
+      minHeight: 64,
+      borderRadius: theme.radius.md,
+      borderWidth: 1,
+      borderColor: theme.colors.borderLight,
+      backgroundColor: theme.colors.bgInput,
+      paddingHorizontal: theme.spacing.sm,
+      paddingVertical: theme.spacing.sm,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: theme.spacing.sm,
+    },
+    repositoryRowPressed: {
+      opacity: 0.72,
+    },
+    repositoryRowSelected: {
+      borderColor: theme.colors.textPrimary,
+    },
+    repositoryIconWrap: {
+      width: 40,
+      height: 40,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: secondaryBackground,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    repositoryRowCopy: {
+      flex: 1,
+      minWidth: 0,
+      gap: 2,
+    },
+    repositoryRowTitle: {
+      ...theme.typography.body,
+      color: theme.colors.textPrimary,
+      fontWeight: '700',
+    },
+    repositoryRowMeta: {
+      ...theme.typography.caption,
+      color: theme.colors.textSecondary,
+    },
+    repositoryLoadingRow: {
+      minHeight: 72,
+      borderRadius: theme.radius.md,
+      borderWidth: 1,
+      borderColor: theme.colors.borderLight,
+      backgroundColor: theme.colors.bgInput,
+      alignItems: 'center',
+      justifyContent: 'center',
+      flexDirection: 'row',
+      gap: theme.spacing.sm,
+    },
+    repositoryLoadingText: {
+      ...theme.typography.caption,
+      color: theme.colors.textSecondary,
+    },
+    repositoryEmptyState: {
+      minHeight: 78,
+      borderRadius: theme.radius.md,
+      borderWidth: 1,
+      borderColor: theme.colors.borderLight,
+      backgroundColor: theme.colors.bgInput,
+      padding: theme.spacing.md,
+      alignItems: 'center',
+      justifyContent: 'center',
+      flexDirection: 'row',
+      gap: theme.spacing.sm,
+    },
+    repositoryEmptyText: {
+      ...theme.typography.caption,
+      color: theme.colors.textSecondary,
+      flex: 1,
+      lineHeight: 18,
+    },
+    recoveryPanel: {
+      borderRadius: theme.radius.md,
+      borderWidth: 1,
+      borderColor: theme.colors.warningBorder,
+      backgroundColor: theme.colors.warningBg,
+      paddingHorizontal: theme.spacing.md,
+      paddingVertical: theme.spacing.md,
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: theme.spacing.sm,
+    },
+    recoveryIconWrap: {
+      width: 28,
+      height: 28,
+      borderRadius: 999,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: theme.colors.bgInput,
+    },
+    recoveryCopy: {
+      flex: 1,
+      gap: 2,
+    },
+    recoveryTitle: {
+      ...theme.typography.caption,
+      color: theme.colors.textPrimary,
+      fontWeight: '700',
+    },
+    recoveryText: {
+      ...theme.typography.caption,
+      color: theme.colors.textSecondary,
+      lineHeight: 18,
+    },
     repoSummaryRow: {
       borderRadius: theme.radius.md,
       borderWidth: 1,
@@ -2171,8 +3475,34 @@ const createStyles = (theme: AppTheme) => {
       color: theme.colors.textPrimary,
       lineHeight: 18,
     },
-    simpleHeaderBlock: {
-      gap: theme.spacing.xs,
+    stageIntro: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: theme.spacing.md,
+    },
+    stageIntroIcon: {
+      width: 44,
+      height: 44,
+      borderRadius: theme.radius.md,
+      borderWidth: 1,
+      borderColor: cardBorder,
+      backgroundColor: theme.colors.bgInput,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    stageIntroCopy: {
+      flex: 1,
+      minWidth: 0,
+      gap: 4,
+    },
+    stageIntroTitle: {
+      ...theme.typography.headline,
+      color: theme.colors.textPrimary,
+    },
+    stageIntroBody: {
+      ...theme.typography.body,
+      color: theme.colors.textSecondary,
+      lineHeight: 21,
     },
     cardHeadlineBlock: {
       gap: theme.spacing.xs,
@@ -2243,28 +3573,43 @@ const createStyles = (theme: AppTheme) => {
       color: theme.colors.textMuted,
       marginTop: 2,
     },
-    recommendedActionCard: {
+    reconnectPanel: {
       borderRadius: theme.radius.md,
       borderWidth: 1,
-      borderColor: cardBorder,
-      backgroundColor: theme.colors.bgItem,
+      borderColor: theme.colors.successBorder,
+      backgroundColor: theme.colors.successBg,
       padding: theme.spacing.md,
-      gap: theme.spacing.sm,
+      gap: theme.spacing.md,
     },
-    recommendedActionEyebrow: {
+    reconnectPanelCopy: {
+      gap: 3,
+    },
+    reconnectPanelLabel: {
       ...theme.typography.caption,
-      color: theme.colors.textMuted,
+      color: theme.colors.statusComplete,
       textTransform: 'uppercase',
       letterSpacing: 0,
+      fontWeight: '700',
     },
-    recommendedActionTitle: {
+    reconnectPanelTitle: {
       ...theme.typography.body,
       color: theme.colors.textPrimary,
       fontWeight: '700',
     },
-    recommendedActionMeta: {
+    reconnectPanelMeta: {
       ...theme.typography.caption,
       color: theme.colors.textSecondary,
+      lineHeight: 18,
+    },
+    reconnectButton: {
+      minHeight: 42,
+      borderRadius: theme.radius.md,
+      backgroundColor: theme.colors.accent,
+      paddingHorizontal: theme.spacing.md,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: theme.spacing.xs,
     },
     stagePanel: {
       borderRadius: theme.radius.md,
@@ -2302,11 +3647,6 @@ const createStyles = (theme: AppTheme) => {
       flex: 1,
       gap: 4,
     },
-    connectionStatusTitle: {
-      ...theme.typography.body,
-      color: theme.colors.textPrimary,
-      fontWeight: '600',
-    },
     actionRow: {
       flexDirection: 'row',
       flexWrap: 'wrap',
@@ -2315,7 +3655,7 @@ const createStyles = (theme: AppTheme) => {
     primaryButton: {
       minHeight: 44,
       borderRadius: theme.radius.md,
-      backgroundColor: theme.colors.textPrimary,
+      backgroundColor: theme.colors.accent,
       paddingHorizontal: theme.spacing.lg,
       flexDirection: 'row',
       alignItems: 'center',
@@ -2323,11 +3663,11 @@ const createStyles = (theme: AppTheme) => {
       gap: theme.spacing.xs,
     },
     primaryButtonPressed: {
-      opacity: 0.9,
+      backgroundColor: theme.colors.accentPressed,
     },
     primaryButtonText: {
       ...theme.typography.caption,
-      color: theme.colors.black,
+      color: theme.colors.accentText,
       fontWeight: '700',
     },
     secondaryButton: {
@@ -2618,7 +3958,7 @@ const createStyles = (theme: AppTheme) => {
     codespacePrimaryAction: {
       minHeight: 42,
       borderRadius: theme.radius.md,
-      backgroundColor: theme.colors.textPrimary,
+      backgroundColor: theme.colors.accent,
       paddingHorizontal: theme.spacing.md,
       flexDirection: 'row',
       alignItems: 'center',
@@ -2633,7 +3973,7 @@ const createStyles = (theme: AppTheme) => {
     },
     codespacePrimaryActionText: {
       ...theme.typography.caption,
-      color: theme.colors.black,
+      color: theme.colors.accentText,
       fontWeight: '700',
     },
     codespaceSecondaryAction: {

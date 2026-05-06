@@ -637,14 +637,14 @@ const createStyles = (theme: AppTheme) => {
       fontWeight: '600',
     },
     inlineButtonPrimary: {
-      backgroundColor: theme.colors.textPrimary,
+      backgroundColor: theme.colors.accent,
     },
     inlineButtonPrimaryPressed: {
-      opacity: 0.92,
+      backgroundColor: theme.colors.accentPressed,
     },
     inlineButtonPrimaryText: {
       ...theme.typography.caption,
-      color: theme.colors.black,
+      color: theme.colors.accentText,
       fontWeight: '700',
     },
     inlineButtonDisabled: {

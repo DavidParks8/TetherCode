@@ -65,8 +65,8 @@ Important constraints:
 - Browser preview uses the preview port (`8788` by default), so that forwarded port must also be public
 - GitHub resets public forwarded ports back to private whenever the codespace restarts
 - Keep bridge auth enabled and use Codespaces only for repos you trust, because public forwarded ports are internet-reachable
-- If the mobile app build sets `EXPO_PUBLIC_GITHUB_APP_CLIENT_ID`, `EXPO_PUBLIC_GITHUB_APP_SLUG`, and `EXPO_PUBLIC_GITHUB_APP_AUTH_BASE_URL`, onboarding/settings can now open one GitHub App install/auth flow, approve only the repositories they want, start the Codespace, and connect directly with the same GitHub App user token instead of copying `BRIDGE_AUTH_TOKEN`
-- That same in-app GitHub sign-in also bootstraps GitHub git auth inside the Codespace so `git clone`, `git push`, GitHub HTTPS remotes, and common `git@github.com:...` SSH-style remotes can reuse the app login without extra account setup
+- If the mobile app build sets `EXPO_PUBLIC_GITHUB_APP_CLIENT_ID` and `EXPO_PUBLIC_GITHUB_APP_AUTH_BASE_URL`, onboarding/settings can now open one GitHub sign-in, start the Codespace, and connect directly with the same GitHub App user token instead of copying `BRIDGE_AUTH_TOKEN`
+- Users do not need to grant the GitHub App repository installation access to the `clawdex-codespace` template for the normal Codespaces flow
 - The same in-app GitHub flow can create a new Codespace. It prefers `<signed-in-user>/<EXPO_PUBLIC_GITHUB_CODESPACES_REPO_NAME>`. If that repo does not exist yet, Clawdex automatically forks `EXPO_PUBLIC_GITHUB_CODESPACES_SOURCE_OWNER/<EXPO_PUBLIC_GITHUB_CODESPACES_REPO_NAME>` into the signed-in user account and creates the Codespace from that fork
 - Older saved GitHub Codespaces sessions may need one fresh sign-in from the app so the stored GitHub App token and refresh token are updated
 
@@ -74,7 +74,6 @@ For the one-flow GitHub App setup:
 
 - deploy the tiny auth service under `services/github-app-auth-worker`
 - set the GitHub App `Callback URL` to `https://<your-domain>/github/callback`
-- enable `Request user authorization (OAuth) during installation`
 - set the mobile env `EXPO_PUBLIC_GITHUB_APP_AUTH_BASE_URL=https://<your-domain>`
 
 Manual recovery if port visibility does not update automatically:
@@ -94,8 +93,10 @@ The repo devcontainer now includes:
 
 - installs the Codex CLI via `npm install -g @openai/codex` if it is missing
 - in `--prepare-only` mode, prebuilds the Rust bridge binary without starting it
-- rewrites `.env.secure` for `BRIDGE_NETWORK_MODE=codespaces` with `BRIDGE_ACTIVE_ENGINE=codex`, `BRIDGE_ENABLED_ENGINES=codex`, and `BRIDGE_GITHUB_CODESPACES_AUTH=true`
+- rewrites `.env.secure` for `BRIDGE_NETWORK_MODE=codespaces`, `BRIDGE_GITHUB_CODESPACES_AUTH=true`, and the selected engine list
 - starts the bridge in the background unless you set `CLAWDEX_CODESPACES_SKIP_START=true` or pass `--no-start`
+
+Clawdex-created Codespaces request a 45-minute idle timeout. The bridge emits a lightweight active-turn keepalive while a Codex, OpenCode, or Cursor turn is running, so active work has activity even if a long step is otherwise quiet. When no turn is running, the keepalive stops and GitHub can pause the Codespace normally to save cost.
 
 That means the first Codespace create now front-loads the expensive bridge compile during `postCreateCommand`, so the later `postStartCommand` can usually start the bridge much faster.
 
@@ -107,6 +108,7 @@ Manual examples:
 npm run codespaces:bootstrap -- --prepare-only
 npm run codespaces:bootstrap
 npm run codespaces:bootstrap -- --no-start
+CLAWDEX_CODESPACES_ENGINES=codex,opencode,cursor npm run codespaces:bootstrap
 ```
 
 Minimal template equivalent:
@@ -296,7 +298,7 @@ npm run teardown -- --yes
 |---|---|
 | `EXPO_PUBLIC_HOST_BRIDGE_TOKEN` | token used by local mobile dev builds |
 | `EXPO_PUBLIC_GITHUB_APP_CLIENT_ID` | GitHub App client ID for in-app Codespaces sign-in |
-| `EXPO_PUBLIC_GITHUB_APP_SLUG` | GitHub App slug used to open install/manage-access pages for repository selection |
+| `EXPO_PUBLIC_GITHUB_APP_SLUG` | optional GitHub App slug, reserved for future manage-access flows |
 | `EXPO_PUBLIC_GITHUB_APP_AUTH_BASE_URL` | HTTPS origin for the GitHub App auth worker (`/api/github/exchange`, `/api/github/refresh`, `/github/callback`) |
 | `EXPO_PUBLIC_GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN` | forwarded port domain used to derive Codespaces bridge URLs (`app.github.dev` by default) |
 | `EXPO_PUBLIC_GITHUB_CODESPACES_REPO_NAME` | repository name to sort matching Codespaces first in the in-app picker |

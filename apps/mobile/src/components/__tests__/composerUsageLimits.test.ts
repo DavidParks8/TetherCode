@@ -1,4 +1,5 @@
 import {
+  buildComposerUsageLimitAlert,
   buildComposerUsageLimitBadges,
   formatComposerUsageLimitLabel,
   formatComposerUsageLimitResetAt,
@@ -152,5 +153,48 @@ describe('composerUsageLimits', () => {
       })
     ).toBe('Tue, Nov 14, 10:13 PM');
     expect(formatComposerUsageLimitResetAt(null)).toBe('Unknown');
+  });
+
+  it('builds an alert when a usage limit is exhausted', () => {
+    const resetAt = 1_700_000_000;
+    const alert = buildComposerUsageLimitAlert({
+      limitId: 'codex',
+      limitName: 'Codex',
+      planType: 'plus',
+      credits: null,
+      primary: {
+        usedPercent: 100,
+        windowDurationMins: 300,
+        resetsAt: resetAt,
+      },
+      secondary: {
+        usedPercent: 45,
+        windowDurationMins: 10_080,
+        resetsAt: 1_700_000_100,
+      },
+    });
+
+    expect(alert).toEqual({
+      title: 'Rate limit reached',
+      body: 'Your 5h Codex limit is reached. Try again after the reset.',
+      status: `Resets ${formatComposerUsageLimitResetAt(resetAt)}.`,
+    });
+  });
+
+  it('does not build an alert when limits still have capacity', () => {
+    expect(
+      buildComposerUsageLimitAlert({
+        limitId: 'codex',
+        limitName: 'Codex',
+        planType: 'plus',
+        credits: null,
+        primary: {
+          usedPercent: 80,
+          windowDurationMins: 300,
+          resetsAt: null,
+        },
+        secondary: null,
+      })
+    ).toBeNull();
   });
 });

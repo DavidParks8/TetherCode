@@ -27,6 +27,7 @@ import {
 } from '../bridgeUrl';
 import { HostBridgeWsClient } from '../api/ws';
 import { BrandMark } from '../components/BrandMark';
+import { ChoiceAction } from '../components/ChoiceAction';
 import { useAppTheme, type AppTheme } from '../theme';
 
 export type OnboardingMode = 'initial' | 'edit' | 'add' | 'reconnect';
@@ -202,7 +203,7 @@ export function OnboardingScreen({
 
   const normalizedTokenPreview = tokenInput.trim();
   const showOnboardingDock = mode === 'initial';
-  const introGitHubAction = onSignInWithGitHubCodespaces ?? onOpenGitHubCodespaces;
+  const introGitHubAction = onOpenGitHubCodespaces ?? onSignInWithGitHubCodespaces;
   const currentSetupStage = useMemo(() => {
     if (showIntroStep) {
       return 1;
@@ -467,57 +468,29 @@ export function OnboardingScreen({
 
               <Animated.View style={[styles.introFooter, introActionsAnimatedStyle]}>
                 {githubCodespacesEnabled && introGitHubAction ? (
-                  <Pressable
+                  <ChoiceAction
+                    variant="primary"
+                    logo="github"
+                    title={githubCodespacesLoading ? 'Opening GitHub...' : 'GitHub Codespaces'}
+                    meta={
+                      githubCodespacesLoading
+                        ? 'Returning here automatically'
+                        : 'Hosted workspace'
+                    }
+                    loading={githubCodespacesLoading}
+                    disabled={githubCodespacesLoading}
                     onPress={() => {
                       void introGitHubAction();
                     }}
-                    disabled={githubCodespacesLoading}
-                    style={({ pressed }) => [
-                      styles.choiceCard,
-                      styles.choiceCardPrimary,
-                      githubCodespacesLoading && styles.choiceCardDisabled,
-                      pressed && styles.choiceCardPressed,
-                    ]}
-                  >
-                    <View style={[styles.choiceIconWrap, styles.choiceIconWrapPrimary]}>
-                      {githubCodespacesLoading ? (
-                        <ActivityIndicator size="small" color={theme.colors.black} />
-                      ) : (
-                        <Ionicons name="logo-github" size={18} color={theme.colors.black} />
-                      )}
-                    </View>
-                    <View style={styles.choiceCopy}>
-                      <Text style={styles.choiceTitlePrimary}>
-                        {githubCodespacesLoading ? 'Opening GitHub…' : 'GitHub Codespaces'}
-                      </Text>
-                      <Text style={styles.choiceMetaPrimary}>
-                        {githubCodespacesLoading ? 'Returning here automatically' : 'Hosted workspace'}
-                      </Text>
-                    </View>
-                    <Ionicons name="arrow-forward" size={18} color={theme.colors.black} />
-                  </Pressable>
+                  />
                 ) : null}
-                <Pressable
+                <ChoiceAction
+                  variant="secondary"
+                  logo="clawdex"
+                  title="Private connection"
+                  meta="Your machine"
                   onPress={goToConnectStep}
-                  style={({ pressed }) => [
-                    styles.choiceCard,
-                    styles.choiceCardSecondary,
-                    pressed && styles.choiceCardPressed,
-                  ]}
-                >
-                  <View style={styles.choiceIconWrap}>
-                    <Ionicons
-                      name="hardware-chip-outline"
-                      size={18}
-                      color={theme.colors.textPrimary}
-                    />
-                  </View>
-                  <View style={styles.choiceCopy}>
-                    <Text style={styles.choiceTitleSecondary}>Private connection</Text>
-                    <Text style={styles.choiceMetaSecondary}>Your machine</Text>
-                  </View>
-                  <Ionicons name="arrow-forward" size={18} color={theme.colors.textMuted} />
-                </Pressable>
+                />
               </Animated.View>
             </View>
           ) : (
@@ -774,9 +747,9 @@ export function OnboardingScreen({
                       ]}
                     >
                       {checkingConnection ? (
-                        <ActivityIndicator size="small" color={theme.colors.black} />
+                        <ActivityIndicator size="small" color={theme.colors.accentText} />
                       ) : (
-                        <Ionicons name="arrow-forward" size={16} color={theme.colors.black} />
+                        <Ionicons name="arrow-forward" size={16} color={theme.colors.accentText} />
                       )}
                       <Text style={styles.primaryButtonText}>
                         {mode === 'edit'
@@ -934,7 +907,7 @@ function CommandSnippet({
           <Ionicons
             name={copied ? 'checkmark-outline' : 'copy-outline'}
             size={14}
-            color={copied ? theme.colors.black : theme.colors.textPrimary}
+            color={copied ? theme.colors.accentText : theme.colors.textPrimary}
           />
           <Text
             style={[
@@ -1277,7 +1250,7 @@ const createStyles = (theme: AppTheme) => {
     lineHeight: 12,
   },
   stepperPillIndexTextActive: {
-    color: theme.colors.black,
+    color: theme.colors.accentText,
   },
   stepperPillTitle: {
     ...theme.typography.caption,
@@ -1366,71 +1339,6 @@ const createStyles = (theme: AppTheme) => {
   },
   introFooter: {
     gap: theme.spacing.sm,
-  },
-  choiceCard: {
-    minHeight: 78,
-    borderRadius: 24,
-    borderWidth: 1,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-  },
-  choiceCardPrimary: {
-    backgroundColor: theme.colors.bgCanvasAccent,
-    borderColor: theme.colors.bgCanvasAccent,
-    boxShadow: theme.isDark
-      ? '0px 14px 28px rgba(0, 0, 0, 0.34)'
-      : '0px 14px 28px rgba(15, 23, 42, 0.18)',
-  },
-  choiceCardSecondary: {
-    backgroundColor: theme.isDark ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.62)',
-    borderColor: theme.colors.borderHighlight,
-  },
-  choiceCardPressed: {
-    opacity: 0.92,
-  },
-  choiceCardDisabled: {
-    opacity: 0.72,
-  },
-  choiceIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.borderLight,
-    backgroundColor: theme.isDark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.78)',
-  },
-  choiceIconWrapPrimary: {
-    backgroundColor: 'rgba(255,255,255,0.96)',
-    borderColor: 'rgba(255,255,255,0.82)',
-  },
-  choiceCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  choiceTitlePrimary: {
-    ...theme.typography.headline,
-    color: theme.colors.accentText,
-    fontSize: 17,
-  },
-  choiceTitleSecondary: {
-    ...theme.typography.headline,
-    color: theme.colors.textPrimary,
-    fontSize: 17,
-  },
-  choiceMetaPrimary: {
-    ...theme.typography.caption,
-    color: 'rgba(255,255,255,0.72)',
-    fontWeight: '600',
-  },
-  choiceMetaSecondary: {
-    ...theme.typography.caption,
-    color: theme.colors.textMuted,
-    fontWeight: '600',
   },
   scroll: {
     flex: 1,
@@ -1633,7 +1541,7 @@ const createStyles = (theme: AppTheme) => {
     fontWeight: '600',
   },
   commandCopyButtonTextCopied: {
-    color: theme.colors.black,
+    color: theme.colors.accentText,
   },
   commandCodeWrap: {
     borderRadius: 12,
@@ -1848,7 +1756,7 @@ const createStyles = (theme: AppTheme) => {
   },
   primaryButtonText: {
     ...theme.typography.headline,
-    color: theme.colors.black,
+    color: theme.colors.accentText,
     fontWeight: '700',
   },
   scannerModalRoot: {

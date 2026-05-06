@@ -81,7 +81,11 @@ import { ComposerUsageLimits } from '../components/ComposerUsageLimits';
 import { BrandMark } from '../components/BrandMark';
 import { SelectionSheet, type SelectionSheetOption } from '../components/SelectionSheet';
 import { WorkspacePickerModal } from '../components/WorkspacePickerModal';
-import { buildComposerUsageLimitBadges } from '../components/usageLimitBadges';
+import {
+  buildComposerUsageLimitAlert,
+  buildComposerUsageLimitBadges,
+  type ComposerUsageLimitAlertModel,
+} from '../components/usageLimitBadges';
 import { env } from '../config';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import {
@@ -116,6 +120,16 @@ export interface MainScreenHandle {
   startNewChat: () => void;
 }
 
+interface GitHubCodespaceRecoveryAction {
+  codespaceName: string;
+  repositoryFullName?: string | null;
+  checking: boolean;
+  waking: boolean;
+  message?: string | null;
+  onWake: () => void | Promise<void>;
+  onOpenSetup: () => void;
+}
+
 interface MainScreenProps {
   api: HostBridgeApiClient;
   ws: HostBridgeWsClient;
@@ -125,6 +139,7 @@ interface MainScreenProps {
   onOpenGit: (chat: Chat) => void;
   onOpenLocalPreview?: (targetUrl: string) => void;
   onOpenBridgeRecoveryGuide?: () => void;
+  githubCodespaceRecovery?: GitHubCodespaceRecoveryAction | null;
   defaultStartCwd?: string | null;
   defaultChatEngine?: ChatEngine | null;
   defaultEngineSettings?: EngineDefaultSettingsMap | null;
@@ -413,6 +428,12 @@ const SLASH_COMMANDS: SlashCommandDefinition[] = [
     availabilityNote: 'Available in Codex CLI only right now.',
   },
   {
+    name: 'goal',
+    summary: 'Create or inspect an active goal',
+    argsHint: '[objective]',
+    mobileSupported: true,
+  },
+  {
     name: 'init',
     summary: 'Generate AGENTS.md scaffold',
     mobileSupported: false,
@@ -538,6 +559,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       onOpenGit,
       onOpenLocalPreview: onOpenLocalPreviewHandler,
       onOpenBridgeRecoveryGuide,
+      githubCodespaceRecovery = null,
       defaultStartCwd,
       defaultChatEngine,
       defaultEngineSettings,
@@ -2795,18 +2817,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           ]);
           const listedChatIds = new Set(listedChats.map((chat) => chat.id));
           const missingLoadedIds = loadedThreadIds.filter((threadId) => !listedChatIds.has(threadId));
-          const loadedOnlyChats = await Promise.all(
-            missingLoadedIds.map(async (threadId) => {
-              try {
-                return await api.getChatSummary(threadId);
-              } catch {
-                return null;
-              }
-            })
-          );
+          const loadedOnlyChats = await api.getChatSummaries(missingLoadedIds);
           const chats = [
             ...listedChats,
-            ...loadedOnlyChats.filter((chat): chat is ChatSummary => chat !== null),
+            ...loadedOnlyChats,
           ];
           const focusChat =
             chats.find((chat) => chat.id === activeChatId) ??
@@ -4397,14 +4411,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         const name = commandDef?.name ?? rawName;
         const argText = args.trim();
 
-        if (!commandDef) {
-          setError(`Unknown slash command: /${rawName}`);
-          return true;
-        }
-
-        if (!commandDef.mobileSupported) {
-          setError(commandDef.availabilityNote ?? `/${name} is available in Codex CLI only.`);
-          return true;
+        if (!commandDef || !commandDef.mobileSupported) {
+          return false;
         }
 
         if (name === 'agent') {
@@ -4719,7 +4727,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             `Reasoning: ${activeEffortLabel}`,
             `Fast mode: ${fastModeEnabled ? 'On' : 'Off'}`,
             `Mode: ${formatCollaborationModeLabel(selectedCollaborationMode)}`,
-            `Default workspace: ${preferredStartCwd ?? 'Bridge default workspace'}`,
+            `Default workspace: ${preferredStartCwd ?? 'Select project'}`,
           ];
           if (selectedChat) {
             lines.push(`Chat: ${selectedChat.title || selectedChat.id}`);
@@ -4890,8 +4898,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           return true;
         }
 
-        setError(`Unsupported slash command on mobile: /${name}`);
-        return true;
+        return false;
       },
       [
         activeEffort,
@@ -7680,6 +7687,19 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     ]);
 
     const showBridgeRecoveryBanner = bridgeRecoveryBannerVisible && !ws.isConnected;
+    const showGitHubCodespaceRecovery = Boolean(githubCodespaceRecovery);
+    const githubCodespaceRecoveryBusy = Boolean(
+      githubCodespaceRecovery?.checking || githubCodespaceRecovery?.waking
+    );
+    const githubCodespaceRecoveryTitle =
+      githubCodespaceRecovery?.checking
+        ? 'Checking Codespace'
+        : githubCodespaceRecovery?.waking
+          ? 'Starting Codespace'
+          : 'Wake Codespace';
+    const githubCodespaceRecoveryBody = githubCodespaceRecovery
+      ? `${githubCodespaceRecovery.repositoryFullName ?? githubCodespaceRecovery.codespaceName} is not responding. Wake the Codespace and Clawdex will reconnect automatically.`
+      : null;
     const visibleActivity = (() => {
       if (isOpeningChat) {
         return {
@@ -7751,8 +7771,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
         return {
           tone: 'error',
-          title: 'Bridge disconnected',
-          detail: 'Start the bridge on your computer to continue.',
+          title: showGitHubCodespaceRecovery ? 'Codespace not responding' : 'Bridge disconnected',
+          detail: showGitHubCodespaceRecovery
+            ? 'Wake the Codespace to continue.'
+            : 'Start the bridge on your computer to continue.',
         } satisfies ActivityState;
       }
 
@@ -7840,6 +7862,22 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       activeChatEngine === 'codex'
         ? buildComposerUsageLimitBadges(accountRateLimits)
         : [];
+    const accountUsageLimitAlert =
+      activeChatEngine === 'codex'
+        ? buildComposerUsageLimitAlert(accountRateLimits)
+        : null;
+    const rateLimitErrorAlert =
+      activeChatEngine === 'codex' && !accountUsageLimitAlert
+        ? buildRateLimitAlertFromMessages([
+            error,
+            activity.detail,
+            displayedActivity.detail,
+            activity.title,
+            displayedActivity.title,
+          ])
+        : null;
+    const usageLimitAlert = accountUsageLimitAlert ?? rateLimitErrorAlert;
+    const showUsageLimitBanner = Boolean(usageLimitAlert) && ws.isConnected;
     const contextChipLabel =
       contextUsedLabel && contextWindowLabel
         ? `${contextUsedLabel} / ${contextWindowLabel}${
@@ -7860,7 +7898,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             : theme.colors.borderHighlight;
     const headerTitle = isOpeningChat ? 'Opening chat' : selectedChat?.title?.trim() || 'New chat';
     const defaultStartWorkspaceLabel =
-      preferredStartCwd ?? 'Bridge default workspace';
+      preferredStartCwd ?? 'Select project';
     const gitCheckoutDestinationLabel =
       gitCheckoutParentPath ?? workspaceBridgeRoot ?? 'Bridge default workspace';
     const gitCheckoutTargetPath =
@@ -8002,7 +8040,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       shouldShowComposer &&
       Boolean(selectedChat) &&
       !isOpeningChat &&
-      !showBridgeRecoveryBanner;
+      !showBridgeRecoveryBanner &&
+      !showUsageLimitBanner;
     const chatBottomInset = shouldShowComposer
       ? theme.spacing.lg
       : Math.max(theme.spacing.xxl, safeAreaInsets.bottom + theme.spacing.lg);
@@ -8010,7 +8049,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const composerOverlayInset =
       Platform.OS === 'android' && keyboardVisible ? androidKeyboardInset : 0;
     const visibleError =
-      !ws.isConnected && isBridgeConnectionErrorMessage(error) ? null : error;
+      !ws.isConnected && isBridgeConnectionErrorMessage(error)
+        ? null
+        : showUsageLimitBanner && isRateLimitReachedMessage(error)
+          ? null
+          : error;
     const androidComposerReservedInset = shouldShowComposer
       ? Math.max(
           theme.spacing.lg,
@@ -8042,20 +8085,67 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             <View style={styles.bridgeRecoveryBannerTopRow}>
               <View style={styles.bridgeRecoveryBannerIconWrap}>
                 <Ionicons
-                  name="warning-outline"
+                  name={showGitHubCodespaceRecovery ? 'cloud-outline' : 'warning-outline'}
                   size={16}
                   color={theme.colors.warning}
                 />
               </View>
               <View style={styles.bridgeRecoveryBannerCopy}>
-                <Text style={styles.bridgeRecoveryBannerTitle}>Bridge disconnected</Text>
-                <Text style={styles.bridgeRecoveryBannerBody}>
-                  Start the bridge on your computer to continue. The app will reconnect
-                  automatically.
+                <Text style={styles.bridgeRecoveryBannerTitle}>
+                  {showGitHubCodespaceRecovery ? 'Codespace not responding' : 'Bridge disconnected'}
                 </Text>
+                <Text style={styles.bridgeRecoveryBannerBody}>
+                  {githubCodespaceRecoveryBody ??
+                    'Start the bridge on your computer to continue. The app will reconnect automatically.'}
+                </Text>
+                {githubCodespaceRecovery?.message ? (
+                  <Text style={styles.bridgeRecoveryBannerStatus}>
+                    {githubCodespaceRecovery.message}
+                  </Text>
+                ) : null}
               </View>
             </View>
-            {onOpenBridgeRecoveryGuide ? (
+            {githubCodespaceRecovery ? (
+              <View style={styles.bridgeRecoveryBannerActions}>
+                <Pressable
+                  disabled={githubCodespaceRecoveryBusy}
+                  onPress={() => {
+                    void githubCodespaceRecovery.onWake();
+                  }}
+                  style={({ pressed }) => [
+                    styles.bridgeRecoveryBannerButton,
+                    githubCodespaceRecoveryBusy && styles.bridgeRecoveryBannerButtonDisabled,
+                    pressed &&
+                      !githubCodespaceRecoveryBusy &&
+                      styles.bridgeRecoveryBannerButtonPressed,
+                  ]}
+                >
+                  {githubCodespaceRecoveryBusy ? (
+                    <ActivityIndicator size="small" color={theme.colors.accentText} />
+                  ) : (
+                    <Ionicons
+                      name="power-outline"
+                      size={14}
+                      color={theme.colors.accentText}
+                    />
+                  )}
+                  <Text style={styles.bridgeRecoveryBannerButtonText}>
+                    {githubCodespaceRecoveryTitle}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={githubCodespaceRecovery.onOpenSetup}
+                  style={({ pressed }) => [
+                    styles.bridgeRecoveryBannerSecondaryButton,
+                    pressed && styles.bridgeRecoveryBannerSecondaryButtonPressed,
+                  ]}
+                >
+                  <Text style={styles.bridgeRecoveryBannerSecondaryButtonText}>
+                    Open setup
+                  </Text>
+                </Pressable>
+              </View>
+            ) : onOpenBridgeRecoveryGuide ? (
               <Pressable
                 onPress={onOpenBridgeRecoveryGuide}
                 style={({ pressed }) => [
@@ -8068,6 +8158,32 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 </Text>
               </Pressable>
             ) : null}
+          </View>
+        ) : null}
+        {!showBridgeRecoveryBanner && showUsageLimitBanner && usageLimitAlert ? (
+          <View style={styles.bridgeRecoveryBanner}>
+            <View style={styles.bridgeRecoveryBannerTopRow}>
+              <View style={styles.bridgeRecoveryBannerIconWrap}>
+                <Ionicons
+                  name="warning-outline"
+                  size={16}
+                  color={theme.colors.warning}
+                />
+              </View>
+              <View style={styles.bridgeRecoveryBannerCopy}>
+                <Text style={styles.bridgeRecoveryBannerTitle}>
+                  {usageLimitAlert.title}
+                </Text>
+                <Text style={styles.bridgeRecoveryBannerBody}>
+                  {usageLimitAlert.body}
+                </Text>
+                {usageLimitAlert.status ? (
+                  <Text style={styles.bridgeRecoveryBannerStatus}>
+                    {usageLimitAlert.status}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
           </View>
         ) : null}
         {pendingApproval ? (
@@ -11589,6 +11705,48 @@ function isBridgeConnectionErrorMessage(value: string | null | undefined): boole
   );
 }
 
+function buildRateLimitAlertFromMessages(
+  messages: Array<string | null | undefined>
+): ComposerUsageLimitAlertModel | null {
+  return findRateLimitReachedMessage(messages)
+    ? {
+        title: 'Rate limit reached',
+        body: 'Your Codex usage limit is reached. Try again after it resets.',
+        status: null,
+      }
+    : null;
+}
+
+function findRateLimitReachedMessage(
+  messages: Array<string | null | undefined>
+): string | null {
+  for (const message of messages) {
+    if (isRateLimitReachedMessage(message)) {
+      return message?.trim() ?? null;
+    }
+  }
+  return null;
+}
+
+function isRateLimitReachedMessage(value: string | null | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes('rate limit') ||
+    normalized.includes('usage limit') ||
+    normalized.includes('quota exceeded') ||
+    normalized.includes('too many requests') ||
+    /\b429\b/.test(normalized)
+  );
+}
+
 function isBridgeRecoveryActivity(activity: ActivityState | null | undefined): boolean {
   if (!activity) {
     return false;
@@ -13795,8 +13953,22 @@ const createStyles = (theme: AppTheme) => {
     color: theme.colors.textSecondary,
     lineHeight: 17,
   },
+  bridgeRecoveryBannerStatus: {
+    ...theme.typography.caption,
+    color: theme.colors.textPrimary,
+    lineHeight: 17,
+  },
+  bridgeRecoveryBannerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
   bridgeRecoveryBannerButton: {
     alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: theme.colors.accent,
@@ -13808,9 +13980,29 @@ const createStyles = (theme: AppTheme) => {
     backgroundColor: theme.colors.accentPressed,
     borderColor: theme.colors.accentPressed,
   },
+  bridgeRecoveryBannerButtonDisabled: {
+    opacity: 0.72,
+  },
   bridgeRecoveryBannerButtonText: {
     ...theme.typography.caption,
     color: theme.colors.accentText,
+    fontWeight: '700',
+  },
+  bridgeRecoveryBannerSecondaryButton: {
+    alignSelf: 'flex-start',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: theme.colors.borderHighlight,
+    backgroundColor: theme.colors.bgItem,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+  },
+  bridgeRecoveryBannerSecondaryButtonPressed: {
+    backgroundColor: theme.colors.bgInput,
+  },
+  bridgeRecoveryBannerSecondaryButtonText: {
+    ...theme.typography.caption,
+    color: theme.colors.textSecondary,
     fontWeight: '700',
   },
   errorText: {

@@ -20,7 +20,7 @@ describe('githubAppAuth helpers', () => {
         state: 'state-123',
       })
     ).toBe(
-      'https://github.com/login/oauth/authorize?client_id=Iv23liaTdPNfi73uBFKi&redirect_uri=https%3A%2F%2Fgetclawdex.com%2Fgithub%2Fcallback&state=state-123&prompt=select_account'
+      'https://github.com/login/oauth/authorize?client_id=Iv23liaTdPNfi73uBFKi&redirect_uri=https%3A%2F%2Fgetclawdex.com%2Fgithub%2Fcallback&state=state-123'
     );
   });
 

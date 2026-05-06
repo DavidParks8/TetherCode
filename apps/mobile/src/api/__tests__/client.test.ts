@@ -665,6 +665,84 @@ describe('HostBridgeApiClient', () => {
     expect(client.peekChat('thr_cached')?.messages).toHaveLength(2);
   });
 
+  it('getChat() retries when Codex has created an empty rollout file', async () => {
+    jest.useFakeTimers();
+    try {
+      const ws = createWsMock();
+      ws.request
+        .mockRejectedValueOnce(
+          new Error(
+            'RPC -32603: failed to read thread: thread-store internal error: failed to read thread /Users/mohitpatil/.codex/sessions/2026/05/06/rollout-2026-05-06T22-21-30-019dfe33-a320-7ae2-b86b-dd86d35f665b.jsonl: rollout at /Users/mohitpatil/.codex/sessions/2026/05/06/rollout-2026-05-06T22-21-30-019dfe33-a320-7ae2-b86b-dd86d35f665b.jsonl is empty'
+          )
+        )
+        .mockResolvedValueOnce({
+          thread: {
+            id: 'codex:019dfe33-a320-7ae2-b86b-dd86d35f665b',
+            preview: 'ready',
+            createdAt: 1700000000,
+            updatedAt: 1700000001,
+            status: { type: 'idle' },
+            turns: [],
+          },
+        });
+
+      const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+      const chatPromise = client.getChat('codex:019dfe33-a320-7ae2-b86b-dd86d35f665b');
+
+      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(50);
+      const chat = await chatPromise;
+
+      expect(chat.id).toBe('codex:019dfe33-a320-7ae2-b86b-dd86d35f665b');
+      expect(ws.request).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('getChatSummaries() hydrates loaded threads with bounded concurrency', async () => {
+    const ws = createWsMock();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let releaseGate: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+
+    ws.request.mockImplementation(async (_method, params) => {
+      const threadId = (params as { threadId: string }).threadId;
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await gate;
+      inFlight -= 1;
+      return {
+        thread: {
+          id: threadId,
+          preview: threadId,
+          createdAt: 1700000000,
+          updatedAt: 1700000001,
+          status: { type: 'idle' },
+          turns: [],
+        },
+      };
+    });
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+    const summariesPromise = client.getChatSummaries(['thr_a', 'thr_b', 'thr_a', 'thr_c'], {
+      concurrency: 2,
+    });
+
+    await Promise.resolve();
+    expect(ws.request).toHaveBeenCalledTimes(2);
+
+    releaseGate();
+    const summaries = await summariesPromise;
+
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+    expect(summaries.map((summary) => summary.id)).toEqual(['thr_a', 'thr_b', 'thr_c']);
+    expect(ws.request).toHaveBeenCalledTimes(3);
+  });
+
   it('listChats() treats idle thread status as complete even with stale inProgress turn', async () => {
     const ws = createWsMock();
     ws.request.mockResolvedValue({

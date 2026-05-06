@@ -71,8 +71,8 @@ Notes:
 - Browser preview uses a second forwarded port (`8788` by default), so both ports need public visibility.
 - GitHub resets public forwarded ports back to private when a codespace restarts. Restarting the bridge reruns the visibility step.
 - If automatic visibility setup fails, run `gh codespace ports visibility 8787:public 8788:public`.
-- If the mobile app is built with `EXPO_PUBLIC_GITHUB_APP_CLIENT_ID`, `EXPO_PUBLIC_GITHUB_APP_SLUG`, and `EXPO_PUBLIC_GITHUB_APP_AUTH_BASE_URL`, users can now tap `Use GitHub Codespaces` in onboarding/settings, complete one in-app GitHub App install/auth flow, pick a Codespace, and connect without manually copying the bridge token.
-- The tiny auth backend for that flow lives in `services/github-app-auth-worker`. Point the GitHub App callback URL at `https://<your-domain>/github/callback` and enable `Request user authorization (OAuth) during installation`.
+- If the mobile app is built with `EXPO_PUBLIC_GITHUB_APP_CLIENT_ID` and `EXPO_PUBLIC_GITHUB_APP_AUTH_BASE_URL`, users can now tap `Use GitHub Codespaces` in onboarding/settings, complete one in-app GitHub sign-in, pick a Codespace, and connect without manually copying the bridge token.
+- The tiny auth backend for that flow lives in `services/github-app-auth-worker`. Point the GitHub App callback URL at `https://<your-domain>/github/callback` and configure the worker with the GitHub App client ID/secret.
 - The app can also create a new repo-backed Codespace directly. It prefers `<signed-in-user>/<EXPO_PUBLIC_GITHUB_CODESPACES_REPO_NAME>` first. If that repo does not exist, it automatically forks `EXPO_PUBLIC_GITHUB_CODESPACES_SOURCE_OWNER/<EXPO_PUBLIC_GITHUB_CODESPACES_REPO_NAME>` into the signed-in user account, then creates the Codespace there.
 
 This repo now also includes a Codespaces bootstrap flow. On Codespace start/resume, `.devcontainer/devcontainer.json` runs:
@@ -87,7 +87,15 @@ During initial Codespace creation, the devcontainer also runs:
 npm run codespaces:bootstrap -- --prepare-only
 ```
 
-That pre-installs Codex and prebuilds the Rust bridge binary so the later startup path is faster. The normal bootstrap command rewrites `.env.secure` for Codespaces with `codex` as the only enabled engine and starts the bridge in the background. You can rerun either command manually any time.
+That pre-installs the selected engines and prebuilds the Rust bridge binary so the later startup path is faster. The normal bootstrap command rewrites `.env.secure` for Codespaces with `codex` as the default enabled engine and starts the bridge in the background. You can rerun either command manually any time.
+
+To enable more engines in Codespaces, set `CLAWDEX_CODESPACES_ENGINES` before bootstrap:
+
+```bash
+CLAWDEX_CODESPACES_ENGINES=codex,opencode,cursor npm run codespaces:bootstrap
+```
+
+When `opencode` or `cursor` are selected, bootstrap installs their CLI/server package if the command is missing. Cursor still needs `CURSOR_API_KEY` in the environment or `.env.secure`.
 
 The published npm package now includes that bootstrap script too, so a minimal Codespaces template repo can install `clawdex-mobile@latest` in `postCreateCommand` and call the packaged bootstrap without vendoring bridge source into the template itself.
 

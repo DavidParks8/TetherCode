@@ -90,6 +90,25 @@ function parseArgs(argv) {
   };
 }
 
+function parseEngineList(value) {
+  const raw = typeof value === "string" && value.trim() ? value : "codex";
+  const engines = [];
+  for (const entry of raw.split(",")) {
+    const engine = entry.trim().toLowerCase();
+    if (!engine) {
+      continue;
+    }
+    if (!["codex", "opencode", "cursor"].includes(engine)) {
+      console.error(`error: unsupported Codespaces engine '${engine}'. Use codex, opencode, or cursor.`);
+      process.exit(1);
+    }
+    if (!engines.includes(engine)) {
+      engines.push(engine);
+    }
+  }
+  return engines.length > 0 ? engines : ["codex"];
+}
+
 function ensureCodespacesContext({ force }) {
   if (force) {
     return;
@@ -104,6 +123,9 @@ function ensureCodespacesContext({ force }) {
 }
 
 function runSetup(rootDir, workspaceDir) {
+  const enabledEngines = parseEngineList(
+    process.env.CLAWDEX_CODESPACES_ENGINES || process.env.BRIDGE_ENABLED_ENGINES || "codex"
+  );
   const setupEnv = {
     ...process.env,
   };
@@ -117,10 +139,10 @@ function runSetup(rootDir, workspaceDir) {
   setupEnv.CLAWDEX_WORKSPACE_ROOT = workspaceDir;
   setupEnv.BRIDGE_NETWORK_MODE = "codespaces";
   setupEnv.BRIDGE_HOST_OVERRIDE = "127.0.0.1";
-  setupEnv.BRIDGE_ACTIVE_ENGINE = "codex";
-  setupEnv.BRIDGE_ENABLED_ENGINES = "codex";
+  setupEnv.BRIDGE_ACTIVE_ENGINE = enabledEngines[0];
+  setupEnv.BRIDGE_ENABLED_ENGINES = enabledEngines.join(",");
 
-  console.log("Preparing .env.secure for GitHub Codespaces...");
+  console.log(`Preparing .env.secure for GitHub Codespaces (${setupEnv.BRIDGE_ENABLED_ENGINES})...`);
   const result = runCommand(path.join(rootDir, "scripts", "setup-secure-dev.sh"), [], {
     cwd: workspaceDir,
     env: setupEnv,
@@ -154,6 +176,50 @@ function ensureCodexCliInstalled(secureEnv) {
   }
 
   console.log("Codex CLI installed.");
+}
+
+function ensureNpmGlobalBinary({ binary, packageName, label }) {
+  if (commandExists(binary)) {
+    return;
+  }
+
+  console.log(`${label} not found in this codespace. Installing via npm...`);
+  const installResult = runCommand("npm", ["install", "-g", packageName], {
+    cwd: resolveWorkspaceDir(),
+    env: process.env,
+  });
+  if ((installResult.status ?? 1) !== 0) {
+    console.error(`error: failed to install ${label} automatically.`);
+    process.exit(installResult.status ?? 1);
+  }
+
+  if (!commandExists(binary)) {
+    console.error(`error: ${label} still not found after install attempt: ${binary}`);
+    process.exit(1);
+  }
+
+  console.log(`${label} installed.`);
+}
+
+function ensureSelectedEngineTools(secureEnv) {
+  const enabledEngines = parseEngineList(readNonEmptyEnv(secureEnv, "BRIDGE_ENABLED_ENGINES") || "codex");
+  if (enabledEngines.includes("codex")) {
+    ensureCodexCliInstalled(secureEnv);
+  }
+  if (enabledEngines.includes("opencode")) {
+    ensureNpmGlobalBinary({
+      binary: readNonEmptyEnv(secureEnv, "OPENCODE_CLI_BIN") || "opencode",
+      packageName: "opencode-ai",
+      label: "OpenCode CLI",
+    });
+  }
+  if (enabledEngines.includes("cursor")) {
+    ensureNpmGlobalBinary({
+      binary: readNonEmptyEnv(secureEnv, "CURSOR_APP_SERVER_BIN") || "cursor-app-server",
+      packageName: "@clawdex/cursor-app-server",
+      label: "Cursor app server",
+    });
+  }
 }
 
 function prepareBridgeBinary(rootDir, workspaceDir, secureEnv) {
@@ -219,7 +285,7 @@ function main() {
     return;
   }
 
-  ensureCodexCliInstalled(secureEnv);
+  ensureSelectedEngineTools(secureEnv);
   if (options.prepareOnly) {
     prepareBridgeBinary(rootDir, workspaceDir, secureEnv);
     console.log("Codespaces bootstrap prepared Codex and the bridge binary without starting the bridge.");

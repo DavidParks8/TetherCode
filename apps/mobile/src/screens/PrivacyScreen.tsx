@@ -146,8 +146,6 @@ const createStyles = (theme: AppTheme) =>
       gap: theme.spacing.sm,
       paddingHorizontal: theme.spacing.lg,
       paddingVertical: theme.spacing.md,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: theme.colors.borderHighlight,
     },
     menuBtn: { padding: theme.spacing.xs },
     headerTitle: { ...theme.typography.headline, color: theme.colors.textPrimary },

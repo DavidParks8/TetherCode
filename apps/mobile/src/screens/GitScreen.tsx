@@ -1319,8 +1319,6 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.lg,
     paddingVertical: theme.spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.borderLight,
   },
   backBtn: {
     padding: theme.spacing.xs,

@@ -75,6 +75,7 @@ const THREAD_LIST_STREAM_DEFAULT_LIMITS: [usize; 3] = [5, 20, 50];
 const THREAD_LIST_STREAM_MAX_LIMIT: usize = 100;
 const THREAD_LIST_STREAM_DEFAULT_DELAY_MS: u64 = 900;
 const THREAD_LIST_STREAM_MAX_DELAY_MS: u64 = 5_000;
+const APP_SERVER_TRANSIENT_THREAD_READ_RETRY_DELAYS_MS: [u64; 5] = [50, 100, 200, 400, 800];
 const ROLLOUT_LIVE_SYNC_POLL_INTERVAL_MS: u64 = 900;
 const ROLLOUT_LIVE_SYNC_DISCOVERY_INTERVAL_TICKS: u64 = 1;
 const ROLLOUT_LIVE_SYNC_MAX_TRACKED_FILES: usize = 64;
@@ -94,6 +95,8 @@ const BROWSER_PREVIEW_HTTP_BODY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 const BROWSER_PREVIEW_HTML_REWRITE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 const BROWSER_PREVIEW_DISCOVERY_HTTP_TIMEOUT: Duration = Duration::from_millis(500);
 const GITHUB_CODESPACES_AUTH_CACHE_TTL: Duration = Duration::from_secs(60 * 5);
+const GITHUB_CODESPACES_ACTIVE_TURN_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60 * 5);
+const GITHUB_CODESPACES_ACTIVE_TURN_KEEPALIVE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 6);
 const GITHUB_CODESPACES_API_VERSION: &str = "2022-11-28";
 const GITHUB_API_URL: &str = "https://api.github.com";
 const GITHUB_HOST: &str = "github.com";
@@ -2074,6 +2077,117 @@ impl ClientHub {
     }
 }
 
+fn spawn_github_codespaces_active_turn_keepalive(config: Arc<BridgeConfig>, hub: Arc<ClientHub>) {
+    let Some(github_auth) = config.github_codespaces_auth.clone() else {
+        return;
+    };
+
+    tokio::spawn(async move {
+        let mut notifications = hub.subscribe_notifications();
+        let mut active_threads: HashMap<String, Instant> = HashMap::new();
+        let mut ticker = tokio::time::interval(GITHUB_CODESPACES_ACTIVE_TURN_KEEPALIVE_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    prune_stale_codespaces_keepalive_threads(&mut active_threads);
+                    if !active_threads.is_empty() {
+                        emit_codespaces_active_turn_keepalive(&github_auth.codespace_name, active_threads.len());
+                    }
+                }
+                notification = notifications.recv() => {
+                    match notification {
+                        Ok(notification) => {
+                            handle_codespaces_keepalive_notification(&mut active_threads, notification);
+                            prune_stale_codespaces_keepalive_threads(&mut active_threads);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            eprintln!("codespaces active-turn keepalive missed {skipped} bridge notification(s)");
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn handle_codespaces_keepalive_notification(
+    active_threads: &mut HashMap<String, Instant>,
+    notification: HubNotification,
+) {
+    match notification.method.as_str() {
+        "turn/started" => {
+            if let Some(thread_id) = read_notification_thread_id(&notification.params) {
+                let was_empty = active_threads.is_empty();
+                active_threads.insert(thread_id, Instant::now());
+                if was_empty {
+                    eprintln!("codespaces active-turn keepalive started at {}", now_iso());
+                }
+            }
+        }
+        "turn/completed" => {
+            if let Some(thread_id) = read_notification_thread_id(&notification.params) {
+                active_threads.remove(&thread_id);
+            }
+        }
+        "thread/status/changed" => {
+            let Some(thread_id) = read_notification_thread_id(&notification.params) else {
+                return;
+            };
+            let status = read_string(
+                notification
+                    .params
+                    .as_object()
+                    .and_then(|params| params.get("status")),
+            )
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+
+            if status == "running" {
+                active_threads.insert(thread_id, Instant::now());
+            } else if matches!(
+                status.as_str(),
+                "completed" | "failed" | "interrupted" | "idle"
+            ) {
+                active_threads.remove(&thread_id);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn read_notification_thread_id(params: &Value) -> Option<String> {
+    let params = params.as_object()?;
+    read_string(params.get("threadId"))
+        .or_else(|| read_string(params.get("thread_id")))
+        .or_else(|| {
+            params
+                .get("turn")
+                .and_then(Value::as_object)
+                .and_then(|turn| {
+                    read_string(turn.get("threadId")).or_else(|| read_string(turn.get("thread_id")))
+                })
+        })
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn prune_stale_codespaces_keepalive_threads(active_threads: &mut HashMap<String, Instant>) {
+    active_threads.retain(|_, started_at| {
+        started_at.elapsed() <= GITHUB_CODESPACES_ACTIVE_TURN_KEEPALIVE_MAX_AGE
+    });
+}
+
+fn emit_codespaces_active_turn_keepalive(codespace_name: &str, active_turn_count: usize) {
+    eprintln!(
+        "codespaces active-turn keepalive: {active_turn_count} active turn(s) in {codespace_name} at {}",
+        now_iso()
+    );
+}
+
 impl BridgeQueuedMessageEntry {
     fn to_public(&self) -> BridgeQueuedMessage {
         BridgeQueuedMessage {
@@ -3060,6 +3174,31 @@ impl AppServerBridge {
     }
 
     async fn request_internal(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
+        let mut last_transient_error = None;
+        for attempt in 0..=APP_SERVER_TRANSIENT_THREAD_READ_RETRY_DELAYS_MS.len() {
+            match self.request_internal_once(method, params.clone()).await {
+                Ok(result) => return Ok(result),
+                Err(error) if is_transient_app_server_thread_read_error(method, &error) => {
+                    let delay_ms = APP_SERVER_TRANSIENT_THREAD_READ_RETRY_DELAYS_MS.get(attempt);
+                    let Some(delay_ms) = delay_ms else {
+                        return Err(error);
+                    };
+                    last_transient_error = Some(error);
+                    sleep(Duration::from_millis(*delay_ms)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(last_transient_error
+            .unwrap_or_else(|| format!("internal app-server request failed: {method}")))
+    }
+
+    async fn request_internal_once(
+        &self,
+        method: &str,
+        params: Option<Value>,
+    ) -> Result<Value, String> {
         let internal_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel::<Result<Value, String>>();
         self.internal_waiters.lock().await.insert(internal_id, tx);
@@ -6384,6 +6523,7 @@ async fn main() {
     }
 
     let hub = Arc::new(ClientHub::new());
+    spawn_github_codespaces_active_turn_keepalive(config.clone(), hub.clone());
     let backend = match RuntimeBackend::start(&config, hub.clone()).await {
         Ok(client) => client,
         Err(error) => {
@@ -10944,6 +11084,18 @@ fn normalize_forwarded_result(method: &str, result: Value, engine: BridgeRuntime
     }
 }
 
+fn is_transient_app_server_thread_read_error(method: &str, message: &str) -> bool {
+    if method != "thread/read" {
+        return false;
+    }
+
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("failed to read thread")
+        && normalized.contains("thread-store internal error")
+        && normalized.contains("rollout")
+        && normalized.contains("is empty")
+}
+
 fn qualify_engine_ids(value: Value, engine: BridgeRuntimeEngine) -> Value {
     qualify_engine_ids_for_key(None, value, engine)
 }
@@ -14058,6 +14210,24 @@ mod tests {
     }
 
     #[test]
+    fn transient_app_server_thread_read_error_matches_empty_rollout_race() {
+        let message = "failed to read thread: thread-store internal error: failed to read thread /Users/mohitpatil/.codex/sessions/2026/05/06/rollout-2026-05-06T22-21-30-019dfe33-a320-7ae2-b86b-dd86d35f665b.jsonl: rollout at /Users/mohitpatil/.codex/sessions/2026/05/06/rollout-2026-05-06T22-21-30-019dfe33-a320-7ae2-b86b-dd86d35f665b.jsonl is empty";
+
+        assert!(is_transient_app_server_thread_read_error(
+            "thread/read",
+            message
+        ));
+        assert!(!is_transient_app_server_thread_read_error(
+            "thread/list",
+            message
+        ));
+        assert!(!is_transient_app_server_thread_read_error(
+            "thread/read",
+            "failed to read thread: permission denied"
+        ));
+    }
+
+    #[test]
     fn route_engine_from_params_prefers_engine_qualified_thread_ids() {
         assert_eq!(
             route_engine_from_params(Some(&json!({ "threadId": "opencode:ses_1" }))),
@@ -14451,6 +14621,31 @@ mod tests {
         assert!(capabilities.supports.review_start);
 
         shutdown_test_backend(&state.backend).await;
+    }
+
+    #[test]
+    fn codespaces_keepalive_tracks_active_turn_notifications() {
+        let mut active_threads = HashMap::new();
+
+        handle_codespaces_keepalive_notification(
+            &mut active_threads,
+            HubNotification {
+                event_id: 1,
+                method: "turn/started".to_string(),
+                params: json!({ "threadId": "thr_1" }),
+            },
+        );
+        assert!(active_threads.contains_key("thr_1"));
+
+        handle_codespaces_keepalive_notification(
+            &mut active_threads,
+            HubNotification {
+                event_id: 2,
+                method: "turn/completed".to_string(),
+                params: json!({ "threadId": "thr_1" }),
+            },
+        );
+        assert!(active_threads.is_empty());
     }
 
     #[test]

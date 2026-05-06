@@ -138,7 +138,6 @@ export function buildGitHubAppAuthorizeUrl(input: {
   url.searchParams.set('client_id', input.clientId);
   url.searchParams.set('redirect_uri', buildGitHubAppWebCallbackUrl(input.authBaseUrl));
   url.searchParams.set('state', input.state);
-  url.searchParams.set('prompt', 'select_account');
   return url.toString();
 }
 

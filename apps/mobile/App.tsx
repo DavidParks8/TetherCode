@@ -19,6 +19,8 @@ import {
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, {
   cancelAnimation,
+  Easing,
+  LinearTransition,
   runOnJS,
   useAnimatedStyle,
   useSharedValue,
@@ -71,8 +73,11 @@ import {
   saveStoredGitHubAppAuthTokens,
 } from './src/githubAppAuth';
 import {
+  fetchGitHubCodespace,
   fetchGitHubUser,
+  GitHubApiError,
   shouldRefreshGitHubUserAccessToken,
+  startGitHubCodespace,
   type GitHubUserAccessToken,
   type GitHubUser,
 } from './src/githubCodespaces';
@@ -135,6 +140,9 @@ function isPendingGitHubCodespacesSession(
 const DRAWER_MIN_WIDTH = 260;
 const DRAWER_MAX_WIDTH = 296;
 const DRAWER_SCREEN_RATIO = 0.69;
+const TABLET_LAYOUT_MIN_WIDTH = 700;
+const TABLET_SIDEBAR_WIDTH = 312;
+const TABLET_SIDEBAR_ANIMATION_MS = 260;
 const EDGE_SWIPE_WIDTH = 24;
 const CHAT_GIT_BACK_DISTANCE = 56;
 const CHAT_GIT_BACK_VELOCITY = 900;
@@ -151,6 +159,7 @@ const DRAWER_MAX_SHADOW_RADIUS = 26;
 const DRAWER_MAX_ELEVATION = 18;
 const APP_PREFETCH_DELAY_MS = 0;
 const APP_PREFETCH_CHAT_LIMIT = 5;
+const GITHUB_CODESPACE_RECOVERY_CHECK_DELAY_MS = 5_000;
 const APP_SETTINGS_FILE = 'clawdex-app-settings.json';
 const AUTO_STORE_REVIEW_RETRY_MS = 24 * 60 * 60 * 1000;
 
@@ -280,6 +289,11 @@ export default function App() {
   const [gitHubCodespacesSigningIn, setGitHubCodespacesSigningIn] = useState(false);
   const [pendingGitHubCodespacesSession, setPendingGitHubCodespacesSession] =
     useState<PendingGitHubCodespacesSession | null>(null);
+  const [bridgeConnected, setBridgeConnected] = useState(() => Boolean(ws?.isConnected));
+  const [githubCodespaceRecoveryChecking, setGithubCodespaceRecoveryChecking] = useState(false);
+  const [githubCodespaceRecoveryWaking, setGithubCodespaceRecoveryWaking] = useState(false);
+  const [githubCodespaceRecoveryMessage, setGithubCodespaceRecoveryMessage] =
+    useState<string | null>(null);
   const [appLifecycleState, setAppLifecycleState] = useState<AppStateStatus>(
     AppState.currentState
   );
@@ -291,11 +305,13 @@ export default function App() {
     null
   );
   const [drawerVisible, setDrawerVisible] = useState(false);
+  const [tabletSidebarVisible, setTabletSidebarVisible] = useState(true);
   const [fontsLoaded, fontsError] = useFonts(APP_FONT_ASSETS);
   const drawerOpenRef = useRef(false);
   const drawerVisibleRef = useRef(false);
   const drawerCapturesTouchesRef = useRef(false);
   const gitHubTokenRefreshKeyRef = useRef<string | null>(null);
+  const githubCodespaceRecoveryCheckKeyRef = useRef<string | null>(null);
   const chatTransitionRequestIdRef = useRef(0);
   const appLifecycleStateRef = useRef(AppState.currentState);
   const activeUsageStartedAtRef = useRef<number | null>(
@@ -304,6 +320,7 @@ export default function App() {
   const storeReviewStateRef = useRef<AutoStoreReviewState>(createDefaultAutoStoreReviewState());
   const automaticStoreReviewInFlightRef = useRef(false);
   const { width: screenWidth } = useWindowDimensions();
+  const usesTabletLayout = screenWidth >= TABLET_LAYOUT_MIN_WIDTH;
   const resolvedThemeMode = resolveThemeMode(appearancePreference, systemColorScheme);
   const themeFontPreference = fontsLoaded ? fontPreference : DEFAULT_FONT_PREFERENCE;
   const theme = useMemo(
@@ -317,12 +334,29 @@ export default function App() {
   );
   const styles = useMemo(() => createStyles(theme), [theme]);
   const drawerWidth = useMemo(() => getDrawerWidth(screenWidth), [screenWidth]);
+  const tabletLayoutTransition = useMemo(
+    () =>
+      LinearTransition.duration(TABLET_SIDEBAR_ANIMATION_MS).easing(
+        Easing.out(Easing.cubic)
+      ),
+    []
+  );
   const contentShiftOpen = Math.min(drawerWidth - 12, screenWidth * 0.74);
   const drawerOffset = useSharedValue(-drawerWidth);
   const drawerDragStartOffset = useSharedValue(-drawerWidth);
   const drawerGestureDidSettle = useSharedValue(true);
 
   const screenFrameAnimatedStyle = useAnimatedStyle(() => {
+    if (usesTabletLayout) {
+      return {
+        transform: [{ translateX: 0 }, { scale: 1 }],
+        borderRadius: 0,
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        elevation: 0,
+      };
+    }
+
     const progress = getDrawerOpenProgress(drawerOffset.value, drawerWidth);
     return {
       transform: [
@@ -334,7 +368,7 @@ export default function App() {
       shadowRadius: DRAWER_MAX_SHADOW_RADIUS * progress,
       elevation: DRAWER_MAX_ELEVATION * progress,
     };
-  }, [contentShiftOpen]);
+  }, [contentShiftOpen, drawerWidth, usesTabletLayout]);
 
   const overlayAnimatedStyle = useAnimatedStyle(() => ({
     opacity: getDrawerOpenProgress(drawerOffset.value, drawerWidth),
@@ -363,11 +397,24 @@ export default function App() {
 
   useEffect(() => {
     if (!ws) {
+      setBridgeConnected(false);
       return;
     }
 
     ws.connect();
     return () => ws.disconnect();
+  }, [ws]);
+
+  useEffect(() => {
+    if (!ws) {
+      setBridgeConnected(false);
+      return;
+    }
+
+    setBridgeConnected(ws.isConnected);
+    return ws.onStatus((connected) => {
+      setBridgeConnected(connected);
+    });
   }, [ws]);
 
   useEffect(() => {
@@ -888,6 +935,13 @@ export default function App() {
 
   const animateDrawerTo = useCallback(
     (shouldOpen: boolean, velocityX = 0) => {
+      if (usesTabletLayout) {
+        handleDrawerSettled(false);
+        drawerOffset.value = -drawerWidth;
+        drawerDragStartOffset.value = -drawerWidth;
+        return;
+      }
+
       if (!shouldOpen && !drawerVisibleRef.current) {
         return;
       }
@@ -908,7 +962,16 @@ export default function App() {
         }
       );
     },
-    [dismissKeyboard, drawerOffset, drawerWidth, ensureDrawerVisible, handleDrawerSettled]
+    [
+      dismissKeyboard,
+      drawerDragStartOffset,
+      drawerOffset,
+      drawerWidth,
+      ensureDrawerCapturesTouches,
+      ensureDrawerVisible,
+      handleDrawerSettled,
+      usesTabletLayout,
+    ]
   );
 
   const openDrawer = useCallback(() => {
@@ -918,6 +981,15 @@ export default function App() {
   const closeDrawer = useCallback(() => {
     animateDrawerTo(false);
   }, [animateDrawerTo]);
+
+  const handleNavigationToggle = useCallback(() => {
+    if (usesTabletLayout) {
+      setTabletSidebarVisible((visible) => !visible);
+      return;
+    }
+
+    openDrawer();
+  }, [openDrawer, usesTabletLayout]);
 
   const openChatWithTransition = useCallback(
     async (id: string, snapshot?: Chat | null) => {
@@ -996,7 +1068,8 @@ export default function App() {
     () =>
       Gesture.Pan()
         .enabled(
-          currentScreen !== 'ChatGit' &&
+          !usesTabletLayout &&
+            currentScreen !== 'ChatGit' &&
             currentScreen !== 'Browser' &&
             currentScreen !== 'GitHubCodespaces' &&
             (currentScreen !== 'Settings' || settingsAllowsDrawerGesture)
@@ -1071,8 +1144,25 @@ export default function App() {
       handleDrawerSettled,
       ensureDrawerCapturesTouches,
       settingsAllowsDrawerGesture,
+      usesTabletLayout,
     ]
   );
+
+  useEffect(() => {
+    if (!usesTabletLayout) {
+      return;
+    }
+
+    handleDrawerSettled(false);
+    drawerOffset.value = -drawerWidth;
+    drawerDragStartOffset.value = -drawerWidth;
+  }, [
+    drawerDragStartOffset,
+    drawerOffset,
+    drawerWidth,
+    handleDrawerSettled,
+    usesTabletLayout,
+  ]);
 
   useEffect(() => {
     if (currentScreen !== 'Settings' && !settingsAllowsDrawerGesture) {
@@ -1688,6 +1778,248 @@ export default function App() {
     [closeDrawer, currentScreen, onboardingMode, onboardingReturnScreen]
   );
 
+  const openGitHubCodespacesRecoverySetup = useCallback(() => {
+    setGithubCodespaceRecoveryMessage(null);
+    setGithubCodespaceRecoveryChecking(false);
+    setGithubCodespaceRecoveryWaking(false);
+    openGitHubCodespaces();
+  }, [openGitHubCodespaces]);
+
+  const getFreshGitHubTokenForProfile = useCallback(
+    async (profile: BridgeProfile): Promise<GitHubUserAccessToken> => {
+      let token = bridgeProfileToGitHubToken(profile);
+      if (
+        env.githubAppAuthBaseUrl &&
+        shouldRefreshGitHubUserAccessToken(token) &&
+        token.refreshToken
+      ) {
+        token = await refreshGitHubAppAuthTokens(env.githubAppAuthBaseUrl, token.refreshToken);
+        await persistGitHubAuthTokenForUser(profile.githubUserLogin, token);
+      }
+      return token;
+    },
+    [env.githubAppAuthBaseUrl, persistGitHubAuthTokenForUser]
+  );
+
+  const handleGitHubCodespaceRecoveryError = useCallback(
+    (error: unknown): boolean => {
+      if (isGitHubCodespaceMissingError(error)) {
+        openGitHubCodespacesRecoverySetup();
+        return true;
+      }
+
+      if (isGitHubAuthRecoveryError(error)) {
+        openGitHubCodespacesRecoverySetup();
+        return true;
+      }
+
+      return false;
+    },
+    [openGitHubCodespacesRecoverySetup]
+  );
+
+  const resolveActiveGitHubCodespace = useCallback(async () => {
+    const profile = activeBridgeProfile;
+    if (!profile || !isGitHubBridgeProfile(profile)) {
+      return null;
+    }
+
+    const codespaceName = profile.githubCodespaceName?.trim();
+    if (!codespaceName) {
+      openGitHubCodespacesRecoverySetup();
+      return null;
+    }
+
+    const token = await getFreshGitHubTokenForProfile(profile);
+    const codespace = await fetchGitHubCodespace(token.accessToken, codespaceName);
+    return {
+      codespace,
+      codespaceName,
+      token,
+    };
+  }, [activeBridgeProfile, getFreshGitHubTokenForProfile, openGitHubCodespacesRecoverySetup]);
+
+  const handleWakeGitHubCodespace = useCallback(async () => {
+    setGithubCodespaceRecoveryWaking(true);
+    setGithubCodespaceRecoveryMessage(null);
+    try {
+      const recovery = await resolveActiveGitHubCodespace();
+      if (!recovery) {
+        return;
+      }
+
+      const state = normalizeGitHubCodespaceState(recovery.codespace.state);
+      if (isGitHubCodespaceDeletedState(state)) {
+        openGitHubCodespacesRecoverySetup();
+        return;
+      }
+
+      if (state === 'available') {
+        setGithubCodespaceRecoveryMessage(
+          'Codespace is awake. Waiting for the bridge to reconnect.'
+        );
+        return;
+      }
+
+      if (isGitHubCodespaceBootingState(state)) {
+        setGithubCodespaceRecoveryMessage(
+          'Codespace is already starting. Clawdex will reconnect when the bridge is back.'
+        );
+        return;
+      }
+
+      await startGitHubCodespace(recovery.token.accessToken, recovery.codespaceName);
+      setGithubCodespaceRecoveryMessage(
+        'Starting Codespace. Clawdex will reconnect when the bridge is back.'
+      );
+    } catch (error) {
+      if (handleGitHubCodespaceRecoveryError(error)) {
+        return;
+      }
+
+      setGithubCodespaceRecoveryMessage(
+        `Could not wake Codespace: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      setGithubCodespaceRecoveryWaking(false);
+    }
+  }, [
+    handleGitHubCodespaceRecoveryError,
+    openGitHubCodespacesRecoverySetup,
+    resolveActiveGitHubCodespace,
+  ]);
+
+  useEffect(() => {
+    if (bridgeConnected) {
+      githubCodespaceRecoveryCheckKeyRef.current = null;
+      setGithubCodespaceRecoveryChecking(false);
+      setGithubCodespaceRecoveryWaking(false);
+      setGithubCodespaceRecoveryMessage(null);
+      return;
+    }
+
+    if (appLifecycleState !== 'active') {
+      githubCodespaceRecoveryCheckKeyRef.current = null;
+      setGithubCodespaceRecoveryChecking(false);
+      return;
+    }
+
+    if (
+      currentScreen === 'Onboarding' ||
+      currentScreen === 'GitHubCodespaces' ||
+      !activeBridgeProfile ||
+      !isGitHubBridgeProfile(activeBridgeProfile)
+    ) {
+      return;
+    }
+
+    const codespaceName = activeBridgeProfile.githubCodespaceName?.trim();
+    if (!codespaceName) {
+      return;
+    }
+
+    const checkKey = [
+      activeBridgeProfile.id,
+      codespaceName,
+      activeBridgeProfile.bridgeToken,
+      activeBridgeProfile.githubAccessTokenExpiresAt ?? 'none',
+    ].join('::');
+    if (githubCodespaceRecoveryCheckKeyRef.current === checkKey) {
+      return;
+    }
+    githubCodespaceRecoveryCheckKeyRef.current = checkKey;
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setGithubCodespaceRecoveryChecking(true);
+      void resolveActiveGitHubCodespace()
+        .then((recovery) => {
+          if (cancelled || !recovery) {
+            return;
+          }
+
+          const state = normalizeGitHubCodespaceState(recovery.codespace.state);
+          if (isGitHubCodespaceDeletedState(state)) {
+            openGitHubCodespacesRecoverySetup();
+            return;
+          }
+
+          if (state === 'available') {
+            setGithubCodespaceRecoveryMessage(
+              'Codespace is awake. Waiting for the bridge to reconnect.'
+            );
+            return;
+          }
+
+          if (isGitHubCodespaceBootingState(state)) {
+            setGithubCodespaceRecoveryMessage(
+              'Codespace is already starting. Clawdex will reconnect when the bridge is back.'
+            );
+            return;
+          }
+
+          setGithubCodespaceRecoveryMessage(
+            formatGitHubCodespaceRecoveryStateMessage(recovery.codespace.state)
+          );
+        })
+        .catch((error) => {
+          if (cancelled || handleGitHubCodespaceRecoveryError(error)) {
+            return;
+          }
+
+          setGithubCodespaceRecoveryMessage(
+            `Could not check Codespace: ${error instanceof Error ? error.message : String(error)}`
+          );
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setGithubCodespaceRecoveryChecking(false);
+          }
+        });
+    }, GITHUB_CODESPACE_RECOVERY_CHECK_DELAY_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    activeBridgeProfile,
+    appLifecycleState,
+    bridgeConnected,
+    currentScreen,
+    handleGitHubCodespaceRecoveryError,
+    openGitHubCodespacesRecoverySetup,
+    resolveActiveGitHubCodespace,
+  ]);
+
+  const githubCodespaceRecovery = useMemo(() => {
+    if (!activeBridgeProfile || !isGitHubBridgeProfile(activeBridgeProfile)) {
+      return null;
+    }
+
+    const codespaceName = activeBridgeProfile.githubCodespaceName?.trim();
+    if (!codespaceName) {
+      return null;
+    }
+
+    return {
+      codespaceName,
+      repositoryFullName: activeBridgeProfile.githubRepositoryFullName,
+      checking: githubCodespaceRecoveryChecking,
+      waking: githubCodespaceRecoveryWaking,
+      message: githubCodespaceRecoveryMessage,
+      onWake: handleWakeGitHubCodespace,
+      onOpenSetup: openGitHubCodespacesRecoverySetup,
+    };
+  }, [
+    activeBridgeProfile,
+    githubCodespaceRecoveryChecking,
+    githubCodespaceRecoveryMessage,
+    githubCodespaceRecoveryWaking,
+    handleWakeGitHubCodespace,
+    openGitHubCodespacesRecoverySetup,
+  ]);
+
   const startGitHubCodespacesSignIn = useCallback(async () => {
     if (!env.githubClientId || !env.githubAppAuthBaseUrl) {
       openGitHubCodespaces(null);
@@ -1839,6 +2171,13 @@ export default function App() {
     setCurrentScreen(gitHubCodespacesCancelScreen);
   }, [gitHubCodespacesCancelScreen]);
 
+  const handleOpenPrivateConnectionFromGitHubCodespaces = useCallback(() => {
+    setPendingGitHubCodespacesSession(null);
+    setOnboardingMode('add');
+    setOnboardingReturnScreen('Main');
+    setCurrentScreen('Onboarding');
+  }, []);
+
   const handleOpenChatGit = useCallback((chat: Chat) => {
     chatTransitionRequestIdRef.current += 1;
     setChatTransitionChatId(null);
@@ -1986,6 +2325,7 @@ export default function App() {
               initialSession={pendingGitHubCodespacesSession}
               onBack={handleCancelGitHubCodespaces}
               onConnect={handleGitHubCodespacesProfileSaved}
+              onOpenPrivateConnection={handleOpenPrivateConnectionFromGitHubCodespaces}
               onSyncGitHubAuthToken={persistGitHubAuthTokenForUser}
             />
           </SafeAreaProvider>
@@ -2024,13 +2364,19 @@ export default function App() {
               initialBridgeToken={initialToken}
               allowInsecureRemoteBridge={env.allowInsecureRemoteBridge}
               allowQueryTokenAuth={env.allowWsQueryTokenAuth}
-              githubCodespacesEnabled={Boolean(env.githubClientId)}
+              githubCodespacesEnabled={Boolean(
+                env.githubClientId && env.githubAppAuthBaseUrl
+              )}
               githubCodespacesLoading={gitHubCodespacesSigningIn}
               onOpenGitHubCodespaces={
-                env.githubClientId ? () => openGitHubCodespaces() : undefined
+                env.githubClientId && env.githubAppAuthBaseUrl
+                  ? startGitHubCodespacesSignIn
+                  : undefined
               }
               onSignInWithGitHubCodespaces={
-                env.githubClientId ? startGitHubCodespacesSignIn : undefined
+                env.githubClientId && env.githubAppAuthBaseUrl
+                  ? startGitHubCodespacesSignIn
+                  : undefined
               }
               onSave={handleBridgeProfileSaved}
               onCancel={canCancel ? handleCancelOnboarding : undefined}
@@ -2061,10 +2407,11 @@ export default function App() {
             ws={activeWs}
             bridgeUrl={bridgeUrl}
             bridgeToken={bridgeToken}
-            onOpenDrawer={openDrawer}
+            onOpenDrawer={handleNavigationToggle}
             onOpenGit={handleOpenChatGit}
             onOpenLocalPreview={openBrowser}
             onOpenBridgeRecoveryGuide={handleOpenBridgeRecoveryGuide}
+            githubCodespaceRecovery={githubCodespaceRecovery}
             defaultStartCwd={defaultStartCwd}
             defaultChatEngine={defaultChatEngine}
             defaultEngineSettings={defaultEngineSettings}
@@ -2108,13 +2455,15 @@ export default function App() {
             onEditBridgeProfile={handleEditBridgeProfile}
             onAddBridgeProfile={handleAddBridgeProfile}
             onConnectGitHubCodespaces={
-              env.githubClientId ? () => openGitHubCodespaces() : undefined
+              env.githubClientId && env.githubAppAuthBaseUrl
+                ? () => openGitHubCodespaces()
+                : undefined
             }
             onSwitchBridgeProfile={handleSwitchBridgeProfile}
             onRenameBridgeProfile={handleRenameBridgeProfile}
             onDeleteBridgeProfile={handleDeleteBridgeProfile}
             onClearSavedBridges={handleClearSavedBridges}
-            onOpenDrawer={openDrawer}
+            onOpenDrawer={handleNavigationToggle}
             onDrawerGestureEnabledChange={setSettingsAllowsDrawerGesture}
             onOpenPrivacy={openPrivacy}
             onOpenTerms={openTerms}
@@ -2126,7 +2475,7 @@ export default function App() {
             ref={browserRef}
             api={activeApi}
             bridgeUrl={bridgeUrl}
-            onOpenDrawer={openDrawer}
+            onOpenDrawer={handleNavigationToggle}
             recentTargetUrls={recentBrowserTargetUrls}
             onRecentTargetUrlsChange={handleRecentBrowserTargetUrlsChange}
             pendingTargetUrl={pendingBrowserTargetUrl}
@@ -2137,14 +2486,14 @@ export default function App() {
         return (
           <PrivacyScreen
             policyUrl={env.privacyPolicyUrl}
-            onOpenDrawer={openDrawer}
+            onOpenDrawer={handleNavigationToggle}
           />
         );
       case 'Terms':
         return (
           <TermsScreen
             termsUrl={env.termsOfServiceUrl}
-            onOpenDrawer={openDrawer}
+            onOpenDrawer={handleNavigationToggle}
           />
         );
       default:
@@ -2155,10 +2504,11 @@ export default function App() {
             ws={activeWs}
             bridgeUrl={bridgeUrl}
             bridgeToken={bridgeToken}
-            onOpenDrawer={openDrawer}
+            onOpenDrawer={handleNavigationToggle}
             onOpenGit={handleOpenChatGit}
             onOpenLocalPreview={openBrowser}
             onOpenBridgeRecoveryGuide={handleOpenBridgeRecoveryGuide}
+            githubCodespaceRecovery={githubCodespaceRecovery}
             defaultStartCwd={defaultStartCwd}
             defaultChatEngine={defaultChatEngine}
             defaultEngineSettings={defaultEngineSettings}
@@ -2186,14 +2536,39 @@ export default function App() {
             barStyle={theme.statusBarStyle}
             backgroundColor={theme.colors.bgMain}
           />
-          <View style={styles.root}>
+          <View style={[styles.root, usesTabletLayout && styles.tabletShell]}>
+            {usesTabletLayout ? (
+              <Animated.View
+                layout={tabletLayoutTransition}
+                pointerEvents={tabletSidebarVisible ? 'auto' : 'none'}
+                style={[
+                  styles.tabletSidebarClip,
+                  { width: tabletSidebarVisible ? TABLET_SIDEBAR_WIDTH : 0 },
+                ]}
+              >
+                <View style={styles.tabletSidebarContent}>
+                  <DrawerContent
+                    api={activeApi}
+                    ws={activeWs}
+                    active
+                    workspaceChatLimit={workspaceChatLimit}
+                    selectedChatId={selectedChatId}
+                    onSelectChat={handleSelectChat}
+                    onNewChat={handleNewChat}
+                    onNavigate={navigate}
+                  />
+                </View>
+              </Animated.View>
+            ) : null}
             <GestureDetector gesture={openDrawerGesture}>
               <Animated.View
+                layout={usesTabletLayout ? tabletLayoutTransition : undefined}
                 pointerEvents={drawerVisible && drawerCapturesTouches ? 'none' : 'auto'}
                 style={[
                   styles.screenFrame,
+                  usesTabletLayout && styles.tabletScreenFrame,
                   screenFrameAnimatedStyle,
-                  { width: screenWidth },
+                  usesTabletLayout ? null : { width: screenWidth },
                 ]}
               >
                 {renderScreen()}
@@ -2208,37 +2583,39 @@ export default function App() {
               </Animated.View>
             </GestureDetector>
 
-            <View
-              pointerEvents={drawerVisible && drawerCapturesTouches ? 'auto' : 'none'}
-              style={styles.drawerLayer}
-            >
-              <GestureDetector gesture={visibleDrawerGesture}>
-                <View style={styles.drawerGestureSurface}>
-                  <GestureDetector gesture={visibleDrawerTapGesture}>
-                    <Animated.View style={[styles.overlay, overlayAnimatedStyle]} />
-                  </GestureDetector>
+            {!usesTabletLayout ? (
+              <View
+                pointerEvents={drawerVisible && drawerCapturesTouches ? 'auto' : 'none'}
+                style={styles.drawerLayer}
+              >
+                <GestureDetector gesture={visibleDrawerGesture}>
+                  <View style={styles.drawerGestureSurface}>
+                    <GestureDetector gesture={visibleDrawerTapGesture}>
+                      <Animated.View style={[styles.overlay, overlayAnimatedStyle]} />
+                    </GestureDetector>
 
-                  <Animated.View style={[styles.drawer, { width: drawerWidth }, drawerAnimatedStyle]}>
-                    <Animated.View
-                      style={[styles.drawerContentShell, drawerContentAnimatedStyle]}
-                    >
-                      <DrawerContent
-                        api={activeApi}
-                        ws={activeWs}
-                        active={drawerVisible}
-                        workspaceChatLimit={workspaceChatLimit}
-                        selectedChatId={selectedChatId}
-                        onSelectChat={handleSelectChat}
-                        onNewChat={handleNewChat}
-                        onNavigate={navigate}
-                      />
+                    <Animated.View style={[styles.drawer, { width: drawerWidth }, drawerAnimatedStyle]}>
+                      <Animated.View
+                        style={[styles.drawerContentShell, drawerContentAnimatedStyle]}
+                      >
+                        <DrawerContent
+                          api={activeApi}
+                          ws={activeWs}
+                          active={drawerVisible}
+                          workspaceChatLimit={workspaceChatLimit}
+                          selectedChatId={selectedChatId}
+                          onSelectChat={handleSelectChat}
+                          onNewChat={handleNewChat}
+                          onNavigate={navigate}
+                        />
+                      </Animated.View>
                     </Animated.View>
-                  </Animated.View>
-                </View>
-              </GestureDetector>
-            </View>
+                  </View>
+                </GestureDetector>
+              </View>
+            ) : null}
 
-            {currentScreen === 'ChatGit' ? (
+            {currentScreen === 'ChatGit' && !usesTabletLayout ? (
               <GestureDetector gesture={chatGitBackGesture}>
                 <View
                   pointerEvents={drawerVisible && drawerCapturesTouches ? 'none' : 'auto'}
@@ -2414,6 +2791,67 @@ function buildDrawerSpringConfig(velocityX: number) {
   };
 }
 
+function bridgeProfileToGitHubToken(profile: BridgeProfile): GitHubUserAccessToken {
+  return {
+    accessToken: profile.bridgeToken,
+    scope: [],
+    tokenType: 'bearer',
+    refreshToken: profile.githubRefreshToken,
+    expiresInSec: null,
+    accessTokenExpiresAtMs: isoStringToTimestampMs(profile.githubAccessTokenExpiresAt),
+    refreshTokenExpiresInSec: null,
+    refreshTokenExpiresAtMs: isoStringToTimestampMs(profile.githubRefreshTokenExpiresAt),
+  };
+}
+
+function normalizeGitHubCodespaceState(value: string | null | undefined): string {
+  return value?.trim().toLowerCase() ?? '';
+}
+
+function formatGitHubCodespaceRecoveryStateMessage(value: string | null | undefined): string {
+  const state = normalizeGitHubCodespaceState(value);
+  if (!state || state === 'shutdown' || state === 'stopped' || state === 'paused') {
+    return 'Codespace is paused. Wake it from here.';
+  }
+
+  const normalized = value?.trim();
+  return `Codespace is ${normalized && normalized.length > 0 ? normalized : state}. Wake it from here.`;
+}
+
+function isGitHubCodespaceBootingState(state: string): boolean {
+  return (
+    state === 'starting' ||
+    state === 'queued' ||
+    state === 'provisioning' ||
+    state === 'creating' ||
+    state === 'rebuilding' ||
+    state === 'updating'
+  );
+}
+
+function isGitHubCodespaceDeletedState(state: string): boolean {
+  return state === 'deleted' || state === 'moved';
+}
+
+function isGitHubCodespaceMissingError(error: unknown): boolean {
+  if (error instanceof GitHubApiError) {
+    return error.status === 404;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return message.toLowerCase().includes('not found') || message.includes('404');
+}
+
+function isGitHubAuthRecoveryError(error: unknown): boolean {
+  if (error instanceof GitHubApiError) {
+    return error.status === 401;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return normalized.includes('bad credentials') || normalized.includes('401');
+}
+
 function timestampMsToIsoString(value: number | null | undefined): string | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return null;
@@ -2451,6 +2889,22 @@ const createStyles = (theme: ReturnType<typeof createAppTheme>) =>
     screen: {
       flex: 1,
     },
+    tabletShell: {
+      flexDirection: 'row',
+      backgroundColor: theme.colors.bgMain,
+    },
+    tabletSidebarClip: {
+      width: TABLET_SIDEBAR_WIDTH,
+      overflow: 'hidden',
+      backgroundColor: theme.colors.bgSidebar,
+    },
+    tabletSidebarContent: {
+      width: TABLET_SIDEBAR_WIDTH,
+      flex: 1,
+      borderRightWidth: StyleSheet.hairlineWidth,
+      borderRightColor: theme.colors.borderLight,
+      backgroundColor: theme.colors.bgSidebar,
+    },
     screenFrame: {
       flex: 1,
       backgroundColor: theme.colors.bgMain,
@@ -2458,6 +2912,13 @@ const createStyles = (theme: ReturnType<typeof createAppTheme>) =>
       borderCurve: 'continuous',
       shadowColor: theme.colors.shadow,
       shadowOffset: { width: 0, height: 16 },
+    },
+    tabletScreenFrame: {
+      width: undefined,
+      borderRadius: 0,
+      shadowOpacity: 0,
+      shadowRadius: 0,
+      elevation: 0,
     },
     chatTransitionOverlay: {
       ...StyleSheet.absoluteFillObject,

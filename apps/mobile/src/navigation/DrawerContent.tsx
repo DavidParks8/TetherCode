@@ -75,7 +75,8 @@ const PINNED_CHAT_IDS_FILE = 'clawdex-pinned-chats.json';
 const PINNED_WORKSPACE_PATHS_FILE = 'clawdex-workspace-favorites.json';
 const PINNED_WORKSPACE_PATHS_VERSION = 1;
 const PINNED_WORKSPACE_PATHS_LIMIT = 4;
-const DRAWER_ROW_HEIGHT = 50;
+const DRAWER_WORKSPACE_ROW_HEIGHT = 58;
+const DRAWER_CHAT_ROW_HEIGHT = 50;
 const DRAWER_ROW_RADIUS = 14;
 const DRAWER_ACTION_HEIGHT = 36;
 const DRAWER_FOOTER_ACTION_HEIGHT = 36;
@@ -132,6 +133,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
     null
   );
   const scheduledLoadChatsRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduledLoadChatsForceRefreshRef = useRef(false);
   const scheduledDeepLoadChatsRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatListStreamRef = useRef<{ cancel: () => void } | null>(null);
   const deepLoadInFlightRef = useRef<Promise<void> | null>(null);
@@ -473,12 +475,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
             return;
           }
 
-          const loadedResults = await Promise.allSettled(
-            missingIds.map((threadId) => api.getChatSummary(threadId))
-          );
-          const loadedChats = loadedResults.flatMap((result) =>
-            result.status === 'fulfilled' ? [result.value] : []
-          );
+          const loadedChats = await api.getChatSummaries(missingIds);
           if (loadedChats.length > 0 && activeRef.current) {
             applyChats([...listedChats, ...loadedChats], cacheLimit);
           }
@@ -739,12 +736,17 @@ export const DrawerContent = memo(function DrawerContentComponent({
       }
 
       if (scheduledLoadChatsRef.current) {
+        scheduledLoadChatsForceRefreshRef.current =
+          scheduledLoadChatsForceRefreshRef.current || forceRefresh;
         return;
       }
 
+      scheduledLoadChatsForceRefreshRef.current = forceRefresh;
       scheduledLoadChatsRef.current = setTimeout(() => {
         scheduledLoadChatsRef.current = null;
-        void loadChats(false, forceRefresh);
+        const shouldForceRefresh = scheduledLoadChatsForceRefreshRef.current;
+        scheduledLoadChatsForceRefreshRef.current = false;
+        void loadChats(false, shouldForceRefresh);
       }, delay);
     },
     [active, loadChats]
@@ -816,6 +818,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
       clearTimeout(scheduledLoadChatsRef.current);
       scheduledLoadChatsRef.current = null;
     }
+    scheduledLoadChatsForceRefreshRef.current = false;
     cancelChatListStream();
     queuedLoadChatsRef.current = null;
     setRefreshing(false);
@@ -828,6 +831,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
         clearTimeout(scheduledLoadChatsRef.current);
         scheduledLoadChatsRef.current = null;
       }
+      scheduledLoadChatsForceRefreshRef.current = false;
       cancelChatListStream();
     };
   }, [cancelChatListStream]);
@@ -1325,11 +1329,14 @@ export const DrawerContent = memo(function DrawerContentComponent({
                   ? getChatEngineBadgeColors(chat.engine, theme.mode)
                   : null;
                 const chatSubtitle = getDrawerChatSubtitle(chat);
+                const chatIndent = Math.min(item.indentLevel, 4) * 14;
                 return (
                   <Pressable
                     style={[
                       styles.chatItemFrame,
-                      isSubAgent && { marginLeft: Math.min(item.indentLevel, 4) * 14 },
+                      isSubAgent && {
+                        marginLeft: theme.spacing.md + chatIndent,
+                      },
                       isLast && styles.chatItemLast,
                     ]}
                     onPress={() => handleSelectChat(chat.id)}
@@ -1354,7 +1361,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
                           ]}
                         />
                         <View style={styles.chatItemContent}>
-                          <View style={styles.chatItemTopRow}>
+                          <View style={styles.chatItemTextBlock}>
                             <Text
                               style={[
                                 styles.chatTitle,
@@ -1365,58 +1372,58 @@ export const DrawerContent = memo(function DrawerContentComponent({
                             >
                               {chat.title || 'Untitled'}
                             </Text>
-                            <View style={styles.chatItemMeta}>
-                              {isPinnedChat ? (
-                                <Ionicons
-                                  name="pin-outline"
-                                  size={10}
-                                  color={theme.colors.textMuted}
-                                  style={styles.chatPinnedIcon}
-                                />
-                              ) : null}
-                              {engineBadgeColors ? (
-                                <View
+                            {chatSubtitle ? (
+                              <Text
+                                style={[
+                                  styles.chatSubtitle,
+                                  isSelected && styles.chatSubtitleSelected,
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {chatSubtitle}
+                              </Text>
+                            ) : null}
+                          </View>
+                          <View style={styles.chatItemMeta}>
+                            {isPinnedChat ? (
+                              <Ionicons
+                                name="pin-outline"
+                                size={10}
+                                color={theme.colors.textMuted}
+                                style={styles.chatPinnedIcon}
+                              />
+                            ) : null}
+                            {engineBadgeColors ? (
+                              <View
+                                style={[
+                                  styles.engineBadge,
+                                  {
+                                    backgroundColor: engineBadgeColors.backgroundColor,
+                                    borderColor: engineBadgeColors.borderColor,
+                                  },
+                                ]}
+                              >
+                                <Text
                                   style={[
-                                    styles.engineBadge,
+                                    styles.engineBadgeText,
                                     {
-                                      backgroundColor: engineBadgeColors.backgroundColor,
-                                      borderColor: engineBadgeColors.borderColor,
+                                      color: engineBadgeColors.textColor,
                                     },
                                   ]}
                                 >
-                                  <Text
-                                    style={[
-                                      styles.engineBadgeText,
-                                      {
-                                        color: engineBadgeColors.textColor,
-                                      },
-                                    ]}
-                                  >
-                                    {getChatEngineLabel(chat.engine)}
-                                  </Text>
-                                </View>
-                              ) : null}
-                              <Text
-                                style={[
-                                  styles.chatAge,
-                                  isSelected && styles.chatAgeSelected,
-                                ]}
-                              >
-                                {relativeTime(chat.updatedAt)}
-                              </Text>
-                            </View>
-                          </View>
-                          {chatSubtitle ? (
+                                  {getChatEngineLabel(chat.engine)}
+                                </Text>
+                              </View>
+                            ) : null}
                             <Text
                               style={[
-                                styles.chatSubtitle,
-                                isSelected && styles.chatSubtitleSelected,
+                                styles.chatAge,
+                                isSelected && styles.chatAgeSelected,
                               ]}
-                              numberOfLines={1}
                             >
-                              {chatSubtitle}
+                              {relativeTime(chat.updatedAt)}
                             </Text>
-                          ) : null}
+                          </View>
                         </View>
                       </View>
                     )}
@@ -2077,10 +2084,10 @@ const createStyles = (theme: AppTheme) => {
     lineHeight: 15,
   },
   workspaceGroupHeader: {
-    height: DRAWER_ROW_HEIGHT,
+    minHeight: DRAWER_WORKSPACE_ROW_HEIGHT,
     marginHorizontal: theme.spacing.md,
     paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 6,
+    paddingVertical: 8,
     borderRadius: DRAWER_ROW_RADIUS,
     borderWidth: 1,
     borderColor: theme.colors.borderLight,
@@ -2088,11 +2095,11 @@ const createStyles = (theme: AppTheme) => {
     justifyContent: 'center',
   },
   workspaceGroupHeaderExpanded: {
-    marginTop: 3,
-    marginBottom: 6,
+    marginTop: 4,
+    marginBottom: 5,
   },
   workspaceGroupHeaderCollapsed: {
-    marginTop: 3,
+    marginTop: 4,
     marginBottom: 6,
   },
   workspaceGroupHeaderPinned: {
@@ -2104,18 +2111,21 @@ const createStyles = (theme: AppTheme) => {
   workspaceGroupHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
   workspaceGroupTitleBlock: {
     flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+    gap: 2,
   },
   workspaceGroupPinIcon: {
     opacity: 0.75,
   },
   workspaceGroupIconTile: {
-    width: DRAWER_ICON_TILE_SIZE,
-    height: DRAWER_ICON_TILE_SIZE,
-    borderRadius: 8,
+    width: 34,
+    height: 34,
+    borderRadius: 11,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.borderLight,
     backgroundColor: theme.colors.bgItem,
@@ -2136,15 +2146,15 @@ const createStyles = (theme: AppTheme) => {
   workspaceGroupTitle: {
     ...theme.typography.body,
     color: theme.colors.textPrimary,
-    fontSize: 13,
-    lineHeight: 16,
+    fontSize: 14,
+    lineHeight: 17,
     fontWeight: '700',
   },
   workspaceGroupSubtitle: {
     ...theme.typography.caption,
     color: theme.colors.textMuted,
-    fontSize: 10,
-    lineHeight: 12,
+    fontSize: 11,
+    lineHeight: 13,
   },
   workspaceGroupCountBadge: {
     minWidth: 22,
@@ -2198,25 +2208,25 @@ const createStyles = (theme: AppTheme) => {
   chatItemFrame: {
     marginLeft: theme.spacing.md,
     marginRight: theme.spacing.md,
-    marginBottom: 6,
+    marginBottom: 5,
   },
   chatItem: {
-    minHeight: DRAWER_ROW_HEIGHT,
-    borderRadius: DRAWER_ROW_RADIUS,
+    minHeight: DRAWER_CHAT_ROW_HEIGHT,
+    borderRadius: DRAWER_ROW_RADIUS - 1,
     borderWidth: 1,
     borderColor: theme.colors.borderLight,
     backgroundColor: theme.colors.bgItem,
-    paddingHorizontal: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.sm + 1,
     paddingVertical: 6,
     flexDirection: 'row',
-    gap: 6,
+    gap: 7,
     alignItems: 'center',
   },
   chatItemSubAgent: {
     backgroundColor: theme.colors.bgElevated,
   },
   chatItemLast: {
-    marginBottom: 6,
+    marginBottom: 8,
   },
   chatItemSelected: {
     backgroundColor: theme.colors.bgInput,
@@ -2231,6 +2241,7 @@ const createStyles = (theme: AppTheme) => {
     alignSelf: 'stretch',
     borderRadius: 999,
     backgroundColor: theme.colors.bgCanvasAccent,
+    opacity: 0.72,
   },
   chatItemAccentSubAgent: {
     backgroundColor: theme.colors.warningBorder,
@@ -2238,30 +2249,35 @@ const createStyles = (theme: AppTheme) => {
   chatItemAccentSelected: {
     width: 4,
     backgroundColor: theme.colors.textPrimary,
+    opacity: 1,
   },
   chatItemAccentRunning: {
     backgroundColor: theme.colors.statusRunning,
+    opacity: 1,
   },
   chatItemAccentError: {
     backgroundColor: theme.colors.statusError,
+    opacity: 1,
   },
   chatItemContent: {
     flex: 1,
     minWidth: 0,
-    justifyContent: 'center',
-    gap: 1,
-  },
-  chatItemTopRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 6,
-  },
-  chatItemMeta: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
+  },
+  chatItemTextBlock: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+    gap: 3,
+  },
+  chatItemMeta: {
+    minWidth: 28,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
     gap: 4,
     flexShrink: 0,
-    marginTop: 1,
   },
   chatIconTile: {
     width: DRAWER_ICON_TILE_SIZE,
@@ -2291,11 +2307,10 @@ const createStyles = (theme: AppTheme) => {
   },
   chatTitle: {
     ...theme.typography.body,
-    flex: 1,
     color: theme.colors.textSecondary,
     fontSize: 13,
-    lineHeight: 17,
-    fontWeight: '600',
+    lineHeight: 16,
+    fontWeight: '700',
   },
   chatTitleSubAgent: {
     color: theme.colors.textSecondary,
@@ -2308,8 +2323,7 @@ const createStyles = (theme: AppTheme) => {
     ...theme.typography.caption,
     color: theme.colors.textMuted,
     fontSize: 10,
-    lineHeight: 12,
-    flex: 1,
+    lineHeight: 13,
   },
   chatSubtitleSelected: {
     color: theme.colors.textSecondary,

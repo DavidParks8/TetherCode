@@ -119,8 +119,6 @@ const createStyles = (theme: AppTheme) =>
   StyleSheet.create({
     headerContainer: {
       backgroundColor: theme.colors.bgMain,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: theme.colors.borderLight,
     },
     header: {
       flexDirection: 'row',

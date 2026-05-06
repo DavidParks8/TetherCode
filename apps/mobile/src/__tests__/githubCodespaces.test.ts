@@ -2,13 +2,18 @@ import {
   buildGitHubAppInstallUrl,
   buildGitHubCodespacesRepositoryCandidates,
   buildGitHubCodespacesBridgeUrl,
+  createGitHubCodespaceForAuthenticatedUser,
   deleteGitHubCodespace,
+  fetchGitHubCodespace,
+  fetchGitHubAppAccessSnapshot,
   findReusableGitHubCodespace,
+  GitHubApiError,
   getReusableGitHubBridgeProfile,
   hasGitHubAppRepositoryAccess,
   isRetryableGitHubDeviceFlowError,
   sortGitHubCodespaces,
   shouldRefreshGitHubUserAccessToken,
+  startGitHubCodespace,
 } from '../githubCodespaces';
 
 describe('githubCodespaces helpers', () => {
@@ -175,6 +180,8 @@ describe('githubCodespaces helpers', () => {
               fullName: 'octocat/clawdex-mobile',
               private: true,
               permissions: ['contents', 'codespaces'],
+              canReadContents: true,
+              canWriteContents: true,
             },
           ],
         },
@@ -182,6 +189,73 @@ describe('githubCodespaces helpers', () => {
       )
     ).toBe(true);
     expect(hasGitHubAppRepositoryAccess({ repositories: [] }, 'octocat/other')).toBe(false);
+  });
+
+  it('loads all paged GitHub App repositories with read and write access', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        text: jest.fn().mockResolvedValue(JSON.stringify({
+          installations: [
+            {
+              id: 10,
+              account: { login: 'octocat', id: 1 },
+              repository_selection: 'all',
+            },
+          ],
+        })),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        text: jest.fn().mockResolvedValue(JSON.stringify({
+          repositories: Array.from({ length: 100 }, (_, index) => ({
+            id: index + 1,
+            owner: { login: 'octocat' },
+            name: `repo-${String(index + 1)}`,
+            full_name: `octocat/repo-${String(index + 1)}`,
+            private: index % 2 === 0,
+            permissions: { contents: 'write', metadata: 'read' },
+          })),
+        })),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        text: jest.fn().mockResolvedValue(JSON.stringify({
+          repositories: [
+            {
+              id: 101,
+              owner: { login: 'octocat' },
+              name: 'repo-101',
+              full_name: 'octocat/repo-101',
+              private: false,
+              permissions: { contents: 'read', metadata: 'read' },
+            },
+            {
+              id: 102,
+              owner: { login: 'octocat' },
+              name: 'repo-102',
+              full_name: 'octocat/repo-102',
+              private: false,
+              permissions: { push: true, pull: true },
+            },
+          ],
+        })),
+      } as unknown as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const snapshot = await fetchGitHubAppAccessSnapshot('ghu_token');
+
+    expect(snapshot.repositories).toHaveLength(101);
+    expect(snapshot.repositories.some((repository) => repository.fullName === 'octocat/repo-101')).toBe(
+      false
+    );
+    expect(snapshot.repositories.at(-1)?.fullName).toBe('octocat/repo-102');
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      'https://api.github.com/user/installations/10/repositories?per_page=100&page=2',
+      expect.any(Object)
+    );
   });
 
   it('refreshes expiring GitHub App tokens when a refresh token exists', () => {
@@ -240,5 +314,103 @@ describe('githubCodespaces helpers', () => {
         }),
       })
     );
+  });
+
+  it('creates Codespaces with a moderate idle timeout by default', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      text: jest.fn().mockResolvedValue(JSON.stringify({
+        name: 'octocat-space',
+        state: 'Available',
+        web_url: 'https://github.com/codespaces/octocat-space',
+        repository: {
+          name: 'clawdex-mobile',
+          full_name: 'octocat/clawdex-mobile',
+          owner: { login: 'octocat' },
+        },
+      })),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await createGitHubCodespaceForAuthenticatedUser('ghu_token', 123, { ref: 'main' });
+
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.github.com/user/codespaces',
+      expect.objectContaining({
+        method: 'POST',
+      })
+    );
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({
+      repository_id: 123,
+      ref: 'main',
+      idle_timeout_minutes: 45,
+    });
+  });
+
+  it('fetches a Codespace by name through the GitHub API', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      text: jest.fn().mockResolvedValue(JSON.stringify({
+        name: 'octocat-space',
+        state: 'Shutdown',
+        web_url: 'https://github.com/codespaces/octocat-space',
+        repository: {
+          name: 'clawdex-mobile',
+          full_name: 'octocat/clawdex-mobile',
+          owner: { login: 'octocat' },
+        },
+      })),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const codespace = await fetchGitHubCodespace('ghu_token', 'octocat space');
+
+    expect(codespace).toMatchObject({
+      name: 'octocat-space',
+      state: 'Shutdown',
+      repositoryFullName: 'octocat/clawdex-mobile',
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.github.com/user/codespaces/octocat%20space',
+      expect.objectContaining({
+        method: 'GET',
+      })
+    );
+  });
+
+  it('starts a Codespace through the GitHub API', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      text: jest.fn().mockResolvedValue(''),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await startGitHubCodespace('ghu_token', 'octocat space');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.github.com/user/codespaces/octocat%20space/start',
+      expect.objectContaining({
+        method: 'POST',
+      })
+    );
+  });
+
+  it('includes the GitHub API status on failed Codespace lookups', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: jest.fn().mockResolvedValue(JSON.stringify({ message: 'Not Found' })),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await expect(fetchGitHubCodespace('ghu_token', 'missing-space')).rejects.toBeInstanceOf(
+      GitHubApiError
+    );
+    await expect(fetchGitHubCodespace('ghu_token', 'missing-space')).rejects.toMatchObject({
+      name: 'GitHubApiError',
+      message: 'Not Found',
+      status: 404,
+    });
   });
 });
