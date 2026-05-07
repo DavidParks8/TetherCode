@@ -25,6 +25,7 @@ import type {
   BridgeRestartStartResponse,
   BridgeUpdateStartResponse,
   ChatEngine,
+  CodexAppServerRestartResponse,
   CursorCredentialStatus,
   CollaborationMode,
   CreateChatRequest,
@@ -288,6 +289,12 @@ interface AccountReadOptions {
   refreshToken?: boolean;
 }
 
+interface AccountLoginCompletedNotification {
+  loginId: string | null;
+  success: boolean;
+  error: string | null;
+}
+
 interface ChatReadOptions {
   cacheTtlMs?: number;
   forceRefresh?: boolean;
@@ -361,6 +368,10 @@ export class HostBridgeApiClient {
     return this.ws.request<BridgeRestartStartResponse>('bridge/restart/start');
   }
 
+  restartCodexAppServer(): Promise<CodexAppServerRestartResponse> {
+    return this.ws.request<CodexAppServerRestartResponse>('bridge/codex/app-server/restart');
+  }
+
   peekAccountRateLimits(): AccountRateLimitSnapshot | null {
     return this.accountRateLimitsCache?.value ?? null;
   }
@@ -421,6 +432,7 @@ export class HostBridgeApiClient {
   async startChatGptAccountLogin(): Promise<AccountLoginStartResponse> {
     const response = await this.ws.request<Record<string, unknown>>('account/login/start', {
       type: 'chatgpt',
+      codexStreamlinedLogin: true,
     });
     return readAccountLoginStartResponse(response);
   }
@@ -435,6 +447,58 @@ export class HostBridgeApiClient {
   async forwardCodexAuthCallback(callbackUrl: string): Promise<void> {
     await this.ws.request('bridge/codex/auth/callback/forward', {
       callbackUrl,
+    });
+  }
+
+  async waitForAccountLoginCompleted(
+    loginId: string | null,
+    timeoutMs = 90_000
+  ): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      let unsubscribe = () => {};
+      const finish = (error?: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        unsubscribe();
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      };
+
+      timeout = setTimeout(() => {
+        finish(new Error('Codex login did not finish. Return here after ChatGPT confirms login.'));
+      }, timeoutMs);
+
+      unsubscribe = this.ws.onEvent((event: RpcNotification) => {
+        if (event.method !== 'account/login/completed') {
+          return;
+        }
+
+        const completion = readAccountLoginCompletedNotification(event.params);
+        if (!completion) {
+          return;
+        }
+
+        if (loginId && completion.loginId && completion.loginId !== loginId) {
+          return;
+        }
+
+        if (!completion.success) {
+          finish(new Error(completion.error ?? 'Codex login did not complete.'));
+          return;
+        }
+
+        finish();
+      });
     });
   }
 
@@ -2027,6 +2091,21 @@ function readTimestampIso(value: unknown): string | null {
   }
 
   return null;
+}
+
+function readAccountLoginCompletedNotification(
+  value: unknown
+): AccountLoginCompletedNotification | null {
+  const record = toRecord(value);
+  if (!record || typeof record.success !== 'boolean') {
+    return null;
+  }
+
+  return {
+    loginId: readString(record.loginId) ?? readString(record.login_id),
+    success: record.success,
+    error: readString(record.error),
+  };
 }
 
 function readWorkspaceListResponse(value: unknown): WorkspaceListResponse {

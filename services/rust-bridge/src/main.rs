@@ -1266,7 +1266,7 @@ impl BrowserPreviewService {
 #[derive(Clone)]
 struct RuntimeBackend {
     preferred_engine: BridgeRuntimeEngine,
-    codex: Option<Arc<AppServerBridge>>,
+    codex: Arc<StdRwLock<Option<Arc<AppServerBridge>>>>,
     opencode: Option<Arc<OpencodeBackend>>,
     cursor: Arc<StdRwLock<Option<Arc<AppServerBridge>>>>,
 }
@@ -1281,7 +1281,7 @@ impl RuntimeBackend {
         let cursor_enabled = config
             .enabled_engines
             .contains(&BridgeRuntimeEngine::Cursor);
-        let mut codex = None;
+        let codex = Arc::new(StdRwLock::new(None));
         let mut opencode = None;
         let cursor = Arc::new(StdRwLock::new(None));
 
@@ -1291,7 +1291,7 @@ impl RuntimeBackend {
                     let app_server =
                         AppServerBridge::start_codex(&config.cli_bin, hub.clone()).await?;
                     spawn_rollout_live_sync(hub.clone());
-                    codex = Some(app_server);
+                    Self::store_codex_backend(&codex, app_server);
                 }
 
                 if opencode_enabled {
@@ -1327,7 +1327,7 @@ impl RuntimeBackend {
                     {
                         Ok(app_server) => {
                             spawn_rollout_live_sync(hub.clone());
-                            codex = Some(app_server);
+                            Self::store_codex_backend(&codex, app_server);
                         }
                         Err(error) => eprintln!(
                             "codex backend unavailable; continuing with selected harnesses only: {error}"
@@ -1358,7 +1358,7 @@ impl RuntimeBackend {
                     match AppServerBridge::start_codex(&config.cli_bin, hub.clone()).await {
                         Ok(app_server) => {
                             spawn_rollout_live_sync(hub.clone());
-                            codex = Some(app_server);
+                            Self::store_codex_backend(&codex, app_server);
                         }
                         Err(error) => eprintln!(
                             "codex backend unavailable; continuing with selected harnesses only: {error}"
@@ -1389,6 +1389,19 @@ impl RuntimeBackend {
         self.cursor.read().ok().and_then(|guard| guard.clone())
     }
 
+    fn codex_backend(&self) -> Option<Arc<AppServerBridge>> {
+        self.codex.read().ok().and_then(|guard| guard.clone())
+    }
+
+    fn store_codex_backend(
+        codex_slot: &Arc<StdRwLock<Option<Arc<AppServerBridge>>>>,
+        bridge: Arc<AppServerBridge>,
+    ) {
+        if let Ok(mut guard) = codex_slot.write() {
+            *guard = Some(bridge);
+        }
+    }
+
     fn store_cursor_backend(
         cursor_slot: &Arc<StdRwLock<Option<Arc<AppServerBridge>>>>,
         bridge: Arc<AppServerBridge>,
@@ -1398,8 +1411,31 @@ impl RuntimeBackend {
         }
     }
 
+    async fn restart_codex_app_server(
+        &self,
+        config: &Arc<BridgeConfig>,
+        hub: Arc<ClientHub>,
+    ) -> Result<(), String> {
+        if !config.enabled_engines.contains(&BridgeRuntimeEngine::Codex) {
+            return Err("codex backend is not enabled".to_string());
+        }
+
+        let next_backend = AppServerBridge::start_codex(&config.cli_bin, hub).await?;
+        let previous_backend = self
+            .codex
+            .write()
+            .map(|mut guard| guard.replace(next_backend))
+            .map_err(|_| "codex backend lock is unavailable".to_string())?;
+
+        if let Some(previous_backend) = previous_backend {
+            previous_backend.request_shutdown().await;
+        }
+
+        Ok(())
+    }
+
     async fn shutdown(&self) {
-        if let Some(codex) = &self.codex {
+        if let Some(codex) = self.codex_backend() {
             codex.request_shutdown().await;
         }
         if let Some(opencode) = &self.opencode {
@@ -1416,7 +1452,7 @@ impl RuntimeBackend {
 
     fn available_engines(&self) -> Vec<BridgeRuntimeEngine> {
         let mut engines = Vec::new();
-        if self.codex.is_some() {
+        if self.codex_backend().is_some() {
             engines.push(BridgeRuntimeEngine::Codex);
         }
         if self.opencode.is_some() {
@@ -1469,8 +1505,7 @@ impl RuntimeBackend {
     ) -> Result<RuntimeBackendRef<'_>, String> {
         match engine {
             BridgeRuntimeEngine::Codex => self
-                .codex
-                .as_ref()
+                .codex_backend()
                 .map(RuntimeBackendRef::Codex)
                 .ok_or_else(|| "codex backend is unavailable".to_string()),
             BridgeRuntimeEngine::Opencode => self
@@ -1576,7 +1611,7 @@ impl RuntimeBackend {
         let bridge_cursor = extract_thread_list_cursor(params.as_ref())
             .and_then(|cursor| decode_bridge_thread_list_cursor(&cursor));
 
-        if let Some(codex) = &self.codex {
+        if let Some(codex) = self.codex_backend() {
             if let Some(cursor_map) = bridge_cursor.as_ref() {
                 if let Some(cursor) = cursor_map.get(&BridgeRuntimeEngine::Codex) {
                     results.push((
@@ -1660,7 +1695,7 @@ impl RuntimeBackend {
     async fn aggregate_loaded_thread_ids(&self) -> Result<Value, String> {
         let mut results = Vec::new();
 
-        if let Some(codex) = &self.codex {
+        if let Some(codex) = self.codex_backend() {
             results.push((
                 BridgeRuntimeEngine::Codex,
                 codex.request_internal("thread/loaded/list", None).await?,
@@ -1688,7 +1723,7 @@ impl RuntimeBackend {
 
     async fn list_pending_approvals(&self) -> Vec<PendingApproval> {
         let mut approvals = Vec::new();
-        if let Some(codex) = &self.codex {
+        if let Some(codex) = self.codex_backend() {
             approvals.extend(codex.list_pending_approvals().await);
         }
         if let Some(opencode) = &self.opencode {
@@ -1703,7 +1738,7 @@ impl RuntimeBackend {
 
     async fn list_pending_user_inputs(&self) -> Vec<PendingUserInputRequest> {
         let mut requests = Vec::new();
-        if let Some(codex) = &self.codex {
+        if let Some(codex) = self.codex_backend() {
             requests.extend(codex.list_pending_user_inputs().await);
         }
         if let Some(opencode) = &self.opencode {
@@ -1721,7 +1756,7 @@ impl RuntimeBackend {
         approval_id: &str,
         decision: &Value,
     ) -> Result<Option<PendingApproval>, String> {
-        if let Some(codex) = &self.codex {
+        if let Some(codex) = self.codex_backend() {
             if let Some(approval) = codex.resolve_approval(approval_id, decision).await? {
                 return Ok(Some(approval));
             }
@@ -1747,7 +1782,7 @@ impl RuntimeBackend {
         request_id: &str,
         answers: &HashMap<String, UserInputAnswerPayload>,
     ) -> Result<Option<PendingUserInputRequest>, String> {
-        if let Some(codex) = &self.codex {
+        if let Some(codex) = self.codex_backend() {
             if let Some(request) = codex.resolve_user_input(request_id, answers).await? {
                 return Ok(Some(request));
             }
@@ -1792,7 +1827,7 @@ impl RuntimeBackend {
                 }
             }),
         };
-        if let Some(codex) = &self.codex {
+        if let Some(codex) = self.codex_backend() {
             codex.hub.send_json(client_id, payload).await;
         } else if let Some(opencode) = &self.opencode {
             opencode.hub.send_json(client_id, payload).await;
@@ -1892,7 +1927,7 @@ async fn terminate_process_tree_windows(pid: u32, label: &str) {
 }
 
 enum RuntimeBackendRef<'a> {
-    Codex(&'a Arc<AppServerBridge>),
+    Codex(Arc<AppServerBridge>),
     Opencode(&'a Arc<OpencodeBackend>),
     Cursor(Arc<AppServerBridge>),
 }
@@ -7467,6 +7502,17 @@ async fn handle_bridge_method(
                 serde_json::from_value(params.unwrap_or_else(|| json!({})))
                     .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
             forward_codex_auth_callback(state, &request.callback_url).await
+        }
+        "bridge/codex/app-server/restart" => {
+            state
+                .backend
+                .restart_codex_app_server(&state.config, state.hub.clone())
+                .await
+                .map_err(|error| BridgeError::server(&error))?;
+            Ok(json!({
+                "ok": true,
+                "message": "Codex app-server restarted."
+            }))
         }
         "bridge/update/start" => {
             let request: BridgeUpdateStartRequest =
@@ -13586,16 +13632,15 @@ mod tests {
         let _ = child.wait().await;
     }
 
-    fn test_codex_backend(backend: &Arc<RuntimeBackend>) -> &Arc<AppServerBridge> {
+    fn test_codex_backend(backend: &Arc<RuntimeBackend>) -> Arc<AppServerBridge> {
         backend
-            .codex
-            .as_ref()
+            .codex_backend()
             .expect("expected codex backend in test")
     }
 
     async fn shutdown_test_backend(backend: &Arc<RuntimeBackend>) {
-        if let Some(codex) = &backend.codex {
-            shutdown_test_bridge(codex).await;
+        if let Some(codex) = backend.codex_backend() {
+            shutdown_test_bridge(&codex).await;
         }
         if let Some(opencode) = &backend.opencode {
             shutdown_test_opencode_backend(opencode).await;
@@ -13610,7 +13655,7 @@ mod tests {
         preferred_engine: BridgeRuntimeEngine,
         include_opencode: bool,
     ) -> Arc<RuntimeBackend> {
-        let codex = Some(build_test_bridge(hub.clone()).await);
+        let codex = Arc::new(StdRwLock::new(Some(build_test_bridge(hub.clone()).await)));
         let opencode = if include_opencode {
             Some(build_test_opencode_backend(hub).await)
         } else {

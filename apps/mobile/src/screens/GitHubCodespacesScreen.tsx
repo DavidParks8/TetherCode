@@ -15,7 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { HostBridgeApiClient } from '../api/client';
-import type { AccountLoginStartResponse } from '../api/types';
+import type { AccountLoginStartResponse, AccountSnapshot } from '../api/types';
 import { HostBridgeWsClient } from '../api/ws';
 import { toBridgeHealthUrl } from '../bridgeUrl';
 import type { BridgeProfile, BridgeProfileDraft } from '../bridgeProfiles';
@@ -86,6 +86,7 @@ type GitHubSetupStep =
   | 'githubLogin'
   | 'createCodespace'
   | 'repositoryChoice'
+  | 'projectSetup'
   | 'codexLogin';
 type RepositoryChoice = 'clone' | 'fresh';
 type RecoveryKind =
@@ -112,6 +113,11 @@ type ManagedCodexLoginKind = 'web' | 'device';
 
 const BRIDGE_READY_POLL_MS = 3000;
 const BRIDGE_READY_TIMEOUT_MS = 6 * 60 * 1000;
+const CODEX_ACCOUNT_READY_POLL_MS = 1_250;
+const CODEX_ACCOUNT_READY_TIMEOUT_MS = 12_000;
+const CODEX_LOGIN_COMPLETION_TIMEOUT_MS = 90_000;
+const CODEX_LOGIN_COMPLETION_GRACE_MS = 2_000;
+const CODEX_LOGIN_BROWSER_LAUNCH_GRACE_MS = 2_500;
 
 function buildConnectionStepStates(phase: ConnectionPhase | null): {
   github: ConnectionStepState;
@@ -461,8 +467,10 @@ export function GitHubCodespacesScreen({
   const [connectedProfileDraft, setConnectedProfileDraft] = useState<BridgeProfileDraft | null>(null);
   const [codexLoginChecking, setCodexLoginChecking] = useState(false);
   const [codexLoginSubmitting, setCodexLoginSubmitting] = useState(false);
+  const [codexLoginBrowserOpen, setCodexLoginBrowserOpen] = useState(false);
   const authFlowRef = useRef(0);
   const connectFlowRef = useRef(0);
+  const autoCodexLoginRunRef = useRef<number | null>(null);
   const githubConfigured = Boolean(env.githubClientId && env.githubAppAuthBaseUrl);
   const preferredRepositoryName = env.githubCodespacesPreferredRepositoryName;
   const configuredSourceOwner = env.githubCodespacesSourceRepositoryOwner;
@@ -678,6 +686,7 @@ export function GitHubCodespacesScreen({
 
   const cancelCodespaceConnection = useCallback(() => {
     connectFlowRef.current += 1;
+    autoCodexLoginRunRef.current = null;
     setCreatingCodespace(false);
     setConnectingCodespaceName(null);
     setPendingStopCodespaceName(null);
@@ -691,6 +700,7 @@ export function GitHubCodespacesScreen({
     setConnectedProfileDraft(null);
     setCodexLoginChecking(false);
     setCodexLoginSubmitting(false);
+    setCodexLoginBrowserOpen(false);
     setCloningRepositoryFullName(null);
   }, []);
 
@@ -712,10 +722,53 @@ export function GitHubCodespacesScreen({
     await onConnect(connectedProfileDraft);
   }, [connectedProfileDraft, onConnect]);
 
-  const completeCodexLoginIfReady = useCallback(
-    async (pending: PendingCodexLogin) => {
+  const reloadCodexAccountAfterRuntimeRestart = useCallback(
+    async (pending: PendingCodexLogin): Promise<AccountSnapshot | null> => {
       if (connectFlowRef.current !== pending.runId) {
-        return;
+        return null;
+      }
+
+      setConnectionMessage(
+        'Codex login is saved. Restarting Codex so it can reload auth...'
+      );
+      let codexRestarted = false;
+      await withBridgeApiClient(pending.bridgeUrl, pending.accessToken, async (api) => {
+        try {
+          await api.restartCodexAppServer();
+          codexRestarted = true;
+        } catch (error) {
+          const message = (error as Error).message.trim();
+          setConnectionMessage(
+            'Codex login was saved, but this Codespace is running an older Clawdex bridge. Recreate the Codespace or update Clawdex inside it to finish automatically.'
+          );
+          if (message.length > 0) {
+            console.warn(`Codex app-server restart unavailable: ${message}`);
+          }
+        }
+      });
+      if (!codexRestarted) {
+        return null;
+      }
+
+      setConnectionMessage('Codex restarted. Checking login again...');
+      return withTimeout(
+        withBridgeApiClient(pending.bridgeUrl, pending.accessToken, (api) =>
+          waitForCodexAccountReady(api, CODEX_ACCOUNT_READY_TIMEOUT_MS)
+        ),
+        CODEX_ACCOUNT_READY_TIMEOUT_MS + 5_000,
+        'Codex account check timed out. Open ChatGPT login to continue.'
+      );
+    },
+    []
+  );
+
+  const completeCodexLoginIfReady = useCallback(
+    async (
+      pending: PendingCodexLogin,
+      options: { restartIfNeeded?: boolean } = {}
+    ): Promise<boolean> => {
+      if (connectFlowRef.current !== pending.runId) {
+        return false;
       }
 
       setCodexLoginChecking(true);
@@ -723,137 +776,265 @@ export function GitHubCodespacesScreen({
       setConnectionMessage('Checking Codex account status…');
 
       try {
-        const account = await withBridgeApiClient(pending.bridgeUrl, pending.accessToken, (api) =>
-          api.readAccount({ refreshToken: true })
+        const account = await withTimeout(
+          withBridgeApiClient(pending.bridgeUrl, pending.accessToken, (api) =>
+            waitForCodexAccountReady(api, CODEX_ACCOUNT_READY_TIMEOUT_MS)
+          ),
+          CODEX_ACCOUNT_READY_TIMEOUT_MS + 5_000,
+          'Codex account check timed out. Open ChatGPT login to continue.'
         );
         if (connectFlowRef.current !== pending.runId) {
-          return;
+          return false;
         }
 
-        if (account.type || !account.requiresOpenaiAuth) {
+        if (isCodexAccountReady(account)) {
           setConnectionMessage('Codex login verified. Finishing setup…');
           setPendingCodexLogin(null);
           await finalizeConnectedBridgeProfile(pending.profileDraft);
-          return;
+          return true;
+        }
+
+        if (options.restartIfNeeded !== false) {
+          const restartedAccount = await reloadCodexAccountAfterRuntimeRestart(pending);
+          if (connectFlowRef.current !== pending.runId || !restartedAccount) {
+            return false;
+          }
+
+          if (isCodexAccountReady(restartedAccount)) {
+            setConnectionMessage('Codex login verified. Finishing setup…');
+            setPendingCodexLogin(null);
+            await finalizeConnectedBridgeProfile(pending.profileDraft);
+            return true;
+          }
         }
 
         setConnectionPhase('codexLoginRequired');
-        setConnectionMessage(
-          formatCodexManagedLoginInstruction(pending.codexUserCode)
-        );
+        setConnectionMessage(formatCodexManagedLoginInstruction(pending.codexUserCode));
+        return false;
       } catch (error) {
         if (connectFlowRef.current === pending.runId) {
           setConnectionError((error as Error).message);
         }
+        return false;
       } finally {
         if (connectFlowRef.current === pending.runId) {
           setCodexLoginChecking(false);
         }
       }
     },
-    [finalizeConnectedBridgeProfile]
+    [finalizeConnectedBridgeProfile, reloadCodexAccountAfterRuntimeRestart]
   );
 
-  const openCodexManagedLogin = useCallback(async () => {
-    if (!pendingCodexLogin) {
-      return;
+  const openCodexManagedLogin = useCallback(async (targetPending?: PendingCodexLogin) => {
+    const pending = targetPending ?? pendingCodexLogin;
+    if (!pending) {
+      return false;
     }
 
     setCodexLoginSubmitting(true);
     setConnectionError(null);
 
     try {
-      let loginUrl = pendingCodexLogin.codexLoginUrl;
-      let userCode = pendingCodexLogin.codexUserCode;
-      let loginId = pendingCodexLogin.codexLoginId;
-      let loginKind = pendingCodexLogin.codexLoginKind;
+      let shouldReloadAfterLogin = false;
+      await withBridgeApiClient(
+        pending.bridgeUrl,
+        pending.accessToken,
+        async (api) => {
+          let loginUrl = pending.codexLoginUrl;
+          let userCode = pending.codexUserCode;
+          let loginId = pending.codexLoginId;
+          let loginKind = pending.codexLoginKind;
 
-      if (!loginUrl) {
-        setConnectionMessage('Starting Codex login inside the Codespace…');
-        const response = await withBridgeApiClient(
-          pendingCodexLogin.bridgeUrl,
-          pendingCodexLogin.accessToken,
-          startManagedCodexLogin
-        );
-        const loginDetails = readManagedCodexLoginDetails(response);
-        loginUrl = loginDetails.url;
-        userCode = loginDetails.userCode;
-        loginId = loginDetails.loginId;
-        loginKind = loginDetails.kind;
+          if (!loginUrl) {
+            setConnectionMessage('Starting Codex login inside the Codespace…');
+            const response = await startManagedCodexLogin(api);
+            const loginDetails = readManagedCodexLoginDetails(response);
+            loginUrl = loginDetails.url;
+            userCode = loginDetails.userCode;
+            loginId = loginDetails.loginId;
+            loginKind = loginDetails.kind;
 
-        setPendingCodexLogin((current) =>
-          current && current.runId === pendingCodexLogin.runId
-            ? {
-                ...current,
-                codexLoginId: loginId,
-                codexLoginUrl: loginUrl,
-                codexLoginKind: loginKind,
-                codexUserCode: userCode,
+            setPendingCodexLogin((current) =>
+              current && current.runId === pending.runId
+                ? {
+                    ...current,
+                    codexLoginId: loginId,
+                    codexLoginUrl: loginUrl,
+                    codexLoginKind: loginKind,
+                    codexUserCode: userCode,
+                  }
+                : current
+            );
+          }
+
+          if (connectFlowRef.current !== pending.runId) {
+            return;
+          }
+
+          const loginCompletion = loginId
+            ? api.waitForAccountLoginCompleted(loginId, CODEX_LOGIN_COMPLETION_TIMEOUT_MS)
+            : Promise.resolve();
+          void loginCompletion.catch(() => undefined);
+          const waitForLoginCompletionGrace = async () => {
+            if (!loginId) {
+              return false;
+            }
+            try {
+              return await Promise.race([
+                loginCompletion.then(() => true),
+                sleep(CODEX_LOGIN_COMPLETION_GRACE_MS).then(() => false),
+              ]);
+            } catch {
+              return false;
+            }
+          };
+
+          if (loginKind === 'device') {
+            await Linking.openURL(loginUrl);
+            setConnectionMessage(formatCodexManagedLoginInstruction(userCode));
+            shouldReloadAfterLogin = await waitForLoginCompletionGrace();
+            return;
+          }
+
+          setConnectionMessage('Opening ChatGPT login…');
+          setCodexLoginBrowserOpen(true);
+          const sessionPromise = openChatGptLoopbackAuthSession(loginUrl, {
+            onCallback: async (callbackUrl) => {
+              await withBridgeApiClient(pending.bridgeUrl, pending.accessToken, (callbackApi) =>
+                callbackApi.forwardCodexAuthCallback(callbackUrl.toString())
+              );
+            },
+          });
+
+          void sessionPromise
+            .then((session) => {
+              if (connectFlowRef.current !== pending.runId) {
+                return;
               }
-            : current
-        );
-      }
+              if (session.kind === 'error') {
+                setConnectionError(session.message);
+                return;
+              }
+              if (session.kind === 'callback') {
+                setConnectionMessage('Codex login returned. Checking saved auth...');
+                void completeCodexLoginIfReady(pending, { restartIfNeeded: true });
+              }
+            })
+            .catch((error) => {
+              if (connectFlowRef.current === pending.runId) {
+                setConnectionError((error as Error).message);
+              }
+            })
+            .finally(() => {
+              if (connectFlowRef.current === pending.runId) {
+                setCodexLoginBrowserOpen(false);
+              }
+            });
 
-      if (loginKind === 'device') {
-        await Linking.openURL(loginUrl);
-        setConnectionMessage(formatCodexManagedLoginInstruction(userCode));
-        return;
-      }
+          const session = await Promise.race([
+            sessionPromise,
+            sleep(CODEX_LOGIN_BROWSER_LAUNCH_GRACE_MS).then(() => ({ kind: 'pending' as const })),
+          ]);
 
-      setConnectionMessage('Opening ChatGPT login…');
-      const session = await openChatGptLoopbackAuthSession(loginUrl, {
-        onCallback: async (callbackUrl) => {
-          await withBridgeApiClient(
-            pendingCodexLogin.bridgeUrl,
-            pendingCodexLogin.accessToken,
-            (api) => api.forwardCodexAuthCallback(callbackUrl.toString())
-          );
+          if (session.kind === 'pending') {
+            setConnectionMessage(formatCodexManagedLoginInstruction(userCode));
+            return;
+          }
+          if (session.kind === 'cancelled') {
+            setConnectionMessage(
+              'Codex login was cancelled. Clawdex will keep checking in case it completed.'
+            );
+            return;
+          }
+          if (session.kind === 'dismissed') {
+            setConnectionMessage(
+              'Codex login was dismissed. Clawdex will keep checking in case it completed.'
+            );
+            return;
+          }
+          if (session.kind === 'error') {
+            throw new Error(session.message);
+          }
+
+          setConnectionMessage('Codex login complete. Refreshing the Codespace runtime…');
+          await waitForLoginCompletionGrace();
+          shouldReloadAfterLogin = true;
         },
-      });
+        { requestTimeoutMs: 60_000 }
+      );
 
-      if (session.kind === 'cancelled') {
-        setConnectionMessage('Codex login was cancelled.');
-        return;
-      }
-      if (session.kind === 'dismissed') {
-        setConnectionMessage('Codex login did not complete.');
-        return;
-      }
-      if (session.kind === 'error') {
-        throw new Error(session.message);
+      if (!shouldReloadAfterLogin || connectFlowRef.current !== pending.runId) {
+        return false;
       }
 
-      setConnectionMessage('Codex login complete. Verifying account…');
-      await completeCodexLoginIfReady(pendingCodexLogin);
+      const restartedAccount = await reloadCodexAccountAfterRuntimeRestart(pending);
+      if (!restartedAccount || connectFlowRef.current !== pending.runId) {
+        return false;
+      }
+
+      if (isCodexAccountReady(restartedAccount)) {
+        setConnectionMessage('Codex login verified. Finishing setup…');
+        setPendingCodexLogin(null);
+        await finalizeConnectedBridgeProfile(pending.profileDraft);
+        return true;
+      }
+
+      setConnectionPhase('codexLoginRequired');
+      setConnectionMessage(formatCodexManagedLoginInstruction(pending.codexUserCode));
+      return false;
     } catch (error) {
       setConnectionError((error as Error).message);
+      return false;
     } finally {
       setCodexLoginSubmitting(false);
     }
-  }, [completeCodexLoginIfReady, pendingCodexLogin]);
+  }, [
+    completeCodexLoginIfReady,
+    finalizeConnectedBridgeProfile,
+    pendingCodexLogin,
+    reloadCodexAccountAfterRuntimeRestart,
+  ]);
 
-  const openCodespaceForCodexLogin = useCallback(async () => {
-    if (!pendingCodexLogin) {
+  useEffect(() => {
+    if (!pendingCodexLogin || connectedProfileDraft) {
+      return;
+    }
+    if (codexLoginChecking || codexLoginSubmitting) {
+      return;
+    }
+    if (autoCodexLoginRunRef.current === pendingCodexLogin.runId) {
       return;
     }
 
-    setCodexLoginSubmitting(true);
-    setConnectionError(null);
+    autoCodexLoginRunRef.current = pendingCodexLogin.runId;
+    let cancelled = false;
 
-    try {
-      if (!pendingCodexLogin.codespaceWebUrl) {
-        throw new Error('This Codespace does not expose a web URL to open.');
+    const runCodexLogin = async () => {
+      const ready = await completeCodexLoginIfReady(pendingCodexLogin, {
+        restartIfNeeded: Boolean(
+          pendingCodexLogin.codexLoginId || pendingCodexLogin.codexLoginUrl
+        ),
+      });
+      if (cancelled || ready || connectFlowRef.current !== pendingCodexLogin.runId) {
+        return;
       }
-      await Linking.openURL(pendingCodexLogin.codespaceWebUrl);
-      setConnectionMessage(
-        'Open the Codespace on another machine if you need to inspect Codex auth there, then return here and tap Check login.'
-      );
-    } catch (error) {
-      setConnectionError((error as Error).message);
-    } finally {
-      setCodexLoginSubmitting(false);
-    }
-  }, [pendingCodexLogin]);
+
+      await openCodexManagedLogin(pendingCodexLogin);
+    };
+
+    void runCodexLogin();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    codexLoginChecking,
+    codexLoginSubmitting,
+    completeCodexLoginIfReady,
+    connectedProfileDraft,
+    openCodexManagedLogin,
+    pendingCodexLogin,
+  ]);
 
   const finalizeCodespaceConnection = useCallback(
     async (
@@ -1277,7 +1458,7 @@ export function GitHubCodespacesScreen({
 
     setRepositoryChoice('fresh');
     setSelectedCloneRepository(null);
-    setSetupStep('codexLogin');
+    setSetupStep('projectSetup');
     await handleConnectCodespace(targetCodespace);
   }, [createdCodespace, handleConnectCodespace]);
 
@@ -1292,7 +1473,7 @@ export function GitHubCodespacesScreen({
 
       setRepositoryChoice('clone');
       setSelectedCloneRepository(repository);
-      setSetupStep('codexLogin');
+      setSetupStep('projectSetup');
       await handleConnectCodespace(targetCodespace, { cloneRepository: repository });
     },
     [createdCodespace, handleConnectCodespace]
@@ -1559,65 +1740,6 @@ export function GitHubCodespacesScreen({
       </View>
 
       <View style={styles.actionRow}>
-        {pendingCodexLogin ? (
-          <>
-            <Pressable
-              onPress={() => {
-                void openCodexManagedLogin();
-              }}
-              disabled={codexLoginSubmitting}
-              style={({ pressed }) => [
-                styles.primaryButton,
-                pressed && !codexLoginSubmitting && styles.primaryButtonPressed,
-              ]}
-            >
-              {codexLoginSubmitting ? (
-                <ActivityIndicator size="small" color={theme.colors.accentText} />
-              ) : (
-                <Ionicons name="log-in-outline" size={15} color={theme.colors.accentText} />
-              )}
-              <Text style={styles.primaryButtonText}>Open Codex login</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                void openCodespaceForCodexLogin();
-              }}
-              disabled={codexLoginSubmitting}
-              style={({ pressed }) => [
-                styles.secondaryButton,
-                pressed && !codexLoginSubmitting && styles.secondaryButtonPressed,
-              ]}
-            >
-              {codexLoginSubmitting ? (
-                <ActivityIndicator size="small" color={theme.colors.textPrimary} />
-              ) : (
-                <Ionicons name="open-outline" size={15} color={theme.colors.textPrimary} />
-              )}
-              <Text style={styles.secondaryButtonText}>Open Codespace</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                void completeCodexLoginIfReady(pendingCodexLogin);
-              }}
-              disabled={codexLoginChecking}
-              style={({ pressed }) => [
-                styles.secondaryButton,
-                pressed && !codexLoginChecking && styles.secondaryButtonPressed,
-              ]}
-            >
-              {codexLoginChecking ? (
-                <ActivityIndicator size="small" color={theme.colors.textPrimary} />
-              ) : (
-                <Ionicons
-                  name="checkmark-done-outline"
-                  size={15}
-                  color={theme.colors.textPrimary}
-                />
-              )}
-              <Text style={styles.secondaryButtonText}>Check login</Text>
-            </Pressable>
-          </>
-        ) : null}
         {connectionPhase === 'startingCodespace' && activeConnectingCodespace?.webUrl ? (
           <Pressable
             onPress={() => handleOpenCodespace(activeConnectingCodespace)}
@@ -1666,6 +1788,8 @@ export function GitHubCodespacesScreen({
     Boolean(cloningRepositoryFullName) ||
     codexLoginChecking ||
     codexLoginSubmitting;
+  const codexLoginActionBusy =
+    codexLoginChecking || codexLoginSubmitting || codexLoginBrowserOpen;
   const setupScreen =
     setupStep === 'chooseConnection'
       ? {
@@ -1701,6 +1825,18 @@ export function GitHubCodespacesScreen({
                       ? `${createdCodespace.name} is ready. Choose how this workspace should start.`
                       : 'Choose whether to clone a repository or start fresh.',
               }
+            : setupStep === 'projectSetup'
+              ? {
+                  icon: selectedCloneRepository
+                    ? 'git-branch-outline' as const
+                    : 'folder-open-outline' as const,
+                  title: selectedCloneRepository ? 'Cloning repository' : 'Setting up project',
+                  body: selectedCloneRepository
+                    ? `${selectedCloneRepository.fullName} is being prepared inside the Codespace.`
+                    : createdCodespace
+                      ? `${createdCodespace.name} is being prepared for Clawdex.`
+                      : 'Preparing the workspace before Codex login.',
+                }
             : {
                 icon: connectedProfileDraft
                   ? 'checkmark-circle-outline' as const
@@ -1709,8 +1845,8 @@ export function GitHubCodespacesScreen({
                 body: connectedProfileDraft
                   ? 'Your Codespace is connected to Clawdex.'
                   : pendingCodexLogin?.codexUserCode
-                    ? `Enter ${pendingCodexLogin.codexUserCode} in ChatGPT. Codex saves this login inside the Codespace.`
-                    : 'Sign in once. Codex saves this login inside the Codespace and keeps it after pause or restart.',
+                    ? `Enter ${pendingCodexLogin.codexUserCode} in ChatGPT. Clawdex will continue automatically.`
+                    : 'Sign in once. Clawdex refreshes the Codespace runtime automatically after login.',
               };
   const setupStatusMessage =
     connectionMessage ??
@@ -1815,6 +1951,27 @@ export function GitHubCodespacesScreen({
           }}
         />
       </>
+    ) : setupStep === 'projectSetup' ? (
+      <ChoiceAction
+        variant="primary"
+        iconName={selectedCloneRepository ? 'git-branch-outline' : 'folder-open-outline'}
+        title={
+          cloningRepositoryFullName
+            ? 'Cloning repository...'
+            : connectingCodespaceName
+              ? 'Preparing workspace...'
+              : 'Setting up project...'
+        }
+        meta={
+          selectedCloneRepository?.fullName ??
+          createdCodespace?.name ??
+          activeCodespaceLabel ??
+          'Codespace setup'
+        }
+        loading
+        disabled
+        onPress={() => {}}
+      />
     ) : connectedProfileDraft ? (
       <ChoiceAction
         variant="primary"
@@ -1827,34 +1984,27 @@ export function GitHubCodespacesScreen({
         }}
       />
     ) : pendingCodexLogin ? (
-      <>
-        <ChoiceAction
-          variant="primary"
-          iconName="log-in-outline"
-          title={codexLoginSubmitting ? 'Opening Codex login...' : 'Open Codex login'}
-          meta={
-            pendingCodexLogin.codexUserCode
-              ? `Code ${pendingCodexLogin.codexUserCode}`
-              : 'Saved in this Codespace'
-          }
-          loading={codexLoginSubmitting}
-          disabled={setupActionLocked}
-          onPress={() => {
-            void openCodexManagedLogin();
-          }}
-        />
-        <ChoiceAction
-          variant="secondary"
-          iconName="checkmark-done-outline"
-          title={codexLoginChecking ? 'Checking...' : 'Check login'}
-          meta="After browser confirms"
-          loading={codexLoginChecking}
-          disabled={setupActionLocked}
-          onPress={() => {
-            void completeCodexLoginIfReady(pendingCodexLogin);
-          }}
-        />
-      </>
+      <ChoiceAction
+        variant="primary"
+        iconName="log-in-outline"
+        title={
+          codexLoginSubmitting
+            ? 'Opening Codex login...'
+            : codexLoginChecking
+              ? 'Checking Codex login...'
+              : codexLoginBrowserOpen
+                ? 'Waiting for browser login...'
+                : pendingCodexLogin.codexLoginUrl
+                  ? 'Open ChatGPT login'
+                  : 'Start Codex login'
+        }
+        meta={pendingCodexLogin.profileDraft.githubCodespaceName ?? 'Codespace setup'}
+        loading={codexLoginActionBusy}
+        disabled={codexLoginActionBusy}
+        onPress={() => {
+          void openCodexManagedLogin(pendingCodexLogin);
+        }}
+      />
     ) : (
       <ChoiceAction
         variant="primary"
@@ -2772,6 +2922,44 @@ async function withBridgeApiClient<T>(
   }
 }
 
+function isCodexAccountReady(account: AccountSnapshot): boolean {
+  return account.type !== null || !account.requiresOpenaiAuth;
+}
+
+async function waitForCodexAccountReady(
+  api: HostBridgeApiClient,
+  timeoutMs: number
+): Promise<AccountSnapshot> {
+  const startedAt = Date.now();
+  let latestAccount: AccountSnapshot | null = null;
+  let lastError: Error | null = null;
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    try {
+      const account = await api.readAccount({ refreshToken: true });
+      latestAccount = account;
+      lastError = null;
+      if (isCodexAccountReady(account)) {
+        return account;
+      }
+    } catch (error) {
+      lastError = error as Error;
+    }
+
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) {
+      break;
+    }
+    await sleep(Math.min(CODEX_ACCOUNT_READY_POLL_MS, remainingMs));
+  }
+
+  if (latestAccount) {
+    return latestAccount;
+  }
+
+  throw lastError ?? new Error('Codex account status could not be checked.');
+}
+
 async function startManagedCodexLogin(
   api: HostBridgeApiClient
 ): Promise<AccountLoginStartResponse> {
@@ -2820,10 +3008,10 @@ function readManagedCodexLoginDetails(response: AccountLoginStartResponse): {
 
 function formatCodexManagedLoginInstruction(userCode: string | null): string {
   if (userCode) {
-    return `ChatGPT opened in your browser. Enter code ${userCode}, then return here and tap Check login. Codex saves the login inside this Codespace.`;
+    return `ChatGPT opened in your browser. Enter code ${userCode}; Clawdex will continue automatically after Codex confirms the login.`;
   }
 
-  return 'ChatGPT opened in your browser. Finish the Codex login there; the app will return and verify it automatically. Codex saves the login inside this Codespace.';
+  return 'ChatGPT opened in your browser. Finish the Codex login there; Clawdex will refresh the Codespace runtime automatically.';
 }
 
 async function waitForBridgeReady(bridgeUrl: string, accessToken: string): Promise<void> {
@@ -2955,6 +3143,25 @@ function formatCodespaceState(value: string): string {
 
 function sleep(durationMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, durationMs));
+}
+
+function withTimeout<T>(
+  task: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const timeoutTask = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  return Promise.race([task, timeoutTask]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
 }
 
 const createStyles = (theme: AppTheme) => {

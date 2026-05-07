@@ -102,7 +102,7 @@ npm run codespaces:bootstrap -- --no-start
 
 - The bridge can transcribe with `OPENAI_API_KEY`, `BRIDGE_CHATGPT_ACCESS_TOKEN`, a legacy bridge token cache, or the Codex-managed ChatGPT token in `$CODEX_HOME/auth.json`.
 - In GitHub Codespaces, finish the Codex login step from the app first. Codex writes the login to `$HOME/.codex/auth.json`, and `.env.secure` sets `CODEX_HOME` to that persistent location.
-- If you still see the error after logging in, restart the bridge once so app-server reloads the Codex auth home:
+- Current app builds automatically restart the Codespace Codex app-server after the Codex login step so it reloads the Codex auth home. On older builds, restart the bridge once after logging in:
 
 ```bash
 npm run secure:bridge

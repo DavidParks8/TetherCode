@@ -6,6 +6,7 @@ const GITHUB_API_ACCEPT = 'application/vnd.github+json';
 const GITHUB_API_VERSION = '2022-11-28';
 const GITHUB_ACCESS_TOKEN_REFRESH_BUFFER_MS = 90_000;
 const GITHUB_CODESPACE_DEFAULT_IDLE_TIMEOUT_MINUTES = 45;
+const GITHUB_INSTALLATION_TOKEN_TIMEOUT_MS = 30_000;
 
 export interface GitHubDeviceCodeGrant {
   deviceCode: string;
@@ -387,6 +388,7 @@ export async function requestGitHubInstallationAccessToken(input: {
   userAccessToken: string;
   installationId: number;
   repositories: string[];
+  timeoutMs?: number;
 }): Promise<GitHubInstallationAccessToken> {
   const authBaseUrl = input.authBaseUrl.trim();
   const userAccessToken = input.userAccessToken.trim();
@@ -404,18 +406,35 @@ export async function requestGitHubInstallationAccessToken(input: {
     throw new Error('At least one repository is required to request an installation token.');
   }
 
-  const response = await fetch(new URL('/api/github/installations/token', ensureTrailingSlash(authBaseUrl)), {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      userAccessToken,
-      installationId: input.installationId,
-      repositories,
-    }),
-  });
+  const abortController = new AbortController();
+  const timeoutMs = input.timeoutMs ?? GITHUB_INSTALLATION_TOKEN_TIMEOUT_MS;
+  const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(
+      new URL('/api/github/installations/token', ensureTrailingSlash(authBaseUrl)),
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userAccessToken,
+          installationId: input.installationId,
+          repositories,
+        }),
+        signal: abortController.signal,
+      }
+    );
+  } catch (error) {
+    if (abortController.signal.aborted) {
+      throw new Error('GitHub repository access took too long. Try again or start fresh.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
   const payload = await readJsonResponse(response);
   if (!response.ok) {
     throw new Error(

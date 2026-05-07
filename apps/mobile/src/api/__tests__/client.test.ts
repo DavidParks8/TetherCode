@@ -156,6 +156,20 @@ describe('HostBridgeApiClient', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('restartCodexAppServer() calls bridge/codex/app-server/restart', async () => {
+    const ws = createWsMock();
+    ws.request.mockResolvedValue({
+      ok: true,
+      message: 'restarted',
+    });
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+    const result = await client.restartCodexAppServer();
+
+    expect(ws.request).toHaveBeenCalledWith('bridge/codex/app-server/restart');
+    expect(result.ok).toBe(true);
+  });
+
   it('readAccountRateLimits() falls back to first populated keyed snapshot with snake_case payloads', async () => {
     const ws = createWsMock();
     ws.request.mockResolvedValue({
@@ -313,7 +327,10 @@ describe('HostBridgeApiClient', () => {
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
     const result = await client.startChatGptAccountLogin();
 
-    expect(ws.request).toHaveBeenCalledWith('account/login/start', { type: 'chatgpt' });
+    expect(ws.request).toHaveBeenCalledWith('account/login/start', {
+      type: 'chatgpt',
+      codexStreamlinedLogin: true,
+    });
     expect(result).toEqual({
       type: 'chatgpt',
       loginId: 'login_123',
@@ -359,6 +376,50 @@ describe('HostBridgeApiClient', () => {
     expect(ws.request).toHaveBeenCalledWith('bridge/codex/auth/callback/forward', {
       callbackUrl: 'http://localhost:1455/auth/callback?code=abc&state=xyz',
     });
+  });
+
+  it('waitForAccountLoginCompleted() resolves on matching login completion', async () => {
+    const ws = createWsMock();
+    const unsubscribe = jest.fn();
+    ws.onEvent.mockReturnValueOnce(unsubscribe);
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+    const result = client.waitForAccountLoginCompleted('login_123', 1_000);
+
+    const listener = ws.onEvent.mock.calls[0][0];
+    listener({
+      method: 'account/login/completed',
+      params: {
+        loginId: 'login_123',
+        success: true,
+        error: null,
+      },
+    });
+
+    await expect(result).resolves.toBeUndefined();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('waitForAccountLoginCompleted() rejects failed matching login completion', async () => {
+    const ws = createWsMock();
+    const unsubscribe = jest.fn();
+    ws.onEvent.mockReturnValueOnce(unsubscribe);
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+    const result = client.waitForAccountLoginCompleted('login_123', 1_000);
+
+    const listener = ws.onEvent.mock.calls[0][0];
+    listener({
+      method: 'account/login/completed',
+      params: {
+        loginId: 'login_123',
+        success: false,
+        error: 'browser login expired',
+      },
+    });
+
+    await expect(result).rejects.toThrow('browser login expired');
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
   it('loginWithChatGptAuthTokens() requests token-based ChatGPT login', async () => {

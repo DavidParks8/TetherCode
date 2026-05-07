@@ -657,6 +657,11 @@ export interface BridgeRestartStartResponse {
   logPath?: string | null;
 }
 
+export interface CodexAppServerRestartResponse {
+  ok: boolean;
+  message: string;
+}
+
 export interface RpcNotification {
   method: string;
   params: Record<string, unknown> | null;
