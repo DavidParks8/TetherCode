@@ -87,8 +87,8 @@ gh codespace ports visibility 8787:public 8788:public
 The source repo devcontainer now includes:
 
 - `updateContentCommand`: `npm install --include=dev --prefer-offline --no-audit --fund=false && npm run codespaces:bootstrap -- --prepare-only`
-- `postStartCommand`: `npm run codespaces:bootstrap`
-- `waitFor`: `postStartCommand`
+- `postStartCommand`: fire-and-forget `npm run codespaces:bootstrap`, writing setup output to `.bridge-bootstrap.log`
+- `waitFor`: `updateContentCommand`
 
 `npm run codespaces:bootstrap` does the following:
 
@@ -100,7 +100,7 @@ The source repo devcontainer now includes:
 
 Clawdex-created Codespaces request a 45-minute idle timeout. The bridge emits a lightweight active-turn keepalive while a Codex, OpenCode, or Cursor turn is running, so active work has activity even if a long step is otherwise quiet. When no turn is running, the keepalive stops and GitHub can pause the Codespace normally to save cost.
 
-That means prebuild-enabled Codespaces can snapshot the expensive dependency install and bridge compile during `updateContentCommand`, so the later `postStartCommand` can usually start the bridge much faster.
+That means prebuild-enabled Codespaces can snapshot the expensive dependency install and bridge compile during `updateContentCommand`. The later `postStartCommand` starts the runtime bridge asynchronously so Codespaces does not block editor/app access while the bridge finishes warming up.
 
 The same bootstrap script is included in the published `clawdex-mobile` npm package. That lets the `clawdex-codespace` template stay minimal: it installs `clawdex-mobile@internal` globally in `updateContentCommand` and invokes the packaged bootstrap against the current workspace instead of copying `scripts/*` and `services/rust-bridge/*` into the template repo. Because the published package ships Linux bridge binaries, the template does not need Rust, Cargo, or a local bridge compile.
 

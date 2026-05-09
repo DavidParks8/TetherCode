@@ -60,7 +60,7 @@ gh codespace ports visibility 8787:public 8788:public
 
 ## GitHub Codespaces bootstrap did not start the bridge
 
-- Check the post-start command output in the Codespace terminal or rerun it manually:
+- Check `.bridge-bootstrap.log` for the post-start bootstrap and `.bridge.log` for the bridge process, or rerun the bootstrap manually:
 
 ```bash
 npm run codespaces:bootstrap -- --prepare-only
@@ -81,8 +81,9 @@ CLAWDEX_WORKSPACE_ROOT="$PWD" node "$(npm root -g)/clawdex-mobile/scripts/codesp
 - Bridge startup logs and runtime state live in the Codespace repo root:
 
 ```bash
+tail -n 200 .bridge-bootstrap.log
 tail -n 200 .bridge.log
-ls -la .bridge.pid .bridge.log .env.secure
+ls -la .bridge.pid .bridge.log .bridge-bootstrap.log .env.secure
 ```
 
 - To only rewrite `.env.secure` without starting the bridge:

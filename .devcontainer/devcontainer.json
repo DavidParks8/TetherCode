@@ -17,6 +17,6 @@
     }
   },
   "updateContentCommand": "npm install --include=dev --prefer-offline --no-audit --fund=false && npm run codespaces:bootstrap -- --prepare-only",
-  "postStartCommand": "npm run codespaces:bootstrap",
-  "waitFor": "postStartCommand"
+  "postStartCommand": "bash -lc 'nohup npm run codespaces:bootstrap > .bridge-bootstrap.log 2>&1 < /dev/null &'",
+  "waitFor": "updateContentCommand"
 }
