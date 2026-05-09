@@ -461,9 +461,21 @@ export async function requestGitHubInstallationAccessToken(input: {
 }
 
 export async function fetchGitHubCodespaces(accessToken: string): Promise<GitHubCodespace[]> {
-  const payload = await githubApiRequest('/user/codespaces?per_page=100', accessToken);
-  const record = asRecord(payload);
-  const codespaces = record && Array.isArray(record.codespaces) ? record.codespaces : [];
+  const codespaces: unknown[] = [];
+  const perPage = 100;
+  for (let page = 1; ; page += 1) {
+    const payload = await githubApiRequest(
+      `/user/codespaces?per_page=${String(perPage)}&page=${String(page)}`,
+      accessToken
+    );
+    const record = asRecord(payload);
+    const pageCodespaces = record && Array.isArray(record.codespaces) ? record.codespaces : [];
+    codespaces.push(...pageCodespaces);
+    if (pageCodespaces.length < perPage) {
+      break;
+    }
+  }
+
   return codespaces
     .map((entry) => normalizeGitHubCodespace(entry))
     .filter((entry): entry is GitHubCodespace => entry !== null);

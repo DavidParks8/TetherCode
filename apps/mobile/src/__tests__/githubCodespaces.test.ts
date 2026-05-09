@@ -5,6 +5,7 @@ import {
   createGitHubCodespaceForAuthenticatedUser,
   deleteGitHubCodespace,
   fetchGitHubCodespace,
+  fetchGitHubCodespaces,
   fetchGitHubAppAccessSnapshot,
   findReusableGitHubCodespace,
   GitHubApiError,
@@ -14,6 +15,7 @@ import {
   sortGitHubCodespaces,
   shouldRefreshGitHubUserAccessToken,
   startGitHubCodespace,
+  stopGitHubCodespace,
 } from '../githubCodespaces';
 
 describe('githubCodespaces helpers', () => {
@@ -316,6 +318,28 @@ describe('githubCodespaces helpers', () => {
     );
   });
 
+  it('pauses a Codespace through the GitHub API', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      text: jest.fn().mockResolvedValue(''),
+    } as unknown as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await stopGitHubCodespace('ghu_token', 'octocat space');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.github.com/user/codespaces/octocat%20space/stop',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Accept: 'application/vnd.github+json',
+          Authorization: 'Bearer ghu_token',
+          'X-GitHub-Api-Version': '2022-11-28',
+        }),
+      })
+    );
+  });
+
   it('creates Codespaces with a moderate idle timeout by default', async () => {
     const fetchMock = jest.fn().mockResolvedValue({
       ok: true,
@@ -346,6 +370,54 @@ describe('githubCodespaces helpers', () => {
       ref: 'main',
       idle_timeout_minutes: 45,
     });
+  });
+
+  it('loads all paged Codespaces from GitHub', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      name: `space-${String(index + 1)}`,
+      state: 'Available',
+      repository: {
+        name: 'clawdex-mobile',
+        full_name: 'octocat/clawdex-mobile',
+        owner: { login: 'octocat' },
+      },
+    }));
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        text: jest.fn().mockResolvedValue(JSON.stringify({ codespaces: firstPage })),
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        text: jest.fn().mockResolvedValue(JSON.stringify({
+          codespaces: [
+            {
+              name: 'space-101',
+              state: 'Shutdown',
+              repository: {
+                name: 'website',
+                full_name: 'octocat/website',
+                owner: { login: 'octocat' },
+              },
+            },
+          ],
+        })),
+      } as unknown as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const codespaces = await fetchGitHubCodespaces('ghu_token');
+
+    expect(codespaces).toHaveLength(101);
+    expect(codespaces.at(-1)).toMatchObject({
+      name: 'space-101',
+      repositoryFullName: 'octocat/website',
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://api.github.com/user/codespaces?per_page=100&page=2',
+      expect.any(Object)
+    );
   });
 
   it('fetches a Codespace by name through the GitHub API', async () => {

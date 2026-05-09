@@ -114,6 +114,7 @@ import {
 
 type AppScreen = 'Main' | 'ChatGit' | 'Browser' | 'Settings' | 'Privacy' | 'Terms';
 type Screen = AppScreen | 'Onboarding' | 'GitHubCodespaces';
+type GitHubCodespacesRouteMode = 'setup' | 'manage';
 type PendingGitHubCodespacesSession = {
   token: GitHubUserAccessToken;
   user: GitHubUser;
@@ -160,6 +161,8 @@ const DRAWER_MAX_ELEVATION = 18;
 const APP_PREFETCH_DELAY_MS = 0;
 const APP_PREFETCH_CHAT_LIMIT = 5;
 const GITHUB_CODESPACE_RECOVERY_CHECK_DELAY_MS = 5_000;
+const GITHUB_CODESPACE_WAKE_POLL_MS = 5_000;
+const GITHUB_CODESPACE_WAKE_TIMEOUT_MS = 5 * 60 * 1000;
 const APP_SETTINGS_FILE = 'clawdex-app-settings.json';
 const AUTO_STORE_REVIEW_RETRY_MS = 24 * 60 * 60 * 1000;
 
@@ -289,6 +292,8 @@ export default function App() {
   const [gitHubCodespacesSigningIn, setGitHubCodespacesSigningIn] = useState(false);
   const [pendingGitHubCodespacesSession, setPendingGitHubCodespacesSession] =
     useState<PendingGitHubCodespacesSession | null>(null);
+  const [gitHubCodespacesRouteMode, setGitHubCodespacesRouteMode] =
+    useState<GitHubCodespacesRouteMode>('setup');
   const [bridgeConnected, setBridgeConnected] = useState(() => Boolean(ws?.isConnected));
   const [githubCodespaceRecoveryChecking, setGithubCodespaceRecoveryChecking] = useState(false);
   const [githubCodespaceRecoveryWaking, setGithubCodespaceRecoveryWaking] = useState(false);
@@ -312,6 +317,7 @@ export default function App() {
   const drawerCapturesTouchesRef = useRef(false);
   const gitHubTokenRefreshKeyRef = useRef<string | null>(null);
   const githubCodespaceRecoveryCheckKeyRef = useRef<string | null>(null);
+  const githubCodespaceWakeRunRef = useRef(0);
   const chatTransitionRequestIdRef = useRef(0);
   const appLifecycleStateRef = useRef(AppState.currentState);
   const activeUsageStartedAtRef = useRef<number | null>(
@@ -1704,6 +1710,7 @@ export default function App() {
   const handleGitHubCodespacesProfileSaved = useCallback(
     async (draft: BridgeProfileDraft) => {
       setPendingGitHubCodespacesSession(null);
+      setGitHubCodespacesRouteMode('setup');
       const normalized = normalizeBridgeUrlInput(draft.bridgeUrl);
       const normalizedToken = normalizeBridgeToken(draft.bridgeToken);
       if (!normalized || !normalizedToken) {
@@ -1756,7 +1763,10 @@ export default function App() {
   );
 
   const openGitHubCodespaces = useCallback(
-    (input: PendingGitHubCodespacesSession | null | unknown = null) => {
+    (
+      input: PendingGitHubCodespacesSession | null | unknown = null,
+      mode: GitHubCodespacesRouteMode = 'setup'
+    ) => {
       const initialSession = isPendingGitHubCodespacesSession(input) ? input : null;
       const successScreen: AppScreen =
         currentScreen === 'Onboarding'
@@ -1770,6 +1780,7 @@ export default function App() {
             ? currentScreen
             : 'Main';
       setPendingGitHubCodespacesSession(initialSession);
+      setGitHubCodespacesRouteMode(mode);
       setGitHubCodespacesCancelScreen(currentScreen);
       setGitHubCodespacesSuccessScreen(successScreen);
       setCurrentScreen('GitHubCodespaces');
@@ -1840,10 +1851,16 @@ export default function App() {
   }, [activeBridgeProfile, getFreshGitHubTokenForProfile, openGitHubCodespacesRecoverySetup]);
 
   const handleWakeGitHubCodespace = useCallback(async () => {
+    const wakeRunId = githubCodespaceWakeRunRef.current + 1;
+    githubCodespaceWakeRunRef.current = wakeRunId;
     setGithubCodespaceRecoveryWaking(true);
-    setGithubCodespaceRecoveryMessage(null);
+    setGithubCodespaceRecoveryChecking(false);
+    setGithubCodespaceRecoveryMessage('Checking Codespace state...');
     try {
       const recovery = await resolveActiveGitHubCodespace();
+      if (githubCodespaceWakeRunRef.current !== wakeRunId) {
+        return;
+      }
       if (!recovery) {
         return;
       }
@@ -1863,16 +1880,42 @@ export default function App() {
 
       if (isGitHubCodespaceBootingState(state)) {
         setGithubCodespaceRecoveryMessage(
-          'Codespace is already starting. Clawdex will reconnect when the bridge is back.'
+          formatGitHubCodespaceWakeProgressMessage(recovery.codespace.state)
         );
-        return;
+      } else {
+        setGithubCodespaceRecoveryMessage(
+          'Starting Codespace. Clawdex will reconnect when the bridge is back.'
+        );
+        await startGitHubCodespace(recovery.token.accessToken, recovery.codespaceName);
+        if (githubCodespaceWakeRunRef.current !== wakeRunId) {
+          return;
+        }
       }
 
-      await startGitHubCodespace(recovery.token.accessToken, recovery.codespaceName);
+      const didWake = await waitForGitHubCodespaceWake({
+        accessToken: recovery.token.accessToken,
+        codespaceName: recovery.codespaceName,
+        shouldContinue: () => githubCodespaceWakeRunRef.current === wakeRunId,
+        onState: (nextState) => {
+          setGithubCodespaceRecoveryMessage(
+            formatGitHubCodespaceWakeProgressMessage(nextState)
+          );
+        },
+        onDeleted: openGitHubCodespacesRecoverySetup,
+      });
+      if (!didWake) {
+        return;
+      }
+      if (githubCodespaceWakeRunRef.current !== wakeRunId) {
+        return;
+      }
       setGithubCodespaceRecoveryMessage(
-        'Starting Codespace. Clawdex will reconnect when the bridge is back.'
+        'Codespace is awake. Waiting for the bridge to reconnect.'
       );
     } catch (error) {
+      if (githubCodespaceWakeRunRef.current !== wakeRunId) {
+        return;
+      }
       if (handleGitHubCodespaceRecoveryError(error)) {
         return;
       }
@@ -1881,7 +1924,9 @@ export default function App() {
         `Could not wake Codespace: ${error instanceof Error ? error.message : String(error)}`
       );
     } finally {
-      setGithubCodespaceRecoveryWaking(false);
+      if (githubCodespaceWakeRunRef.current === wakeRunId) {
+        setGithubCodespaceRecoveryWaking(false);
+      }
     }
   }, [
     handleGitHubCodespaceRecoveryError,
@@ -1891,6 +1936,7 @@ export default function App() {
 
   useEffect(() => {
     if (bridgeConnected) {
+      githubCodespaceWakeRunRef.current += 1;
       githubCodespaceRecoveryCheckKeyRef.current = null;
       setGithubCodespaceRecoveryChecking(false);
       setGithubCodespaceRecoveryWaking(false);
@@ -2168,11 +2214,13 @@ export default function App() {
 
   const handleCancelGitHubCodespaces = useCallback(() => {
     setPendingGitHubCodespacesSession(null);
+    setGitHubCodespacesRouteMode('setup');
     setCurrentScreen(gitHubCodespacesCancelScreen);
   }, [gitHubCodespacesCancelScreen]);
 
   const handleOpenPrivateConnectionFromGitHubCodespaces = useCallback(() => {
     setPendingGitHubCodespacesSession(null);
+    setGitHubCodespacesRouteMode('setup');
     setOnboardingMode('add');
     setOnboardingReturnScreen('Main');
     setCurrentScreen('Onboarding');
@@ -2322,6 +2370,7 @@ export default function App() {
             <GitHubCodespacesScreen
               bridgeProfiles={bridgeProfiles}
               activeBridgeProfileId={activeBridgeProfile?.id ?? null}
+              mode={gitHubCodespacesRouteMode}
               initialSession={pendingGitHubCodespacesSession}
               onBack={handleCancelGitHubCodespaces}
               onConnect={handleGitHubCodespacesProfileSaved}
@@ -2456,7 +2505,7 @@ export default function App() {
             onAddBridgeProfile={handleAddBridgeProfile}
             onConnectGitHubCodespaces={
               env.githubClientId && env.githubAppAuthBaseUrl
-                ? () => openGitHubCodespaces()
+                ? () => openGitHubCodespaces(null, 'manage')
                 : undefined
             }
             onSwitchBridgeProfile={handleSwitchBridgeProfile}
@@ -2802,6 +2851,74 @@ function bridgeProfileToGitHubToken(profile: BridgeProfile): GitHubUserAccessTok
     refreshTokenExpiresInSec: null,
     refreshTokenExpiresAtMs: isoStringToTimestampMs(profile.githubRefreshTokenExpiresAt),
   };
+}
+
+async function waitForGitHubCodespaceWake(input: {
+  accessToken: string;
+  codespaceName: string;
+  shouldContinue: () => boolean;
+  onState: (state: string | null | undefined) => void;
+  onDeleted: () => void;
+}): Promise<boolean> {
+  const deadlineMs = Date.now() + GITHUB_CODESPACE_WAKE_TIMEOUT_MS;
+  let lastState: string | null | undefined = null;
+
+  while (Date.now() < deadlineMs) {
+    await sleep(GITHUB_CODESPACE_WAKE_POLL_MS);
+    if (!input.shouldContinue()) {
+      return false;
+    }
+
+    const codespace = await fetchGitHubCodespace(input.accessToken, input.codespaceName);
+    if (!input.shouldContinue()) {
+      return false;
+    }
+
+    lastState = codespace.state;
+    const state = normalizeGitHubCodespaceState(codespace.state);
+    if (isGitHubCodespaceDeletedState(state)) {
+      input.onDeleted();
+      return false;
+    }
+
+    if (state === 'available') {
+      return true;
+    }
+
+    input.onState(codespace.state);
+  }
+
+  const formattedLastState = formatGitHubCodespaceStateLabel(lastState);
+  throw new Error(
+    `Codespace did not start within 5 minutes${
+      formattedLastState ? ` (last state: ${formattedLastState})` : ''
+    }.`
+  );
+}
+
+function formatGitHubCodespaceWakeProgressMessage(value: string | null | undefined): string {
+  const state = normalizeGitHubCodespaceState(value);
+  if (isGitHubCodespaceBootingState(state)) {
+    return 'Starting Codespace. This can take a few minutes.';
+  }
+
+  const formattedState = formatGitHubCodespaceStateLabel(value);
+  return formattedState
+    ? `Codespace is ${formattedState}. Waiting for GitHub to start it.`
+    : 'Starting Codespace. Clawdex will reconnect when the bridge is back.';
+}
+
+function formatGitHubCodespaceStateLabel(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+function sleep(durationMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, durationMs));
 }
 
 function normalizeGitHubCodespaceState(value: string | null | undefined): string {

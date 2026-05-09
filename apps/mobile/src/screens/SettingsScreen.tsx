@@ -1619,7 +1619,7 @@ export function SettingsScreen({
             icon="logo-github"
             logo="github"
             title="GitHub Codespaces"
-            description="Sign in with GitHub and add or manage a Codespace connection."
+            description="View, pause, delete, or connect a Codespace."
             onPress={onConnectGitHubCodespaces}
           />
         ) : null}

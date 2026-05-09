@@ -53,6 +53,7 @@ import { useAppTheme, type AppTheme } from '../theme';
 interface GitHubCodespacesScreenProps {
   bridgeProfiles: BridgeProfile[];
   activeBridgeProfileId?: string | null;
+  mode?: GitHubCodespacesScreenMode;
   initialSession?: {
     token: GitHubUserAccessToken;
     user: GitHubUser;
@@ -80,6 +81,7 @@ type ConnectionPhase =
 
 type ConnectionStepState = 'pending' | 'active' | 'done';
 type OnboardingStage = 'github' | 'codespace' | 'success';
+type GitHubCodespacesScreenMode = 'setup' | 'manage';
 type CodespaceSelectionMode = 'recommended' | 'list';
 type GitHubSetupStep =
   | 'chooseConnection'
@@ -245,8 +247,8 @@ function formatRecovery(kind: RecoveryKind): { title: string; body: string } {
       };
     case 'codexLogin':
       return {
-        title: 'Codex login required',
-        body: 'Open the Codex login once. It is saved inside this Codespace after completion.',
+        title: 'ChatGPT login required',
+        body: 'Log in once to finish setup.',
       };
     case 'generic':
       return {
@@ -419,6 +421,7 @@ function SetupMotionScene({
 export function GitHubCodespacesScreen({
   bridgeProfiles,
   activeBridgeProfileId = null,
+  mode = 'setup',
   initialSession = null,
   onBack,
   onConnect,
@@ -728,9 +731,7 @@ export function GitHubCodespacesScreen({
         return null;
       }
 
-      setConnectionMessage(
-        'Codex login is saved. Restarting Codex so it can reload auth...'
-      );
+      setConnectionMessage('Finishing setup...');
       let codexRestarted = false;
       await withBridgeApiClient(pending.bridgeUrl, pending.accessToken, async (api) => {
         try {
@@ -739,7 +740,7 @@ export function GitHubCodespacesScreen({
         } catch (error) {
           const message = (error as Error).message.trim();
           setConnectionMessage(
-            'Codex login was saved, but this Codespace is running an older Clawdex bridge. Recreate the Codespace or update Clawdex inside it to finish automatically.'
+            'Update this Codespace to finish setup automatically.'
           );
           if (message.length > 0) {
             console.warn(`Codex app-server restart unavailable: ${message}`);
@@ -750,13 +751,13 @@ export function GitHubCodespacesScreen({
         return null;
       }
 
-      setConnectionMessage('Codex restarted. Checking login again...');
+      setConnectionMessage('Finishing setup...');
       return withTimeout(
         withBridgeApiClient(pending.bridgeUrl, pending.accessToken, (api) =>
           waitForCodexAccountReady(api, CODEX_ACCOUNT_READY_TIMEOUT_MS)
         ),
         CODEX_ACCOUNT_READY_TIMEOUT_MS + 5_000,
-        'Codex account check timed out. Open ChatGPT login to continue.'
+        'Log in with ChatGPT to continue.'
       );
     },
     []
@@ -773,7 +774,7 @@ export function GitHubCodespacesScreen({
 
       setCodexLoginChecking(true);
       setConnectionError(null);
-      setConnectionMessage('Checking Codex account status…');
+      setConnectionMessage('Checking login...');
 
       try {
         const account = await withTimeout(
@@ -781,14 +782,14 @@ export function GitHubCodespacesScreen({
             waitForCodexAccountReady(api, CODEX_ACCOUNT_READY_TIMEOUT_MS)
           ),
           CODEX_ACCOUNT_READY_TIMEOUT_MS + 5_000,
-          'Codex account check timed out. Open ChatGPT login to continue.'
+          'Log in with ChatGPT to continue.'
         );
         if (connectFlowRef.current !== pending.runId) {
           return false;
         }
 
         if (isCodexAccountReady(account)) {
-          setConnectionMessage('Codex login verified. Finishing setup…');
+          setConnectionMessage('Finishing setup...');
           setPendingCodexLogin(null);
           await finalizeConnectedBridgeProfile(pending.profileDraft);
           return true;
@@ -801,7 +802,7 @@ export function GitHubCodespacesScreen({
           }
 
           if (isCodexAccountReady(restartedAccount)) {
-            setConnectionMessage('Codex login verified. Finishing setup…');
+            setConnectionMessage('Finishing setup...');
             setPendingCodexLogin(null);
             await finalizeConnectedBridgeProfile(pending.profileDraft);
             return true;
@@ -846,7 +847,7 @@ export function GitHubCodespacesScreen({
           let loginKind = pending.codexLoginKind;
 
           if (!loginUrl) {
-            setConnectionMessage('Starting Codex login inside the Codespace…');
+            setConnectionMessage('Log in with ChatGPT to continue.');
             const response = await startManagedCodexLogin(api);
             const loginDetails = readManagedCodexLoginDetails(response);
             loginUrl = loginDetails.url;
@@ -896,7 +897,7 @@ export function GitHubCodespacesScreen({
             return;
           }
 
-          setConnectionMessage('Opening ChatGPT login…');
+          setConnectionMessage('Log in with ChatGPT to continue.');
           setCodexLoginBrowserOpen(true);
           const sessionPromise = openChatGptLoopbackAuthSession(loginUrl, {
             onCallback: async (callbackUrl) => {
@@ -916,7 +917,7 @@ export function GitHubCodespacesScreen({
                 return;
               }
               if (session.kind === 'callback') {
-                setConnectionMessage('Codex login returned. Checking saved auth...');
+                setConnectionMessage('Checking login...');
                 void completeCodexLoginIfReady(pending, { restartIfNeeded: true });
               }
             })
@@ -941,22 +942,18 @@ export function GitHubCodespacesScreen({
             return;
           }
           if (session.kind === 'cancelled') {
-            setConnectionMessage(
-              'Codex login was cancelled. Clawdex will keep checking in case it completed.'
-            );
+            setConnectionMessage('Log in with ChatGPT to continue.');
             return;
           }
           if (session.kind === 'dismissed') {
-            setConnectionMessage(
-              'Codex login was dismissed. Clawdex will keep checking in case it completed.'
-            );
+            setConnectionMessage('Log in with ChatGPT to continue.');
             return;
           }
           if (session.kind === 'error') {
             throw new Error(session.message);
           }
 
-          setConnectionMessage('Codex login complete. Refreshing the Codespace runtime…');
+          setConnectionMessage('Finishing setup...');
           await waitForLoginCompletionGrace();
           shouldReloadAfterLogin = true;
         },
@@ -973,7 +970,7 @@ export function GitHubCodespacesScreen({
       }
 
       if (isCodexAccountReady(restartedAccount)) {
-        setConnectionMessage('Codex login verified. Finishing setup…');
+        setConnectionMessage('Finishing setup...');
         setPendingCodexLogin(null);
         await finalizeConnectedBridgeProfile(pending.profileDraft);
         return true;
@@ -1058,7 +1055,7 @@ export function GitHubCodespacesScreen({
 
       setConnectionPhase('waitingForBridge');
       setConnectionMessage(
-        `Codespace ${codespace.name} is up. Starting Codex... First boot can take a few minutes.`
+        `Codespace ${codespace.name} is ready. Starting workspace services...`
       );
       await waitForBridgeReady(bridgeUrl, bridgeSession.accessToken);
       if (connectFlowRef.current !== runId) {
@@ -1135,10 +1132,10 @@ export function GitHubCodespacesScreen({
           return 'connected';
         }
         setCloningRepositoryFullName(null);
-        setConnectionMessage(`Cloned ${cloneRepository.fullName}. Checking Codex login...`);
+        setConnectionMessage('Checking login...');
       }
 
-      setConnectionMessage('Codex is up. Checking whether login is still required...');
+      setConnectionMessage('Checking login...');
       const account = await withBridgeApiClient(bridgeUrl, bridgeSession.accessToken, (api) =>
         api.readAccount({ refreshToken: true })
       );
@@ -1164,7 +1161,7 @@ export function GitHubCodespacesScreen({
         profileDraft,
       });
       setConnectionMessage(
-        'Codex needs ChatGPT sign-in. Open the Codex login once; Codex will save it inside this Codespace for future wakes.'
+        'Log in with ChatGPT to continue.'
       );
       return 'codexLogin';
     },
@@ -1638,6 +1635,7 @@ export function GitHubCodespacesScreen({
       ? 'github'
       : 'codespace';
   const showGuidedCodespaceChoice =
+    mode === 'setup' &&
     onboardingStage === 'codespace' &&
     codespaceSelectionMode === 'recommended' &&
     guidedCodespace !== null &&
@@ -1646,21 +1644,32 @@ export function GitHubCodespacesScreen({
   const availableCodespaceCount = codespaces.filter((codespace) =>
     isCodespaceAvailable(codespace)
   ).length;
-  const visibleCodespaces = showAllCodespaces ? codespaces : codespaces.slice(0, 4);
+  const showFullCodespaceList = mode === 'manage' || showAllCodespaces;
+  const visibleCodespaces = showFullCodespaceList ? codespaces : codespaces.slice(0, 4);
   const hiddenCodespaceCount = Math.max(codespaces.length - visibleCodespaces.length, 0);
   const recoveryKind = classifyRecovery(connectionError ?? authError ?? codespacesError);
   const recovery = recoveryKind ? formatRecovery(recoveryKind) : null;
   const codespacesSummary = codespacesLoading
     ? 'Loading Codespaces…'
     : codespaces.length === 0
-      ? createEnabled
-        ? 'Create a new Codespace to continue.'
-        : 'Codespace creation is not configured in this build.'
+      ? mode === 'manage'
+        ? 'No Codespaces found.'
+        : createEnabled
+          ? 'Create a new Codespace to continue.'
+          : 'Codespace creation is not configured in this build.'
       : availableCodespaceCount > 0
         ? `${availableCodespaceCount} ready now • ${codespaces.length} total`
         : `${codespaces.length} saved • none running`;
   const stageIntro =
-    onboardingStage === 'github'
+    mode === 'manage'
+      ? {
+          icon: 'logo-github' as const,
+          title: 'Manage Codespaces',
+          body: session
+            ? 'View running workspaces, pause unused ones, or delete stale Codespaces.'
+            : 'Sign in to view and manage your Codespaces.',
+        }
+      : onboardingStage === 'github'
       ? {
           icon: 'logo-github' as const,
           title: 'Connect GitHub',
@@ -1681,6 +1690,8 @@ export function GitHubCodespacesScreen({
               ? 'Use the suggested workspace, choose another, or create a fresh one.'
               : 'Pick the workspace Clawdex should use. Paused Codespaces can take a few minutes to start.',
           };
+  const manageCodexLoginActionBusy =
+    codexLoginSubmitting || codexLoginChecking || codexLoginBrowserOpen;
   const connectionProgressPanel = connectionStatusVisible ? (
     <View style={styles.stagePanel}>
       <Text style={styles.stagePanelEyebrow}>
@@ -1717,6 +1728,33 @@ export function GitHubCodespacesScreen({
             : 'GitHub is connected. Clawdex is finishing setup.'}
         </Text>
       )}
+
+      {pendingCodexLogin ? (
+        <Pressable
+          onPress={() => {
+            void openCodexManagedLogin(pendingCodexLogin);
+          }}
+          disabled={manageCodexLoginActionBusy}
+          style={({ pressed }) => [
+            styles.primaryButton,
+            manageCodexLoginActionBusy && styles.codespaceButtonBusy,
+            pressed && !manageCodexLoginActionBusy && styles.primaryButtonPressed,
+          ]}
+        >
+          {manageCodexLoginActionBusy ? (
+            <ActivityIndicator size="small" color={theme.colors.accentText} />
+          ) : (
+            <Ionicons name="log-in-outline" size={16} color={theme.colors.accentText} />
+          )}
+          <Text style={styles.primaryButtonText}>
+            {codexLoginChecking
+              ? 'Checking login...'
+              : codexLoginBrowserOpen
+                ? 'Waiting for login...'
+                : 'Log in with ChatGPT'}
+          </Text>
+        </Pressable>
+      ) : null}
 
       <View style={styles.connectionStepRow}>
         <ConnectionStep
@@ -1835,28 +1873,32 @@ export function GitHubCodespacesScreen({
                     ? `${selectedCloneRepository.fullName} is being prepared inside the Codespace.`
                     : createdCodespace
                       ? `${createdCodespace.name} is being prepared for Clawdex.`
-                      : 'Preparing the workspace before Codex login.',
+                      : 'Preparing the workspace before sign-in.',
                 }
             : {
                 icon: connectedProfileDraft
                   ? 'checkmark-circle-outline' as const
                   : 'terminal-outline' as const,
-                title: connectedProfileDraft ? 'Codex is ready' : 'Codex login',
+                title: connectedProfileDraft ? 'Ready to use' : 'ChatGPT login',
                 body: connectedProfileDraft
                   ? 'Your Codespace is connected to Clawdex.'
                   : pendingCodexLogin?.codexUserCode
                     ? `Enter ${pendingCodexLogin.codexUserCode} in ChatGPT. Clawdex will continue automatically.`
-                    : 'Sign in once. Clawdex refreshes the Codespace runtime automatically after login.',
+                    : 'Log in once to finish setup.',
               };
   const setupStatusMessage =
-    connectionMessage ??
-    creationMessage ??
-    (cloneRepositoriesLoading ? 'Loading repositories...' : null) ??
-    (authorizing
-      ? 'Opening GitHub...'
-      : restoringSession
-        ? 'Checking saved GitHub session...'
-        : null);
+    pendingCodexLogin &&
+    connectionMessage === 'Log in with ChatGPT to continue.' &&
+    !codexLoginChecking
+      ? null
+      : connectionMessage ??
+        creationMessage ??
+        (cloneRepositoriesLoading ? 'Loading repositories...' : null) ??
+        (authorizing
+          ? 'Opening GitHub...'
+          : restoringSession
+            ? 'Checking saved GitHub session...'
+            : null);
   const setupActions =
     setupStep === 'chooseConnection' ? (
       <>
@@ -1989,14 +2031,14 @@ export function GitHubCodespacesScreen({
         iconName="log-in-outline"
         title={
           codexLoginSubmitting
-            ? 'Opening Codex login...'
+            ? 'Log in with ChatGPT'
             : codexLoginChecking
-              ? 'Checking Codex login...'
+              ? 'Checking login...'
               : codexLoginBrowserOpen
-                ? 'Waiting for browser login...'
+                ? 'Waiting for login...'
                 : pendingCodexLogin.codexLoginUrl
-                  ? 'Open ChatGPT login'
-                  : 'Start Codex login'
+                  ? 'Log in with ChatGPT'
+                  : 'Log in with ChatGPT'
         }
         meta={pendingCodexLogin.profileDraft.githubCodespaceName ?? 'Codespace setup'}
         loading={codexLoginActionBusy}
@@ -2166,6 +2208,7 @@ export function GitHubCodespacesScreen({
       </SafeAreaView>
     </View>
   );
+  const shouldShowSetupFlow = githubConfigured && mode === 'setup';
   return (
     <View style={styles.container}>
       <SafeAreaView edges={['top']} style={styles.safeArea}>
@@ -2178,7 +2221,7 @@ export function GitHubCodespacesScreen({
           </View>
         </View>
 
-        {githubConfigured ? (
+        {shouldShowSetupFlow ? (
           githubSetupScreen
         ) : (
         <ScrollView
@@ -2218,6 +2261,35 @@ export function GitHubCodespacesScreen({
                   <Text style={styles.stageIntroBody}>{stageIntro.body}</Text>
                 </View>
               </View>
+
+              {mode === 'manage' && onboardingStage === 'github' ? (
+                <View style={styles.actionRow}>
+                  <Pressable
+                    onPress={() => {
+                      void beginGitHubSignIn();
+                    }}
+                    disabled={authorizing || restoringSession}
+                    style={({ pressed }) => [
+                      styles.primaryButton,
+                      (authorizing || restoringSession) && styles.codespaceButtonBusy,
+                      pressed && !authorizing && !restoringSession && styles.primaryButtonPressed,
+                    ]}
+                  >
+                    {authorizing || restoringSession ? (
+                      <ActivityIndicator size="small" color={theme.colors.accentText} />
+                    ) : (
+                      <Ionicons name="logo-github" size={16} color={theme.colors.accentText} />
+                    )}
+                    <Text style={styles.primaryButtonText}>
+                      {restoringSession
+                        ? 'Checking GitHub...'
+                        : authorizing
+                          ? 'Opening GitHub...'
+                          : 'Sign in with GitHub'}
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
 
               {onboardingStage === 'codespace' && session && !showGuidedCodespaceChoice ? (
                 <View style={styles.accountStrip}>
@@ -2421,7 +2493,9 @@ export function GitHubCodespacesScreen({
                   ) : codespaces.length > 0 ? (
                     <>
                       <View style={styles.cardHeadlineBlock}>
-                        <Text style={styles.cardHeadline}>Your Codespaces</Text>
+                        <Text style={styles.cardHeadline}>
+                          {mode === 'manage' ? 'All Codespaces' : 'Your Codespaces'}
+                        </Text>
                       </View>
                       <View style={styles.codespaceList}>
                         {visibleCodespaces.map((codespace) => {
@@ -2434,20 +2508,33 @@ export function GitHubCodespacesScreen({
                           const deleteConfirmationVisible =
                             pendingDeleteCodespaceName === codespace.name;
                           const isSavedCodespace = savedCodespaceName === codespace.name;
+                          const isCurrentCodespace = mode === 'manage' && isSavedCodespace;
                           const isSuggested =
-                            isSavedCodespace || suggestedCodespace?.name === codespace.name;
+                            isCurrentCodespace ||
+                            (mode === 'setup' && isSavedCodespace) ||
+                            (mode === 'setup' && suggestedCodespace?.name === codespace.name);
                           const canStopCodespace = isCodespaceAvailable(codespace);
                           const secondaryActionsVisible =
                             expandedCodespaceName === codespace.name ||
                             stopConfirmationVisible ||
                             deleteConfirmationVisible;
-                          const actionLabel = formatCodespacePrimaryActionLabel(codespace, {
-                            bridgeRestarting,
-                            codespaceBusy,
-                            codespaceDeleting,
-                          });
-                          const actionIcon = canStopCodespace ? 'flash-outline' : 'play-outline';
+                          const actionLabel = isCurrentCodespace
+                            ? 'Current'
+                            : codespaceStopping
+                              ? 'Pausing...'
+                              : formatCodespacePrimaryActionLabel(codespace, {
+                                  bridgeRestarting,
+                                  codespaceBusy,
+                                  codespaceDeleting,
+                                });
+                          const actionIcon = isCurrentCodespace
+                            ? 'checkmark-circle-outline'
+                            : canStopCodespace
+                              ? 'flash-outline'
+                              : 'play-outline';
                           const statusHint = formatCodespaceStatusHint(codespace);
+                          const primaryActionDisabled =
+                            codespaceActionsLocked || isCurrentCodespace;
 
                           return (
                             <View
@@ -2459,6 +2546,25 @@ export function GitHubCodespacesScreen({
                               ]}
                             >
                               <View style={styles.codespaceCardTop}>
+                                {isCurrentCodespace ? (
+                                  <View style={styles.codespaceBadgeRow}>
+                                    <View
+                                      style={[
+                                        styles.codespaceTag,
+                                        styles.codespaceTagRecommended,
+                                      ]}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.codespaceTagText,
+                                          styles.codespaceTagTextRecommended,
+                                        ]}
+                                      >
+                                        Current
+                                      </Text>
+                                    </View>
+                                  </View>
+                                ) : null}
                                 <View style={styles.codespacesCardHeader}>
                                   <View style={styles.codespacesCardCopy}>
                                     <Text style={styles.codespaceCardTitle}>{codespace.name}</Text>
@@ -2466,13 +2572,21 @@ export function GitHubCodespacesScreen({
                                       {codespace.repositoryFullName ?? 'Unknown repository'}
                                     </Text>
                                     <Text style={styles.codespaceHint}>
-                                      {isSavedCodespace ? 'Last connected. ' : ''}
+                                      {isCurrentCodespace
+                                        ? 'Currently used by Clawdex. '
+                                        : isSavedCodespace
+                                          ? 'Last connected. '
+                                          : ''}
                                       {statusHint}
                                     </Text>
                                   </View>
                                   <View style={styles.codespaceStatePill}>
                                     <Text style={styles.codespaceStateText}>
-                                      {codespaceDeleting ? 'Deleting' : formatCodespaceStatus(codespace)}
+                                      {codespaceStopping
+                                        ? 'Pausing'
+                                        : codespaceDeleting
+                                          ? 'Deleting'
+                                          : formatCodespaceStatus(codespace)}
                                     </Text>
                                   </View>
                                 </View>
@@ -2481,18 +2595,23 @@ export function GitHubCodespacesScreen({
                               <View style={styles.codespaceCardFooter}>
                                 <Pressable
                                   onPress={() => {
-                                    void handleConnectCodespace(codespace);
+                                    if (!isCurrentCodespace) {
+                                      void handleConnectCodespace(codespace);
+                                    }
                                   }}
-                                  disabled={codespaceActionsLocked}
+                                  disabled={primaryActionDisabled}
                                   style={({ pressed }) => [
                                     styles.codespacePrimaryAction,
                                     (codespaceBusy ||
                                       codespaceStopping ||
                                       codespaceDeleting ||
                                       bridgeRestarting ||
-                                      codespaceActionsLocked) &&
+                                      primaryActionDisabled) &&
                                       styles.codespaceButtonBusy,
-                                    pressed && !codespaceActionsLocked && styles.codespaceButtonPressed,
+                                    isCurrentCodespace && styles.codespaceCurrentAction,
+                                    pressed &&
+                                      !primaryActionDisabled &&
+                                      styles.codespaceButtonPressed,
                                   ]}
                                 >
                                   {codespaceBusy || codespaceStopping || codespaceDeleting || bridgeRestarting ? (
@@ -2501,10 +2620,20 @@ export function GitHubCodespacesScreen({
                                     <Ionicons
                                       name={actionIcon}
                                       size={15}
-                                      color={theme.colors.accentText}
+                                      color={
+                                        isCurrentCodespace
+                                          ? theme.colors.statusComplete
+                                          : theme.colors.accentText
+                                      }
                                     />
                                   )}
-                                  <Text style={styles.codespacePrimaryActionText}>
+                                  <Text
+                                    style={[
+                                      styles.codespacePrimaryActionText,
+                                      isCurrentCodespace &&
+                                        styles.codespaceCurrentActionText,
+                                    ]}
+                                  >
                                     {actionLabel}
                                   </Text>
                                 </Pressable>
@@ -2605,7 +2734,7 @@ export function GitHubCodespacesScreen({
                                           size={14}
                                           color={theme.colors.error}
                                         />
-                                        <Text style={styles.codespaceStopActionText}>Stop</Text>
+                                        <Text style={styles.codespaceStopActionText}>Pause</Text>
                                       </Pressable>
                                     ) : null}
                                     <Pressable
@@ -2637,7 +2766,7 @@ export function GitHubCodespacesScreen({
                                 {stopConfirmationVisible ? (
                                   <View style={styles.codespaceStopConfirm}>
                                     <Text style={styles.codespaceStopConfirmTitle}>
-                                      Stop this Codespace?
+                                      Pause this Codespace?
                                     </Text>
                                     <View style={styles.codespaceStopConfirmActions}>
                                       <Pressable
@@ -2677,7 +2806,7 @@ export function GitHubCodespacesScreen({
                                           />
                                         )}
                                         <Text style={styles.codespaceStopConfirmButtonText}>
-                                          Stop Codespace
+                                          Pause Codespace
                                         </Text>
                                       </Pressable>
                                     </View>
@@ -2957,7 +3086,7 @@ async function waitForCodexAccountReady(
     return latestAccount;
   }
 
-  throw lastError ?? new Error('Codex account status could not be checked.');
+  throw lastError ?? new Error('Login status could not be checked.');
 }
 
 async function startManagedCodexLogin(
@@ -3008,10 +3137,10 @@ function readManagedCodexLoginDetails(response: AccountLoginStartResponse): {
 
 function formatCodexManagedLoginInstruction(userCode: string | null): string {
   if (userCode) {
-    return `ChatGPT opened in your browser. Enter code ${userCode}; Clawdex will continue automatically after Codex confirms the login.`;
+    return `Enter ${userCode} in ChatGPT to continue.`;
   }
 
-  return 'ChatGPT opened in your browser. Finish the Codex login there; Clawdex will refresh the Codespace runtime automatically.';
+  return 'Log in with ChatGPT to continue.';
 }
 
 async function waitForBridgeReady(bridgeUrl: string, accessToken: string): Promise<void> {
@@ -4283,10 +4412,18 @@ const createStyles = (theme: AppTheme) => {
     codespaceButtonBusy: {
       opacity: 0.88,
     },
+    codespaceCurrentAction: {
+      backgroundColor: theme.colors.successBg,
+      borderWidth: 1,
+      borderColor: theme.colors.successBorder,
+    },
     codespacePrimaryActionText: {
       ...theme.typography.caption,
       color: theme.colors.accentText,
       fontWeight: '700',
+    },
+    codespaceCurrentActionText: {
+      color: theme.colors.statusComplete,
     },
     codespaceSecondaryAction: {
       minHeight: 38,
