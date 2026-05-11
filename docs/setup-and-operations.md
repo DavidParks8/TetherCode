@@ -84,10 +84,11 @@ gh codespace ports visibility 8787:public 8788:public
 
 ### Codespaces Bootstrap
 
-The source repo devcontainer now includes:
+The app-created Codespace template uses the prebuilt root devcontainer path (`.devcontainer/devcontainer.json`) by default. That devcontainer includes:
 
-- `updateContentCommand`: `npm install --include=dev --prefer-offline --no-audit --fund=false && npm run codespaces:bootstrap -- --prepare-only`
-- `postStartCommand`: fire-and-forget `npm run codespaces:bootstrap`, writing setup output to `.bridge-bootstrap.log`
+- `updateContentCommand`: installs `clawdex-mobile@internal` and `@openai/codex`
+- `postCreateCommand`: starts the packaged bridge bootstrap in the foreground, writing setup output to `.bridge-bootstrap.log`
+- `postStartCommand`: reruns the same foreground bootstrap on resume; an already healthy bridge is treated as success
 - `waitFor`: `updateContentCommand`
 
 `npm run codespaces:bootstrap` does the following:
@@ -100,9 +101,11 @@ The source repo devcontainer now includes:
 
 Clawdex-created Codespaces request a 45-minute idle timeout. The bridge emits a lightweight active-turn keepalive while a Codex, OpenCode, or Cursor turn is running, so active work has activity even if a long step is otherwise quiet. When no turn is running, the keepalive stops and GitHub can pause the Codespace normally to save cost.
 
-That means prebuild-enabled Codespaces can snapshot the expensive dependency install and bridge compile during `updateContentCommand`. The later `postStartCommand` starts the runtime bridge asynchronously so Codespaces does not block editor/app access while the bridge finishes warming up.
+That means prebuild-enabled Codespaces can snapshot the expensive package install during `updateContentCommand`. The later `postCreateCommand` starts the runtime bridge during Codespace creation, and the mobile app waits for bridge health before continuing. The template disables bridge-side port publication during bootstrap because the app publishes ports through the GitHub tunnel API before probing `/health`; this keeps post-create startup from blocking on GitHub CLI port commands. `postStartCommand` keeps wake/resume behavior idempotent instead of failing when the bridge is already listening.
 
 The same bootstrap script is included in the published `clawdex-mobile` npm package. That lets the `clawdex-codespace` template stay minimal: it installs `clawdex-mobile@internal` globally in `updateContentCommand` and invokes the packaged bootstrap against the current workspace instead of copying `scripts/*` and `services/rust-bridge/*` into the template repo. Because the published package ships Linux bridge binaries, the template does not need Rust, Cargo, or a local bridge compile.
+
+During first-time mobile setup, the app can start native ChatGPT login while the Codespace bridge is still warming up. Once the bridge becomes reachable, the app replays that ChatGPT token bundle through `account/login/start` with `chatgptAuthTokens`, so Codex can become ready without a separate app-server restart. Reconnecting to an existing Codespace still waits for the bridge first so users are not prompted again when Codex is already authenticated.
 
 Manual examples:
 
@@ -117,7 +120,6 @@ Minimal template equivalent:
 
 ```bash
 npm install -g --no-fund --no-audit clawdex-mobile@internal @openai/codex
-CLAWDEX_WORKSPACE_ROOT="$PWD" node "$(npm root -g)/clawdex-mobile/scripts/codespaces-bootstrap.js" --prepare-only
 CLAWDEX_WORKSPACE_ROOT="$PWD" node "$(npm root -g)/clawdex-mobile/scripts/codespaces-bootstrap.js"
 ```
 

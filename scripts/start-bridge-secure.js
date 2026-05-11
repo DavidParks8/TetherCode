@@ -704,6 +704,22 @@ async function spawnDetachedAndWait(command, args, options) {
   }
 
   if (await probeHealth(healthUrl)) {
+    if (isCodespacesMode(env)) {
+      console.log(`Bridge already responding at http://${formatHostForUrl(host)}:${port}.`);
+      console.log(`Logs: ${logPath}`);
+      console.log("Bridge is healthy.");
+      const endpoint = { host, port };
+      const notes = ensureCodespacesPortsArePublic(env, [parsePort(port, 8787), previewPort]);
+      printBridgeAccessDetails(env, endpoint);
+      for (const note of notes) {
+        console.log(note);
+      }
+      if (shouldShowPairingQr(env) && !printPairingQr(env, endpoint)) {
+        printPairingQrUnavailableMessage(env);
+      }
+      return;
+    }
+
     console.error(
       `error: another bridge is already responding at http://${formatHostForUrl(host)}:${port}. Stop it first with 'clawdex stop'.`
     );

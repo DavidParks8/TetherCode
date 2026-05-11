@@ -7429,7 +7429,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           ? 'Starting Codespace'
           : 'Wake Codespace';
     const githubCodespaceRecoveryBody = githubCodespaceRecovery
-      ? `${githubCodespaceRecovery.repositoryFullName ?? githubCodespaceRecovery.codespaceName} is not responding. Wake the Codespace and Clawdex will reconnect automatically.`
+      ? 'The active GitHub Codespace is not responding. Wake it and Clawdex will reconnect automatically.'
       : null;
     const visibleActivity = (() => {
       if (isOpeningChat) {

@@ -514,6 +514,38 @@ export async function stopGitHubCodespace(
   });
 }
 
+export async function publishGitHubCodespacePorts(
+  accessToken: string,
+  codespaceName: string,
+  ports: number[]
+): Promise<void> {
+  const normalizedPorts = [...new Set(
+    ports.filter((port) => Number.isFinite(port) && port > 0).map((port) => Math.trunc(port))
+  )];
+  if (normalizedPorts.length === 0) {
+    return;
+  }
+
+  const payload = await githubApiRequest(
+    `/user/codespaces/${encodeURIComponent(codespaceName)}?internal=true&refresh=true`,
+    accessToken
+  );
+  const record = asRecord(payload);
+  const connection = asRecord(record?.connection);
+  const tunnel = asRecord(connection?.tunnelProperties);
+  const tunnelId = readRequiredString(tunnel, 'tunnelId');
+  const clusterId = readOptionalString(tunnel, 'clusterId');
+  const managePortsAccessToken = readRequiredString(tunnel, 'managePortsAccessToken');
+  const serviceUri = readOptionalString(tunnel, 'serviceUri');
+  const baseUrl = resolveGitHubTunnelApiBaseUrl(clusterId, serviceUri);
+
+  await Promise.all(
+    normalizedPorts.map((port) =>
+      publishGitHubCodespacePort(baseUrl, tunnelId, managePortsAccessToken, port)
+    )
+  );
+}
+
 export async function deleteGitHubCodespace(
   accessToken: string,
   codespaceName: string
@@ -953,6 +985,88 @@ async function githubApiRequest(
   if (!response.ok) {
     throw new GitHubApiError(
       readGitHubErrorMessage(payload) ?? `GitHub request failed (${response.status})`,
+      response.status
+    );
+  }
+
+  return payload;
+}
+
+function resolveGitHubTunnelApiBaseUrl(
+  clusterId: string | null,
+  serviceUri: string | null
+): string {
+  if (clusterId) {
+    return `https://${clusterId}.rel.tunnels.api.visualstudio.com`;
+  }
+  if (serviceUri) {
+    return serviceUri.replace(/\/+$/g, '');
+  }
+  throw new Error('GitHub did not return Codespaces tunnel details.');
+}
+
+async function publishGitHubCodespacePort(
+  baseUrl: string,
+  tunnelId: string,
+  managePortsAccessToken: string,
+  port: number
+): Promise<void> {
+  const pathname = `/tunnels/${encodeURIComponent(tunnelId)}/ports/${String(port)}?includePorts=true&api-version=2023-09-27-preview`;
+  try {
+    await githubTunnelApiRequest(`${baseUrl}${pathname}`, managePortsAccessToken, {
+      method: 'DELETE',
+    });
+  } catch (error) {
+    if (!(error instanceof GitHubApiError) || error.status !== 404) {
+      throw error;
+    }
+  }
+
+  await githubTunnelApiRequest(`${baseUrl}${pathname}`, managePortsAccessToken, {
+    method: 'PUT',
+    body: {
+      portNumber: port,
+      labels: ['UserForwardedPort'],
+      protocol: 'http',
+      accessControl: {
+        entries: [
+          {
+            type: 'Anonymous',
+            subjects: [],
+            scopes: ['connect'],
+          },
+        ],
+      },
+      portForwardingUris: null,
+      inspectionUri: '',
+    },
+  });
+}
+
+async function githubTunnelApiRequest(
+  url: string,
+  managePortsAccessToken: string,
+  options: { method?: string; body?: unknown } = {}
+): Promise<unknown> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    Authorization: `Tunnel ${managePortsAccessToken}`,
+  };
+  let body: string | undefined;
+  if (typeof options.body !== 'undefined') {
+    headers['Content-Type'] = 'application/json;charset=UTF-8';
+    body = JSON.stringify(options.body);
+  }
+
+  const response = await fetch(url, {
+    method: options.method ?? 'GET',
+    headers,
+    body,
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new GitHubApiError(
+      readGitHubErrorMessage(payload) ?? `GitHub Codespaces tunnel request failed (${response.status})`,
       response.status
     );
   }

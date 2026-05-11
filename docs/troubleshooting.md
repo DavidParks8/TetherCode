@@ -78,6 +78,7 @@ CLAWDEX_WORKSPACE_ROOT="$PWD" node "$(npm root -g)/clawdex-mobile/scripts/codesp
 - `--prepare-only` installs Codex if needed and prebuilds the Rust bridge binary without starting the bridge.
 - The bootstrap also enables `BRIDGE_GITHUB_CODESPACES_AUTH=true` so GitHub bearer tokens can connect directly to the bridge.
 - If that install fails, fix npm/global package permissions in the codespace and rerun the bootstrap.
+- If the bridge is already healthy on port 8787, rerunning the bootstrap should now exit successfully instead of failing on a stale or missing `.bridge.pid`.
 - Bridge startup logs and runtime state live in the Codespace repo root:
 
 ```bash

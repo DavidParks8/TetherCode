@@ -12,6 +12,7 @@ import {
   getReusableGitHubBridgeProfile,
   hasGitHubAppRepositoryAccess,
   isRetryableGitHubDeviceFlowError,
+  publishGitHubCodespacePorts,
   sortGitHubCodespaces,
   shouldRefreshGitHubUserAccessToken,
   startGitHubCodespace,
@@ -466,6 +467,76 @@ describe('githubCodespaces helpers', () => {
         method: 'POST',
       })
     );
+  });
+
+  it('publishes the bridge ports through the Codespaces tunnel API', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        text: jest.fn().mockResolvedValue(JSON.stringify({
+          name: 'octocat-space',
+          connection: {
+            tunnelProperties: {
+              tunnelId: 'tunnel-id',
+              clusterId: 'use',
+              managePortsAccessToken: 'tunnel-token',
+            },
+          },
+        })),
+      } as unknown as Response)
+      .mockResolvedValue({
+        ok: true,
+        text: jest.fn().mockResolvedValue(''),
+      } as unknown as Response);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await publishGitHubCodespacePorts('ghu_token', 'octocat space', [8787, 8788, 8787]);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'https://api.github.com/user/codespaces/octocat%20space?internal=true&refresh=true',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer ghu_token',
+        }),
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://use.rel.tunnels.api.visualstudio.com/tunnels/tunnel-id/ports/8787?includePorts=true&api-version=2023-09-27-preview',
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: expect.objectContaining({
+          Authorization: 'Tunnel tunnel-token',
+        }),
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      'https://use.rel.tunnels.api.visualstudio.com/tunnels/tunnel-id/ports/8787?includePorts=true&api-version=2023-09-27-preview',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          portNumber: 8787,
+          labels: ['UserForwardedPort'],
+          protocol: 'http',
+          accessControl: {
+            entries: [
+              {
+                type: 'Anonymous',
+                subjects: [],
+                scopes: ['connect'],
+              },
+            ],
+          },
+          portForwardingUris: null,
+          inspectionUri: '',
+        }),
+      })
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   it('includes the GitHub API status on failed Codespace lookups', async () => {

@@ -20,7 +20,12 @@ import { HostBridgeWsClient } from '../api/ws';
 import { toBridgeHealthUrl } from '../bridgeUrl';
 import type { BridgeProfile, BridgeProfileDraft } from '../bridgeProfiles';
 import { ChoiceAction } from '../components/ChoiceAction';
-import { openChatGptLoopbackAuthSession } from '../chatGptAuth';
+import {
+  isNativeChatGptLoginAvailable,
+  openChatGptLoopbackAuthSession,
+  refreshStoredChatGptAuthTokens,
+  type ChatGptAuthTokenBundle,
+} from '../chatGptAuth';
 import { env } from '../config';
 import {
   loadStoredGitHubAppAuthTokens,
@@ -38,6 +43,7 @@ import {
   fetchGitHubRepository,
   fetchGitHubUser,
   getReusableGitHubBridgeProfile,
+  publishGitHubCodespacePorts,
   requestGitHubInstallationAccessToken,
   sortGitHubCodespaces,
   startGitHubCodespace,
@@ -77,6 +83,7 @@ type ConnectionPhase =
   | 'startingCodespace'
   | 'codespaceReady'
   | 'waitingForBridge'
+  | 'chatGptLogin'
   | 'codexLoginRequired';
 
 type ConnectionStepState = 'pending' | 'active' | 'done';
@@ -91,6 +98,7 @@ type GitHubSetupStep =
   | 'projectSetup'
   | 'codexLogin';
 type RepositoryChoice = 'clone' | 'fresh';
+type CodespaceWaitCueKind = 'creating' | 'starting' | 'bridge' | 'cloning';
 type RecoveryKind =
   | 'githubToken'
   | 'repoAccess'
@@ -115,6 +123,12 @@ type ManagedCodexLoginKind = 'web' | 'device';
 
 const BRIDGE_READY_POLL_MS = 3000;
 const BRIDGE_READY_TIMEOUT_MS = 6 * 60 * 1000;
+const BRIDGE_HEALTH_REQUEST_TIMEOUT_MS = 8_000;
+const CODESPACE_CREATE_ESTIMATE_MS = 2 * 60 * 1000;
+const CODESPACE_START_ESTIMATE_MS = 2 * 60 * 1000;
+const CODESPACE_BRIDGE_ESTIMATE_MS = 90 * 1000;
+const CODESPACE_CLONE_ESTIMATE_MS = 60 * 1000;
+const CODESPACE_WAIT_CUE_TICK_MS = 1000;
 const CODESPACES_PRIVATE_PORT_ERROR =
   'Clawdex cannot reach the Codespace bridge because GitHub kept port 8787 private. Open the Codespace Ports panel and make ports 8787 and 8788 public, then try again.';
 const CODEX_ACCOUNT_READY_POLL_MS = 1_250;
@@ -144,11 +158,11 @@ function buildConnectionStepStates(phase: ConnectionPhase | null): {
     };
   }
 
-  if (phase === 'codespaceReady' || phase === 'codexLoginRequired') {
+  if (phase === 'codespaceReady' || phase === 'codexLoginRequired' || phase === 'chatGptLogin') {
     return {
       github: 'done',
       codespace: 'done',
-      bridge: phase === 'codexLoginRequired' ? 'done' : 'pending',
+      bridge: phase === 'codexLoginRequired' || phase === 'chatGptLogin' ? 'active' : 'pending',
     };
   }
 
@@ -181,6 +195,8 @@ function formatConnectionPhaseTitle(
       return activeCodespaceLabel
         ? `Codespace ${activeCodespaceLabel} is ready, starting Codex`
         : 'Codespace ready, starting Codex';
+    case 'chatGptLogin':
+      return 'ChatGPT login while Codex starts';
     case 'codexLoginRequired':
       return 'Codex is ready, finish login';
     default:
@@ -473,6 +489,8 @@ export function GitHubCodespacesScreen({
   const [codexLoginChecking, setCodexLoginChecking] = useState(false);
   const [codexLoginSubmitting, setCodexLoginSubmitting] = useState(false);
   const [codexLoginBrowserOpen, setCodexLoginBrowserOpen] = useState(false);
+  const [codespaceWaitStartedAtMs, setCodespaceWaitStartedAtMs] = useState<number | null>(null);
+  const [codespaceWaitNowMs, setCodespaceWaitNowMs] = useState(() => Date.now());
   const authFlowRef = useRef(0);
   const connectFlowRef = useRef(0);
   const autoCodexLoginRunRef = useRef<number | null>(null);
@@ -480,6 +498,7 @@ export function GitHubCodespacesScreen({
   const preferredRepositoryName = env.githubCodespacesPreferredRepositoryName;
   const configuredSourceOwner = env.githubCodespacesSourceRepositoryOwner;
   const configuredRepositoryRef = env.githubCodespacesRepositoryRef;
+  const configuredDevcontainerPath = env.githubCodespacesDevcontainerPath;
   const reusableBridgeProfile = useMemo(
     () => getReusableGitHubBridgeProfile(bridgeProfiles, activeBridgeProfileId),
     [activeBridgeProfileId, bridgeProfiles]
@@ -726,6 +745,46 @@ export function GitHubCodespacesScreen({
     }
     await onConnect(connectedProfileDraft);
   }, [connectedProfileDraft, onConnect]);
+
+  const prepareChatGptLoginWhileBridgeStarts = useCallback(
+    async (runId: number, codespaceName: string): Promise<ChatGptAuthTokenBundle | null> => {
+      if (!isNativeChatGptLoginAvailable()) {
+        return null;
+      }
+      if (connectFlowRef.current !== runId) {
+        return null;
+      }
+
+      setSetupStep('codexLogin');
+      setConnectionPhase('chatGptLogin');
+      setConnectionError(null);
+      setConnectionMessage(
+        `Checking saved ChatGPT login while ${codespaceName} finishes starting.`
+      );
+
+      try {
+        const tokens = await refreshStoredChatGptAuthTokens();
+        if (connectFlowRef.current === runId) {
+          setConnectionMessage('ChatGPT login is ready. Waiting for Codespace services...');
+        }
+        return tokens;
+      } catch (error) {
+        if (connectFlowRef.current === runId) {
+          const message = (error as Error).message.trim();
+          if (
+            message &&
+            !isChatGptLoginDismissalMessage(message) &&
+            !isMissingStoredChatGptLoginMessage(message)
+          ) {
+            setConnectionError(message);
+          }
+          setConnectionMessage('Codespace services are still starting.');
+        }
+        return null;
+      }
+    },
+    []
+  );
 
   const reloadCodexAccountAfterRuntimeRestart = useCallback(
     async (pending: PendingCodexLogin): Promise<AccountSnapshot | null> => {
@@ -1040,8 +1099,12 @@ export function GitHubCodespacesScreen({
       runId: number,
       codespace: GitHubCodespace,
       activeSession: GitHubSession,
-      cloneRepository: GitHubAppInstallationRepository | null = null
+      options: {
+        cloneRepository?: GitHubAppInstallationRepository | null;
+        allowPreBridgeChatGptLogin?: boolean;
+      } = {}
     ): Promise<'connected' | 'codexLogin'> => {
+      const cloneRepository = options.cloneRepository ?? null;
       const bridgeSession = await refreshGitHubSessionForBridge(activeSession);
       if (connectFlowRef.current !== runId) {
         return 'connected';
@@ -1053,15 +1116,6 @@ export function GitHubCodespacesScreen({
       );
       if (!bridgeUrl) {
         throw new Error('Unable to derive the forwarded Codespaces bridge URL.');
-      }
-
-      setConnectionPhase('waitingForBridge');
-      setConnectionMessage(
-        `Codespace ${codespace.name} is ready. Starting workspace services...`
-      );
-      await waitForBridgeReady(bridgeUrl, bridgeSession.accessToken);
-      if (connectFlowRef.current !== runId) {
-        return 'connected';
       }
 
       const profileDraft: BridgeProfileDraft = {
@@ -1079,6 +1133,28 @@ export function GitHubCodespacesScreen({
         ),
         activate: true,
       };
+
+      setConnectionPhase('waitingForBridge');
+      setConnectionMessage(
+        `Codespace ${codespace.name} is ready. Opening bridge ports...`
+      );
+      await publishGitHubCodespacePorts(bridgeSession.accessToken, codespace.name, [8787, 8788]);
+      if (connectFlowRef.current !== runId) {
+        return 'connected';
+      }
+
+      const canPrepareChatGptLoginBeforeBridge =
+        options.allowPreBridgeChatGptLogin === true && isNativeChatGptLoginAvailable();
+      const chatGptTokensPromise = canPrepareChatGptLoginBeforeBridge
+        ? prepareChatGptLoginWhileBridgeStarts(runId, codespace.name)
+        : Promise.resolve(null);
+      if (!canPrepareChatGptLoginBeforeBridge) {
+        setConnectionMessage('Starting workspace services...');
+      }
+      await waitForBridgeReady(bridgeUrl, bridgeSession.accessToken);
+      if (connectFlowRef.current !== runId) {
+        return 'connected';
+      }
 
       if (cloneRepository) {
         if (!env.githubAppAuthBaseUrl) {
@@ -1137,6 +1213,36 @@ export function GitHubCodespacesScreen({
         setConnectionMessage('Checking login...');
       }
 
+      const chatGptTokens = await chatGptTokensPromise;
+      if (connectFlowRef.current !== runId) {
+        return 'connected';
+      }
+
+      if (chatGptTokens) {
+        setConnectionPhase('codexLoginRequired');
+        setConnectionMessage('Finishing ChatGPT login...');
+        const account = await withBridgeApiClient(
+          bridgeUrl,
+          bridgeSession.accessToken,
+          async (api) => {
+            await api.loginWithChatGptAuthTokens({
+              accessToken: chatGptTokens.accessToken,
+              chatgptAccountId: chatGptTokens.accountId,
+              chatgptPlanType: chatGptTokens.planType,
+            });
+            return waitForCodexAccountReady(api, CODEX_ACCOUNT_READY_TIMEOUT_MS);
+          },
+          { requestTimeoutMs: 60_000 }
+        );
+        if (connectFlowRef.current !== runId) {
+          return 'connected';
+        }
+        if (isCodexAccountReady(account)) {
+          await finalizeConnectedBridgeProfile(profileDraft);
+          return 'connected';
+        }
+      }
+
       setConnectionMessage('Checking login...');
       const account = await withBridgeApiClient(bridgeUrl, bridgeSession.accessToken, (api) =>
         api.readAccount({ refreshToken: true })
@@ -1167,13 +1273,20 @@ export function GitHubCodespacesScreen({
       );
       return 'codexLogin';
     },
-    [finalizeConnectedBridgeProfile, refreshGitHubSessionForBridge]
+    [
+      finalizeConnectedBridgeProfile,
+      prepareChatGptLoginWhileBridgeStarts,
+      refreshGitHubSessionForBridge,
+    ]
   );
 
   const handleConnectCodespace = useCallback(
     async (
       codespace: GitHubCodespace,
-      options: { cloneRepository?: GitHubAppInstallationRepository | null } = {}
+      options: {
+        cloneRepository?: GitHubAppInstallationRepository | null;
+        allowPreBridgeChatGptLogin?: boolean;
+      } = {}
     ) => {
       if (!session) {
         setConnectionError('Sign in with GitHub first.');
@@ -1212,7 +1325,10 @@ export function GitHubCodespacesScreen({
             runId,
             currentCodespace,
             session,
-            options.cloneRepository ?? null
+            {
+              cloneRepository: options.cloneRepository ?? null,
+              allowPreBridgeChatGptLogin: options.allowPreBridgeChatGptLogin === true,
+            }
           )) === 'codexLogin';
       } catch (error) {
         if (connectFlowRef.current === runId) {
@@ -1238,7 +1354,7 @@ export function GitHubCodespacesScreen({
       return;
     }
     if (!templateRepository) {
-      setConnectionError('The Clawdex template repository is not configured in this build.');
+      setConnectionError('Codespace creation is not configured in this build.');
       return;
     }
 
@@ -1249,11 +1365,11 @@ export function GitHubCodespacesScreen({
     setPendingStopCodespaceName(null);
     setPendingDeleteCodespaceName(null);
     setConnectingCodespaceName(null);
-    setCreationTargetLabel(templateRepository.fullName);
+    setCreationTargetLabel('Clawdex workspace');
     setConnectionError(null);
     setConnectionMessage(null);
     setConnectionPhase(null);
-    setCreationMessage('Preparing the Clawdex template…');
+    setCreationMessage('Preparing workspace...');
     setPendingCodexLogin(null);
     setCodexLoginChecking(false);
     setCodexLoginSubmitting(false);
@@ -1279,7 +1395,7 @@ export function GitHubCodespacesScreen({
         repository.id,
         {
           ref: configuredRepositoryRef,
-          devcontainerPath: defaults.devcontainerPath,
+          devcontainerPath: configuredDevcontainerPath || defaults.devcontainerPath,
           location: defaults.location,
         }
       );
@@ -1299,7 +1415,7 @@ export function GitHubCodespacesScreen({
         const message = (error as Error).message;
         setConnectionError(
           message.toLowerCase().includes('resource not accessible by integration')
-            ? 'GitHub cannot create a Codespace from the configured Clawdex template. Make sure the template repository is public or accessible to this account, then try again.'
+            ? 'GitHub cannot create the Clawdex workspace for this account. Check access, then try again.'
             : message
         );
       }
@@ -1317,6 +1433,7 @@ export function GitHubCodespacesScreen({
     }
   }, [
     configuredRepositoryRef,
+    configuredDevcontainerPath,
     finalizeCodespaceConnection,
     loadCodespaces,
     session,
@@ -1330,7 +1447,7 @@ export function GitHubCodespacesScreen({
       return;
     }
     if (!templateRepository) {
-      setConnectionError('The Clawdex template repository is not configured in this build.');
+      setConnectionError('Codespace creation is not configured in this build.');
       return;
     }
 
@@ -1346,7 +1463,7 @@ export function GitHubCodespacesScreen({
     setCloneRepositoriesError(null);
     setSelectedCloneRepository(null);
     setCloningRepositoryFullName(null);
-    setCreationTargetLabel(templateRepository.fullName);
+    setCreationTargetLabel('Clawdex workspace');
     setConnectionError(null);
     setConnectionMessage(null);
     setConnectionPhase('creatingCodespace');
@@ -1376,7 +1493,7 @@ export function GitHubCodespacesScreen({
         repository.id,
         {
           ref: configuredRepositoryRef,
-          devcontainerPath: defaults.devcontainerPath,
+          devcontainerPath: configuredDevcontainerPath || defaults.devcontainerPath,
           location: defaults.location,
         }
       );
@@ -1393,7 +1510,7 @@ export function GitHubCodespacesScreen({
         const message = (error as Error).message;
         setConnectionError(
           message.toLowerCase().includes('resource not accessible by integration')
-            ? 'GitHub cannot create a Codespace from the configured Clawdex template. Make sure the template repository is public or accessible to this account, then try again.'
+            ? 'GitHub cannot create the Clawdex workspace for this account. Check access, then try again.'
             : message
         );
       }
@@ -1407,6 +1524,7 @@ export function GitHubCodespacesScreen({
     }
   }, [
     configuredRepositoryRef,
+    configuredDevcontainerPath,
     loadCodespaces,
     preferredRepositoryName,
     session,
@@ -1458,7 +1576,7 @@ export function GitHubCodespacesScreen({
     setRepositoryChoice('fresh');
     setSelectedCloneRepository(null);
     setSetupStep('projectSetup');
-    await handleConnectCodespace(targetCodespace);
+    await handleConnectCodespace(targetCodespace, { allowPreBridgeChatGptLogin: true });
   }, [createdCodespace, handleConnectCodespace]);
 
   const handleCloneRepositoryForSetup = useCallback(
@@ -1473,7 +1591,10 @@ export function GitHubCodespacesScreen({
       setRepositoryChoice('clone');
       setSelectedCloneRepository(repository);
       setSetupStep('projectSetup');
-      await handleConnectCodespace(targetCodespace, { cloneRepository: repository });
+      await handleConnectCodespace(targetCodespace, {
+        cloneRepository: repository,
+        allowPreBridgeChatGptLogin: true,
+      });
     },
     [createdCodespace, handleConnectCodespace]
   );
@@ -1621,6 +1742,46 @@ export function GitHubCodespacesScreen({
     pendingCodexLogin?.profileDraft.githubCodespaceName ??
     creationTargetLabel ??
     null;
+  const codespaceWaitCueKind = resolveCodespaceWaitCueKind({
+    cloningRepositoryFullName,
+    connectionPhase,
+    creatingCodespace,
+  });
+  const codespaceWaitCueKey = codespaceWaitCueKind
+    ? [
+        codespaceWaitCueKind,
+        activeCodespaceLabel ?? createdCodespace?.name ?? selectedCloneRepository?.fullName ?? '',
+      ].join(':')
+    : null;
+  useEffect(() => {
+    if (!codespaceWaitCueKey) {
+      setCodespaceWaitStartedAtMs(null);
+      return undefined;
+    }
+
+    const startedAtMs = Date.now();
+    setCodespaceWaitStartedAtMs(startedAtMs);
+    setCodespaceWaitNowMs(startedAtMs);
+    const interval = setInterval(() => {
+      setCodespaceWaitNowMs(Date.now());
+    }, CODESPACE_WAIT_CUE_TICK_MS);
+
+    return () => clearInterval(interval);
+  }, [codespaceWaitCueKey]);
+  const codespaceWaitCue =
+    codespaceWaitCueKind && codespaceWaitStartedAtMs !== null
+      ? formatCodespaceWaitCue(
+          codespaceWaitCueKind,
+          Math.max(0, codespaceWaitNowMs - codespaceWaitStartedAtMs)
+        )
+      : null;
+  const renderCodespaceWaitCue = () =>
+    codespaceWaitCue ? (
+      <View style={styles.waitCueRow}>
+        <Ionicons name="time-outline" size={14} color={theme.colors.textSecondary} />
+        <Text style={styles.waitCueText}>{codespaceWaitCue}</Text>
+      </View>
+    ) : null;
   const suggestedCodespace = codespaces[0] ?? null;
   const activeConnectingCodespace =
     connectingCodespaceName
@@ -1730,6 +1891,7 @@ export function GitHubCodespacesScreen({
             : 'GitHub is connected. Clawdex is finishing setup.'}
         </Text>
       )}
+      {renderCodespaceWaitCue()}
 
       {pendingCodexLogin ? (
         <Pressable
@@ -1947,7 +2109,7 @@ export function GitHubCodespacesScreen({
         variant="primary"
         iconName="add-circle-outline"
         title={creatingCodespace ? 'Creating Codespace...' : 'Create Codespace'}
-        meta={templateRepository?.fullName ?? 'Clawdex workspace'}
+        meta="Clawdex workspace"
         loading={creatingCodespace}
         disabled={setupActionLocked || !createEnabled}
         onPress={() => {
@@ -2006,7 +2168,9 @@ export function GitHubCodespacesScreen({
         variant="primary"
         iconName={selectedCloneRepository ? 'git-branch-outline' : 'folder-open-outline'}
         title={
-          cloningRepositoryFullName
+          connectionError && !setupActionLocked
+            ? 'Try again'
+            : cloningRepositoryFullName
             ? 'Cloning repository...'
             : connectingCodespaceName
               ? 'Preparing workspace...'
@@ -2018,9 +2182,15 @@ export function GitHubCodespacesScreen({
           activeCodespaceLabel ??
           'Codespace setup'
         }
-        loading
-        disabled
-        onPress={() => {}}
+        loading={setupActionLocked}
+        disabled={setupActionLocked}
+        onPress={() => {
+          if (selectedCloneRepository) {
+            void handleCloneRepositoryForSetup(selectedCloneRepository);
+            return;
+          }
+          void handleStartFreshForSetup();
+        }}
       />
     ) : connectedProfileDraft ? (
       <ChoiceAction
@@ -2032,6 +2202,22 @@ export function GitHubCodespacesScreen({
         onPress={() => {
           void completeConnectedFlow();
         }}
+      />
+    ) : connectionPhase === 'chatGptLogin' ? (
+      <ChoiceAction
+        variant="primary"
+        iconName="log-in-outline"
+        title={
+          codexLoginBrowserOpen
+            ? 'Waiting for login...'
+            : codexLoginSubmitting
+              ? 'Log in with ChatGPT'
+              : 'Waiting for Codespace...'
+        }
+        meta={activeCodespaceLabel ?? 'Codespace setup'}
+        loading
+        disabled
+        onPress={() => {}}
       />
     ) : pendingCodexLogin ? (
       <ChoiceAction
@@ -2091,9 +2277,7 @@ export function GitHubCodespacesScreen({
             <View style={styles.accountStripCopy}>
               <Text style={styles.accountStripLabel}>Codespace</Text>
               <Text style={styles.accountStripTitle}>{createdCodespace.name}</Text>
-              <Text style={styles.accountStripMeta}>
-                {createdCodespace.repositoryFullName ?? templateRepository?.fullName ?? 'Workspace'}
-              </Text>
+              <Text style={styles.accountStripMeta}>Hosted workspace</Text>
             </View>
           </View>
         ) : null}
@@ -2187,6 +2371,7 @@ export function GitHubCodespacesScreen({
               <Text style={styles.progressBannerText} numberOfLines={3}>
                 {setupStatusMessage}
               </Text>
+              {renderCodespaceWaitCue()}
             </View>
           </View>
         ) : null}
@@ -2374,6 +2559,7 @@ export function GitHubCodespacesScreen({
                     <Text style={styles.progressBannerText} numberOfLines={2}>
                       {creationMessage ?? creationTargetLabel ?? 'Preparing workspace'}
                     </Text>
+                    {!setupStatusMessage ? renderCodespaceWaitCue() : null}
                   </View>
                 </View>
               ) : null}
@@ -2577,7 +2763,10 @@ export function GitHubCodespacesScreen({
                                   <View style={styles.codespacesCardCopy}>
                                     <Text style={styles.codespaceCardTitle}>{codespace.name}</Text>
                                     <Text style={styles.codespaceRepository}>
-                                      {codespace.repositoryFullName ?? 'Unknown repository'}
+                                      {formatCodespaceSourceLabel(
+                                        codespace,
+                                        preferredRepositoryName
+                                      )}
                                     </Text>
                                     <Text style={styles.codespaceHint}>
                                       {isCurrentCodespace
@@ -2907,7 +3096,7 @@ export function GitHubCodespacesScreen({
                       <Text style={styles.cardBody}>
                         {createEnabled
                           ? 'Create one and it will show up here.'
-                          : 'Configure the Clawdex template repository in this build to continue.'}
+                          : 'Codespace creation is not configured in this build.'}
                       </Text>
                       {createEnabled ? (
                         <Pressable
@@ -3151,17 +3340,34 @@ function formatCodexManagedLoginInstruction(userCode: string | null): string {
   return 'Log in with ChatGPT to continue.';
 }
 
+function isChatGptLoginDismissalMessage(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return normalized.includes('cancelled') || normalized.includes('did not complete');
+}
+
+function isMissingStoredChatGptLoginMessage(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized.includes('no stored chatgpt login') ||
+    normalized.includes('no chatgpt refresh token')
+  );
+}
+
 async function waitForBridgeReady(bridgeUrl: string, accessToken: string): Promise<void> {
   const startedAt = Date.now();
   let lastErrorMessage = 'bridge did not respond';
   while (Date.now() - startedAt <= BRIDGE_READY_TIMEOUT_MS) {
     try {
-      const healthResponse = await fetch(toBridgeHealthUrl(bridgeUrl), {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
+      const healthResponse = await fetchWithTimeout(
+        toBridgeHealthUrl(bridgeUrl),
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
         },
-      });
+        BRIDGE_HEALTH_REQUEST_TIMEOUT_MS
+      );
       if (isCodespacesTunnelAuthResponse(healthResponse, bridgeUrl)) {
         throw new Error(CODESPACES_PRIVATE_PORT_ERROR);
       }
@@ -3186,7 +3392,36 @@ async function waitForBridgeReady(bridgeUrl: string, accessToken: string): Promi
   }
 
   throw new Error(
-    `Codespace bridge did not become ready in time (${lastErrorMessage}). Open the Codespace in GitHub once and confirm bootstrap finished and ports 8787/8788 are public.`
+    `Codespace is taking longer than expected (${lastErrorMessage}). Wait a moment and try again, or open setup if it keeps happening.`
+  );
+}
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error(`health check timed out after ${String(Math.ceil(timeoutMs / 1000))}s`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === 'AbortError' || error.message.toLowerCase().includes('aborted'))
   );
 }
 
@@ -3236,11 +3471,112 @@ async function verifyBridgeRpcReady(bridgeUrl: string, accessToken: string): Pro
 }
 
 function buildCodespaceProfileName(codespace: GitHubCodespace): string {
-  if (codespace.repositoryName) {
-    return `${codespace.repositoryName} · ${codespace.name}`;
+  return `GitHub Codespace · ${codespace.name}`;
+}
+
+function formatCodespaceSourceLabel(
+  codespace: Pick<GitHubCodespace, 'repositoryFullName' | 'repositoryName'>,
+  preferredRepositoryName: string
+): string {
+  if (
+    preferredRepositoryName &&
+    codespace.repositoryName?.trim().toLowerCase() ===
+      preferredRepositoryName.trim().toLowerCase()
+  ) {
+    return 'Hosted workspace';
   }
 
-  return codespace.name;
+  return codespace.repositoryFullName ?? 'GitHub workspace';
+}
+
+function resolveCodespaceWaitCueKind(input: {
+  cloningRepositoryFullName: string | null;
+  connectionPhase: ConnectionPhase | null;
+  creatingCodespace: boolean;
+}): CodespaceWaitCueKind | null {
+  if (input.cloningRepositoryFullName) {
+    return 'cloning';
+  }
+  if (input.creatingCodespace || input.connectionPhase === 'creatingCodespace') {
+    return 'creating';
+  }
+  if (input.connectionPhase === 'startingCodespace') {
+    return 'starting';
+  }
+  if (
+    input.connectionPhase === 'codespaceReady' ||
+    input.connectionPhase === 'waitingForBridge' ||
+    input.connectionPhase === 'chatGptLogin'
+  ) {
+    return 'bridge';
+  }
+
+  return null;
+}
+
+function formatCodespaceWaitCue(kind: CodespaceWaitCueKind, elapsedMs: number): string {
+  const estimateMs = getCodespaceWaitEstimateMs(kind);
+  const remainingMs = Math.max(estimateMs - elapsedMs, 0);
+  if (remainingMs > 0) {
+    return `${getCodespaceWaitEstimateLabel(kind)} • about ${formatApproxDuration(
+      remainingMs
+    )} left`;
+  }
+
+  if (elapsedMs <= estimateMs + 45_000) {
+    return `${getCodespaceWaitEstimateLabel(kind)} • almost there`;
+  }
+
+  return `Taking longer than usual • ${formatElapsedDuration(elapsedMs)} elapsed`;
+}
+
+function getCodespaceWaitEstimateMs(kind: CodespaceWaitCueKind): number {
+  switch (kind) {
+    case 'creating':
+      return CODESPACE_CREATE_ESTIMATE_MS;
+    case 'starting':
+      return CODESPACE_START_ESTIMATE_MS;
+    case 'bridge':
+      return CODESPACE_BRIDGE_ESTIMATE_MS;
+    case 'cloning':
+      return CODESPACE_CLONE_ESTIMATE_MS;
+  }
+}
+
+function getCodespaceWaitEstimateLabel(kind: CodespaceWaitCueKind): string {
+  switch (kind) {
+    case 'creating':
+      return 'Usually under 2 min';
+    case 'starting':
+      return 'Usually under 2 min';
+    case 'bridge':
+      return 'Usually under 90 sec';
+    case 'cloning':
+      return 'Usually under 1 min';
+  }
+}
+
+function formatApproxDuration(durationMs: number): string {
+  const seconds = Math.max(1, Math.ceil(durationMs / 1000));
+  if (seconds < 20) {
+    return 'a few seconds';
+  }
+  if (seconds < 60) {
+    return `${String(Math.ceil(seconds / 15) * 15)} sec`;
+  }
+
+  return `${String(Math.ceil(seconds / 60))} min`;
+}
+
+function formatElapsedDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) {
+    return `${String(seconds)} sec`;
+  }
+
+  return `${String(minutes)}:${String(seconds).padStart(2, '0')}`;
 }
 
 function isCodespaceAvailable(codespace: Pick<GitHubCodespace, 'state'>): boolean {
@@ -3794,6 +4130,19 @@ const createStyles = (theme: AppTheme) => {
       ...theme.typography.caption,
       color: theme.colors.textSecondary,
       lineHeight: 18,
+    },
+    waitCueRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingTop: 2,
+    },
+    waitCueText: {
+      ...theme.typography.caption,
+      color: theme.colors.textSecondary,
+      lineHeight: 17,
+      flex: 1,
+      fontVariant: ['tabular-nums'],
     },
     repositoryPickerPanel: {
       borderRadius: theme.radius.lg,
