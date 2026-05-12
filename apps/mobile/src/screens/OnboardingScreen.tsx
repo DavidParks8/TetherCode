@@ -78,9 +78,9 @@ const SETUP_STAGES = [
   },
 ] as const;
 const INTRO_ENGINE_MARKS = [
-  { label: 'Codex', logo: codexMarkPng, tint: true, wordmark: true },
-  { label: 'Cursor', logo: cursorMarkPng, tint: false, wordmark: false },
-  { label: 'OpenCode', logo: opencodeMarkPng, tint: false, wordmark: false },
+  { label: 'Codex', logo: codexMarkPng },
+  { label: 'Cursor', logo: cursorMarkPng },
+  { label: 'OpenCode', logo: opencodeMarkPng },
 ] as const;
 const INTRO_ENGINE_ROTATION_MS = 1450;
 const INTRO_ENGINE_FADE_MS = 120;
@@ -540,38 +540,29 @@ export function OnboardingScreen({
                         style={[styles.introHeroEngineWord, introEngineAnimatedStyle]}
                       >
                         <View
-                          style={[
-                            styles.introHeroEngineLogoFrame,
-                            introEngineMark.wordmark
-                              ? styles.introHeroEngineWordmarkFrame
-                              : null,
-                          ]}
+                          style={styles.introHeroEngineLogoFrame}
                         >
                           <Image
                             source={introEngineMark.logo}
                             resizeMode="contain"
-                            style={[
-                              styles.introHeroEngineLogo,
-                              introEngineMark.wordmark
-                                ? styles.introHeroEngineWordmarkLogo
-                                : null,
-                              introEngineMark.tint
-                                ? { tintColor: theme.colors.textPrimary }
-                                : null,
-                            ]}
+                            style={styles.introHeroEngineLogo}
                           />
                         </View>
-                        {introEngineMark.wordmark ? null : (
-                          <Text
-                            style={styles.introHeroEngineLabel}
-                            numberOfLines={1}
-                            adjustsFontSizeToFit
-                          >
-                            {introEngineMark.label}
-                          </Text>
-                        )}
+                        <Text
+                          style={styles.introHeroEngineLabel}
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                        >
+                          {introEngineMark.label}
+                        </Text>
                       </Animated.View>
-                      <Text style={styles.introHeroTitleTail}>on your phone</Text>
+                      <Text
+                        style={styles.introHeroTitleTail}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                      >
+                        on your phone
+                      </Text>
                     </View>
                     <Text style={styles.introHeroDescription}>
                       Choose where your session lives.
@@ -1292,60 +1283,46 @@ const createStyles = (theme: AppTheme) => {
     maxWidth: 360,
     minHeight: 48,
     flexDirection: 'row',
-    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'center',
-    columnGap: theme.spacing.sm,
-    rowGap: theme.spacing.xs,
+    gap: theme.spacing.sm,
   },
   introHeroEngineWord: {
-    minWidth: 116,
+    minWidth: 132,
     maxWidth: 170,
     height: 42,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: theme.spacing.sm,
+    flexShrink: 1,
   },
   introHeroEngineLogoFrame: {
-    width: 38,
-    height: 38,
+    width: 34,
+    height: 34,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.borderLight,
-    backgroundColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.74)',
     overflow: 'hidden',
   },
-  introHeroEngineWordmarkFrame: {
-    width: 112,
-    height: 42,
-    borderRadius: 12,
-    backgroundColor: 'transparent',
-    borderColor: 'transparent',
-  },
   introHeroEngineLogo: {
-    width: 28,
-    height: 28,
-  },
-  introHeroEngineWordmarkLogo: {
-    width: 112,
-    height: 46,
+    width: 34,
+    height: 34,
   },
   introHeroEngineLabel: {
     ...theme.typography.largeTitle,
     flexShrink: 1,
-    fontSize: 26,
-    lineHeight: 30,
+    fontSize: 24,
+    lineHeight: 28,
     letterSpacing: 0,
     textAlign: 'center',
     color: theme.colors.textPrimary,
   },
   introHeroTitleTail: {
     ...theme.typography.largeTitle,
-    fontSize: 26,
-    lineHeight: 30,
+    flexShrink: 1,
+    fontSize: 24,
+    lineHeight: 28,
     letterSpacing: 0,
     textAlign: 'center',
     color: theme.colors.textPrimary,
