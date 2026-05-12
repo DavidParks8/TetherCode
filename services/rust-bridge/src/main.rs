@@ -999,7 +999,7 @@ async fn read_cursor_credential_status(
         .config
         .enabled_engines
         .contains(&BridgeRuntimeEngine::Cursor);
-    let active = state.config.active_engine == BridgeRuntimeEngine::Cursor;
+    let active = state.backend.engine() == BridgeRuntimeEngine::Cursor;
     let runtime_available = state.backend.cursor_backend().is_some();
 
     let credential = match resolve_cursor_runtime_credential().await {
@@ -1447,7 +1447,29 @@ impl RuntimeBackend {
     }
 
     fn engine(&self) -> BridgeRuntimeEngine {
+        if self.is_engine_available(self.preferred_engine) {
+            return self.preferred_engine;
+        }
+
+        for fallback in [
+            BridgeRuntimeEngine::Codex,
+            BridgeRuntimeEngine::Opencode,
+            BridgeRuntimeEngine::Cursor,
+        ] {
+            if self.is_engine_available(fallback) {
+                return fallback;
+            }
+        }
+
         self.preferred_engine
+    }
+
+    fn is_engine_available(&self, engine: BridgeRuntimeEngine) -> bool {
+        match engine {
+            BridgeRuntimeEngine::Codex => self.codex_backend().is_some(),
+            BridgeRuntimeEngine::Opencode => self.opencode.is_some(),
+            BridgeRuntimeEngine::Cursor => self.cursor_backend().is_some(),
+        }
     }
 
     fn available_engines(&self) -> Vec<BridgeRuntimeEngine> {
@@ -1529,7 +1551,7 @@ impl RuntimeBackend {
             return self.preferred_engine;
         }
 
-        route_engine_from_params(raw_params).unwrap_or(self.preferred_engine)
+        route_engine_from_params(raw_params).unwrap_or_else(|| self.engine())
     }
 
     async fn forward_request(
@@ -1576,7 +1598,7 @@ impl RuntimeBackend {
         }
         if method == "model/list" {
             let target_engine =
-                route_engine_from_params(params.as_ref()).unwrap_or(self.preferred_engine);
+                route_engine_from_params(params.as_ref()).unwrap_or_else(|| self.engine());
             let normalized_params = params.map(normalize_forwarded_params);
             return match self.backend_for_engine(target_engine)? {
                 RuntimeBackendRef::Codex(bridge) => {
@@ -14802,6 +14824,22 @@ mod tests {
             vec![BridgeRuntimeEngine::Codex]
         );
         assert!(!capabilities.unified_chat_list);
+        assert!(capabilities.supports.review_start);
+
+        shutdown_test_backend(&backend).await;
+    }
+
+    #[tokio::test]
+    async fn bridge_capabilities_fall_back_when_preferred_engine_is_unavailable() {
+        let hub = Arc::new(ClientHub::new());
+        let backend = build_test_runtime_backend(hub, BridgeRuntimeEngine::Cursor, false).await;
+
+        let capabilities = backend.capabilities();
+        assert_eq!(capabilities.active_engine, BridgeRuntimeEngine::Codex);
+        assert_eq!(
+            capabilities.available_engines,
+            vec![BridgeRuntimeEngine::Codex]
+        );
         assert!(capabilities.supports.review_start);
 
         shutdown_test_backend(&backend).await;

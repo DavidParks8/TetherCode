@@ -574,6 +574,76 @@ describe('CursorAppServer', () => {
     ]);
   });
 
+  it('preserves failed statuses from nested historical Cursor tool results', async () => {
+    const driver = new MockDriver();
+    const now = Date.UTC(2026, 4, 1, 10, 0, 0);
+    driver.agentInfos.set('cursor-agent-failed-tool-history', {
+      agentId: 'cursor-agent-failed-tool-history',
+      name: 'New Agent',
+      summary: '',
+      lastModified: now,
+      createdAt: now,
+      status: 'finished',
+      runtime: 'local',
+      cwd: '/workspace/app',
+    });
+    driver.messages.set('cursor-agent-failed-tool-history', [
+      {
+        type: 'user',
+        uuid: 'nested-turn-failed-tool',
+        agent_id: 'cursor-agent-failed-tool-history',
+        message: {
+          turn: {
+            case: 'agentConversationTurn',
+            value: {
+              userMessage: {
+                text: 'Read a missing file.',
+              },
+              steps: [
+                {
+                  message: {
+                    case: 'toolCall',
+                    value: {
+                      tool: {
+                        case: 'readToolCall',
+                        value: {
+                          args: { path: '/workspace/app/missing.ts' },
+                          result: {
+                            status: 'error',
+                            error: 'file not found',
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    ]);
+    const server = new CursorAppServer({
+      runtime: 'local',
+      cwd: '/workspace/app',
+      apiKey: 'cursor-key',
+      defaultModel: 'cursor-small',
+      driver,
+    });
+
+    const read = await server.request('thread/read', {
+      threadId: 'cursor-agent-failed-tool-history',
+    });
+    const readThread = read.thread as {
+      turns: Array<{ items: Array<{ type: string; status?: string; tool?: string }> }>;
+    };
+
+    expect(readThread.turns[0]?.items).toMatchObject([
+      { type: 'userMessage' },
+      { type: 'toolCall', tool: 'read', status: 'error' },
+    ]);
+  });
+
   it('fails when no cwd is configured instead of falling back to process.cwd()', async () => {
     const server = new CursorAppServer({
       runtime: 'local',

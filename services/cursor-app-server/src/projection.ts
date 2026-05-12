@@ -243,7 +243,7 @@ function conversationStepToItem(value: unknown, id: string): ThreadItem | null {
         readString(readRecordValue(tool, 'type')) ??
         normalizeCursorToolName(nestedTool?.case) ??
         'unknown',
-      status: toolCallStatus(tool),
+      status: toolCallStatus(tool, result),
       args: readRecordValue(nestedToolPayload, 'args') ?? readRecordValue(tool, 'args'),
       result,
     };
@@ -511,13 +511,13 @@ function readConversationStepText(value: unknown): string {
   );
 }
 
-function toolCallStatus(tool: Record<string, unknown> | null): string {
+function toolCallStatus(tool: Record<string, unknown> | null, resultValue?: unknown): string {
   const status = readString(readRecordValue(tool, 'status'));
   if (status) {
     return status;
   }
 
-  const result = toRecord(readRecordValue(tool, 'result'));
+  const result = toRecord(resultValue) ?? toRecord(readRecordValue(tool, 'result'));
   const resultStatus = readString(readRecordValue(result, 'status'));
   return resultStatus === 'error' ? 'error' : 'completed';
 }
