@@ -1,6 +1,7 @@
 import {
   hasStructuredPlanCardContent,
   resolveWorkflowCardMode,
+  shouldCollapseWorkflowCardForKeyboard,
 } from '../planCardState';
 
 describe('planCardState', () => {
@@ -84,5 +85,38 @@ describe('planCardState', () => {
         hasPlanApprovalPrompt: false,
       })
     ).toBe('plan');
+  });
+
+  it('collapses the visible workflow card when the keyboard opens', () => {
+    expect(
+      shouldCollapseWorkflowCardForKeyboard({
+        collapsed: false,
+        keyboardVisible: true,
+        mode: 'execution',
+        threadId: 'thread-1',
+      })
+    ).toBe(true);
+  });
+
+  it('does not collapse again when the workflow card is already collapsed', () => {
+    expect(
+      shouldCollapseWorkflowCardForKeyboard({
+        collapsed: true,
+        keyboardVisible: true,
+        mode: 'execution',
+        threadId: 'thread-1',
+      })
+    ).toBe(false);
+  });
+
+  it('does not collapse anything when no workflow card is visible', () => {
+    expect(
+      shouldCollapseWorkflowCardForKeyboard({
+        collapsed: false,
+        keyboardVisible: true,
+        mode: null,
+        threadId: 'thread-1',
+      })
+    ).toBe(false);
   });
 });

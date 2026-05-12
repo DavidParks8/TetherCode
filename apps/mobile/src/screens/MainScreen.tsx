@@ -94,6 +94,7 @@ import {
 import {
   hasStructuredPlanCardContent,
   resolveWorkflowCardMode,
+  shouldCollapseWorkflowCardForKeyboard,
 } from './planCardState';
 import type { TranscriptDisplayItem } from './transcriptMessages';
 import { useAppTheme } from '../theme';
@@ -8230,6 +8231,31 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         };
       });
     }, [selectedChat?.id, selectedThreadPlan?.turnId]);
+
+    useEffect(() => {
+      const threadId = selectedChat?.id;
+      if (
+        !threadId ||
+        !shouldCollapseWorkflowCardForKeyboard({
+          collapsed: planPanelCollapsed,
+          keyboardVisible,
+          mode: workflowCardMode,
+          threadId,
+        })
+      ) {
+        return;
+      }
+
+      setPlanPanelCollapsedByThread((prev) => {
+        if (prev[threadId] === true) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [threadId]: true,
+        };
+      });
+    }, [keyboardVisible, planPanelCollapsed, selectedChat?.id, workflowCardMode]);
 
     useEffect(() => {
       if (!showLiveAgentPanel) {

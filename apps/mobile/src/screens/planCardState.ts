@@ -13,6 +13,13 @@ export interface ResolveWorkflowCardModeArgs {
   hasPlanApprovalPrompt: boolean;
 }
 
+export interface ShouldCollapseWorkflowCardForKeyboardArgs {
+  collapsed: boolean;
+  keyboardVisible: boolean;
+  mode: WorkflowCardMode | null;
+  threadId: string | null | undefined;
+}
+
 export function hasStructuredPlanCardContent(
   plan: PlanCardStateLike | null | undefined
 ): boolean {
@@ -37,4 +44,13 @@ export function resolveWorkflowCardMode({
   }
 
   return null;
+}
+
+export function shouldCollapseWorkflowCardForKeyboard({
+  collapsed,
+  keyboardVisible,
+  mode,
+  threadId,
+}: ShouldCollapseWorkflowCardForKeyboardArgs): boolean {
+  return Boolean(threadId && keyboardVisible && mode && !collapsed);
 }
