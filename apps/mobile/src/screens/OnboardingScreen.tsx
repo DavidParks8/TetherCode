@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -29,6 +30,9 @@ import { HostBridgeWsClient } from '../api/ws';
 import { BrandMark } from '../components/BrandMark';
 import { ChoiceAction } from '../components/ChoiceAction';
 import { useAppTheme, type AppTheme } from '../theme';
+import codexMarkPng from '../../assets/brand/engine-codex.png';
+import cursorMarkPng from '../../assets/brand/engine-cursor.png';
+import opencodeMarkPng from '../../assets/brand/engine-opencode.png';
 
 export type OnboardingMode = 'initial' | 'edit' | 'add' | 'reconnect';
 
@@ -73,6 +77,13 @@ const SETUP_STAGES = [
     description: 'Confirm health and authenticated RPC before continuing.',
   },
 ] as const;
+const INTRO_ENGINE_MARKS = [
+  { label: 'Codex', logo: codexMarkPng },
+  { label: 'Cursor', logo: cursorMarkPng },
+  { label: 'OpenCode', logo: opencodeMarkPng },
+] as const;
+const INTRO_ENGINE_ROTATION_MS = 2200;
+const INTRO_ENGINE_FADE_MS = 180;
 
 export function OnboardingScreen({
   mode = 'initial',
@@ -101,8 +112,10 @@ export function OnboardingScreen({
   const [scannerVisible, setScannerVisible] = useState(false);
   const [scannerError, setScannerError] = useState<string | null>(null);
   const [scannerLocked, setScannerLocked] = useState(false);
+  const [introEngineIndex, setIntroEngineIndex] = useState(0);
   const introHeroMotion = useRef(new Animated.Value(mode === 'initial' ? 0 : 1)).current;
   const introActionsMotion = useRef(new Animated.Value(mode === 'initial' ? 0 : 1)).current;
+  const introEngineMotion = useRef(new Animated.Value(1)).current;
   const styles = useMemo(() => createStyles(theme), [theme]);
   const onboardingBackgroundGradient = theme.isDark
     ? (['#020304', '#05070C', '#0A0E16'] as const)
@@ -187,6 +200,70 @@ export function OnboardingScreen({
     }),
     [introActionsMotion]
   );
+  const introEngineAnimatedStyle = useMemo(
+    () => ({
+      opacity: introEngineMotion,
+      transform: [
+        {
+          translateY: introEngineMotion.interpolate({
+            inputRange: [0, 1],
+            outputRange: [6, 0],
+          }),
+        },
+      ],
+    }),
+    [introEngineMotion]
+  );
+
+  useEffect(() => {
+    if (!showIntroStep) {
+      introEngineMotion.stopAnimation();
+      introEngineMotion.setValue(1);
+      setIntroEngineIndex(0);
+      return;
+    }
+
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleNext = () => {
+      timer = setTimeout(() => {
+        Animated.timing(introEngineMotion, {
+          toValue: 0,
+          duration: INTRO_ENGINE_FADE_MS,
+          easing: Easing.in(Easing.cubic),
+          useNativeDriver: true,
+        }).start(({ finished }) => {
+          if (!active || !finished) {
+            return;
+          }
+          setIntroEngineIndex((previous) => (previous + 1) % INTRO_ENGINE_MARKS.length);
+          Animated.timing(introEngineMotion, {
+            toValue: 1,
+            duration: INTRO_ENGINE_FADE_MS + 60,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }).start(({ finished: fadeInFinished }) => {
+            if (active && fadeInFinished) {
+              scheduleNext();
+            }
+          });
+        });
+      }, INTRO_ENGINE_ROTATION_MS);
+    };
+
+    introEngineMotion.setValue(1);
+    scheduleNext();
+
+    return () => {
+      active = false;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      introEngineMotion.stopAnimation();
+    };
+  }, [introEngineMotion, showIntroStep]);
+
+  const introEngineMark = INTRO_ENGINE_MARKS[introEngineIndex];
   const normalizedBridgeUrl = useMemo(
     () => normalizeBridgeUrlInput(urlInput),
     [urlInput]
@@ -458,7 +535,27 @@ export function OnboardingScreen({
                         <View style={styles.introHeroConnectorRight} />
                       </View>
                     </View>
-                    <Text style={styles.introHeroTitle}>Codex on your phone</Text>
+                    <View style={styles.introHeroTitleWrap}>
+                      <Animated.View
+                        style={[styles.introHeroEngineWord, introEngineAnimatedStyle]}
+                      >
+                        <View style={styles.introHeroEngineLogoFrame}>
+                          <Image
+                            source={introEngineMark.logo}
+                            resizeMode="contain"
+                            style={styles.introHeroEngineLogo}
+                          />
+                        </View>
+                        <Text
+                          style={styles.introHeroEngineLabel}
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                        >
+                          {introEngineMark.label}
+                        </Text>
+                      </Animated.View>
+                      <Text style={styles.introHeroTitleTail}>on your phone</Text>
+                    </View>
                     <Text style={styles.introHeroDescription}>
                       Choose where your session lives.
                     </Text>
@@ -1173,7 +1270,48 @@ const createStyles = (theme: AppTheme) => {
     backgroundColor: theme.isDark ? 'rgba(181, 189, 204, 0.26)' : 'rgba(56, 79, 106, 0.22)',
     transform: [{ rotate: '-34deg' }],
   },
-  introHeroTitle: {
+  introHeroTitleWrap: {
+    width: '100%',
+    maxWidth: 340,
+    minHeight: 78,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.xs,
+  },
+  introHeroEngineWord: {
+    minWidth: 190,
+    maxWidth: 280,
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+  },
+  introHeroEngineLogoFrame: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderLight,
+    backgroundColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.74)',
+    overflow: 'hidden',
+  },
+  introHeroEngineLogo: {
+    width: 28,
+    height: 28,
+  },
+  introHeroEngineLabel: {
+    ...theme.typography.largeTitle,
+    flexShrink: 1,
+    fontSize: 28,
+    lineHeight: 32,
+    letterSpacing: 0,
+    textAlign: 'center',
+    color: theme.colors.textPrimary,
+  },
+  introHeroTitleTail: {
     ...theme.typography.largeTitle,
     fontSize: 28,
     lineHeight: 32,
