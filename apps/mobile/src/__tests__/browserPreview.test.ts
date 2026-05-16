@@ -83,26 +83,16 @@ describe('browserPreview', () => {
     );
   });
 
-  it('uses an explicit preview base URL for Codespaces-style hosts', () => {
+  it('uses an explicit preview base URL', () => {
     expect(
       buildBrowserPreviewBootstrapUrl(
-        'https://octocat-8787.app.github.dev',
+        'https://bridge.example.com',
         8788,
         '/app?sid=preview&st=token',
         { preset: 'mobile' },
-        'https://octocat-8788.app.github.dev'
+        'https://preview.example.com'
       )
-    ).toBe('https://octocat-8788.app.github.dev/app?sid=preview&st=token&vp=mobile');
-  });
-
-  it('rewrites Codespaces forwarded hosts even without an explicit preview base URL', () => {
-    expect(
-      buildBrowserPreviewBootstrapUrl(
-        'https://octocat-8787.app.github.dev',
-        8788,
-        '/app?sid=preview&st=token'
-      )
-    ).toBe('https://octocat-8788.app.github.dev/app?sid=preview&st=token&vp=mobile');
+    ).toBe('https://preview.example.com/app?sid=preview&st=token&vp=mobile');
   });
 
   it('updates an existing preview URL with a different viewport preset', () => {

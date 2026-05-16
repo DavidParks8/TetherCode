@@ -34,94 +34,25 @@ npm run stop:services
 ## Bridge auth errors (`401`, invalid token)
 
 - For the shipped mobile app, rescan the bridge QR or update the stored token in Settings.
-- For GitHub-auth Codespaces profiles, reopen `GitHub Codespaces` in the app and sign in with GitHub again if the GitHub App token or refresh token was revoked or expired.
 - For a local dev build, also ensure `BRIDGE_AUTH_TOKEN` in `.env.secure` matches `EXPO_PUBLIC_HOST_BRIDGE_TOKEN` in `apps/mobile/.env`.
 - Restart the bridge after token changes.
 - On secure-launcher installs, `Settings > Bridge Maintenance > Restart bridge safely` can do that from the phone.
 - If an in-app bridge update fails, inspect `.bridge-updater.log` and `.bridge-update-status.json` in the bridge install root.
 
-## GitHub Codespaces bridge URL does not connect
-
-- Pair to the printed forwarded HTTPS URL such as `https://<codespace>-8787.app.github.dev`, not `127.0.0.1`.
-- Public forwarded ports reset back to private when the codespace restarts.
-- Restart the bridge or rerun `npm run codespaces:bootstrap` to rerun the automatic visibility step.
-- If needed, set both ports public manually:
-
-```bash
-gh codespace ports visibility 8787:public 8788:public
-```
-
-- If `gh` is unavailable in the codespace, use the Codespaces `Ports` panel and change both forwarded ports to `Public`.
-- Keep bridge auth enabled. Public forwarded ports without bridge auth are not a safe setup.
-- If GitHub direct sign-in is not showing in the app, confirm the build includes `EXPO_PUBLIC_GITHUB_APP_CLIENT_ID`, `EXPO_PUBLIC_GITHUB_APP_SLUG`, and `EXPO_PUBLIC_GITHUB_APP_AUTH_BASE_URL`.
-- If the GitHub browser sheet returns but sign-in still fails, confirm the GitHub App callback URL is `https://<your-domain>/github/callback` and that `Request user authorization (OAuth) during installation` is enabled.
-- If the app signs in but still cannot create a Codespace or clone/push inside it, reopen the GitHub App access step in the app and make sure the template repo and any target repos are selected for the installation.
-- If in-app Codespace creation forks or targets the wrong repo, check `EXPO_PUBLIC_GITHUB_CODESPACES_REPO_NAME`, `EXPO_PUBLIC_GITHUB_CODESPACES_SOURCE_OWNER`, and `EXPO_PUBLIC_GITHUB_CODESPACES_REPO_REF` in the mobile build env.
-
-## GitHub Codespaces bootstrap did not start the bridge
-
-- Check `.bridge-bootstrap.log` for the post-start bootstrap and `.bridge.log` for the bridge process, or rerun the bootstrap manually:
-
-```bash
-npm run codespaces:bootstrap -- --prepare-only
-npm run codespaces:bootstrap
-```
-
-- On the minimal `clawdex-codespace` template, rerun the packaged bootstrap instead:
-
-```bash
-CLAWDEX_WORKSPACE_ROOT="$PWD" node "$(npm root -g)/clawdex-mobile/scripts/codespaces-bootstrap.js" --prepare-only
-CLAWDEX_WORKSPACE_ROOT="$PWD" node "$(npm root -g)/clawdex-mobile/scripts/codespaces-bootstrap.js"
-```
-
-- The Codespaces bootstrap only prepares the `codex` engine. It will try to install Codex automatically with `npm install -g @openai/codex`.
-- `--prepare-only` installs Codex if needed and prebuilds the Rust bridge binary without starting the bridge.
-- The bootstrap also enables `BRIDGE_GITHUB_CODESPACES_AUTH=true` so GitHub bearer tokens can connect directly to the bridge.
-- If that install fails, fix npm/global package permissions in the codespace and rerun the bootstrap.
-- If the bridge is already healthy on port 8787, rerunning the bootstrap should now exit successfully instead of failing on a stale or missing `.bridge.pid`.
-- Bridge startup logs and runtime state live in the Codespace repo root:
-
-```bash
-tail -n 200 .bridge-bootstrap.log
-tail -n 200 .bridge.log
-ls -la .bridge.pid .bridge.log .bridge-bootstrap.log .env.secure
-```
-
-- To only rewrite `.env.secure` without starting the bridge:
-
-```bash
-npm run codespaces:bootstrap -- --no-start
-```
-
-## Git push in a Codespace fails with `403` or permission denied
-
-- The app now bootstraps GitHub HTTPS git credentials inside the Codespace after GitHub sign-in.
-- If you signed in before this behavior shipped, reopen `GitHub Codespaces` in the app and sign in with GitHub once more so the saved token includes repository access.
-- The bootstrap also rewrites common `git@github.com:...` and `ssh://git@github.com/...` remotes to HTTPS so they can use the same credential.
-- After reconnecting, retry the clone/push from the app or from the Codespace shell.
-
 ## Voice transcription says no credentials were found
 
 - The bridge can transcribe with `OPENAI_API_KEY`, `BRIDGE_CHATGPT_ACCESS_TOKEN`, a legacy bridge token cache, or the Codex-managed ChatGPT token in `$CODEX_HOME/auth.json`.
-- In GitHub Codespaces, finish the Codex login step from the app first. Codex writes the login to `$HOME/.codex/auth.json`, and `.env.secure` sets `CODEX_HOME` to that persistent location.
-- Current app builds automatically restart the Codespace Codex app-server after the Codex login step so it reloads the Codex auth home. On older builds, restart the bridge once after logging in:
+- If Codex login just completed, restart the bridge once so it reloads the Codex auth home:
 
 ```bash
 npm run secure:bridge
 ```
 
-- You can inspect whether Codex saved auth in the Codespace:
+- You can inspect whether Codex saved auth:
 
 ```bash
 ls -la "${CODEX_HOME:-$HOME/.codex}/auth.json"
 ```
-
-## Codespace wakes but Codex says account authentication is required
-
-- Codespaces should use Codex-managed auth, the same as a local bridge. The login is stored in `${CODEX_HOME:-$HOME/.codex}/auth.json`.
-- The app starts Codex's normal ChatGPT web login first. It captures the OAuth callback on the phone and forwards that callback to the Codex loopback server inside the Codespace, so device-code login is only a fallback.
-- Run `source .env.secure && ls -la "$CODEX_HOME/auth.json"` in the Codespace to confirm the auth file exists.
-- If the file is missing, reopen GitHub Codespaces setup in the app and complete the Codex login step once. After that, bridge restarts and Codespace wakes should not require reauthentication.
 
 ## Local browser preview does not open
 
@@ -133,7 +64,6 @@ ls -la "${CODEX_HOME:-$HOME/.codex}/auth.json"
 - By default the preview server binds to `BRIDGE_PORT + 1`.
 - Restart the bridge after changing `BRIDGE_PREVIEW_PORT`.
 - If the page shell loads but live reload does not, verify the target dev server is still serving its WebSocket/HMR endpoint locally.
-- In GitHub Codespaces, the preview port (`8788` by default) must also be public or the Browser screen will fail even if the main bridge port works.
 
 ## Tailscale issues
 

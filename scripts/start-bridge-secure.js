@@ -16,7 +16,6 @@ const {
 } = require("./bridge-binary");
 
 const DEFAULT_HEALTH_TIMEOUT_MS = 15000;
-const CODESPACES_HEALTH_TIMEOUT_MS = 60000;
 const DEV_HEALTH_TIMEOUT_MS = 60000;
 let qrcodeTerminal = null;
 let qrcodeTerminalLoaded = false;
@@ -129,46 +128,19 @@ function normalizeBaseUrl(rawUrl) {
   }
 }
 
-function isCodespacesMode(env) {
-  const networkMode = readNonEmptyEnv(env, "BRIDGE_NETWORK_MODE").toLowerCase();
-  const rawCodespaces = readNonEmptyEnv(env, "CODESPACES").toLowerCase();
-  return networkMode === "codespaces" || rawCodespaces === "true";
-}
-
 function resolveBridgeBuildProfile(env) {
   const explicitProfile = readNonEmptyEnv(env, "CLAWDEX_BRIDGE_BUILD_PROFILE").toLowerCase();
   if (explicitProfile === "debug" || explicitProfile === "release") {
     return explicitProfile;
   }
 
-  return isCodespacesMode(env) ? "debug" : "release";
-}
-
-function isCodespacesAutoPublicEnabled(env) {
-  const raw = readNonEmptyEnv(env, "BRIDGE_CODESPACES_AUTO_PUBLIC").toLowerCase();
-  return raw ? raw !== "false" : true;
-}
-
-function buildCodespacesForwardedUrl(env, port) {
-  const codespaceName = readNonEmptyEnv(env, "CODESPACE_NAME");
-  const forwardingDomain = readNonEmptyEnv(env, "GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN");
-  if (!codespaceName || !forwardingDomain) {
-    return "";
-  }
-  return `https://${codespaceName}-${port}.${forwardingDomain}`;
+  return "release";
 }
 
 function resolveBridgeAccessUrl(env, endpoint) {
   const configured = normalizeBaseUrl(readNonEmptyEnv(env, "BRIDGE_CONNECT_URL"));
   if (configured) {
     return configured;
-  }
-
-  if (isCodespacesMode(env)) {
-    const forwarded = normalizeBaseUrl(buildCodespacesForwardedUrl(env, endpoint.port));
-    if (forwarded) {
-      return forwarded;
-    }
   }
 
   if (isUnspecifiedBindHost(endpoint.host)) {
@@ -310,172 +282,7 @@ function printBridgeAccessDetails(env, endpoint) {
     console.log(`Bridge bind: ${buildBridgeUrl(endpoint.host, endpoint.port)}`);
   }
 
-  if (readNonEmptyEnv(env, "BRIDGE_GITHUB_CODESPACES_AUTH").toLowerCase() === "true") {
-    console.log("GitHub auth: enabled for Codespaces direct sign-in");
-  }
-
   return bridgeUrl;
-}
-
-function ghAuthEnv(env) {
-  const githubToken =
-    readNonEmptyEnv(process.env, "GH_TOKEN") ||
-    readNonEmptyEnv(process.env, "GITHUB_TOKEN") ||
-    readNonEmptyEnv(env, "GH_TOKEN") ||
-    readNonEmptyEnv(env, "GITHUB_TOKEN");
-
-  if (!githubToken) {
-    return { ...process.env, ...env };
-  }
-
-  return {
-    ...process.env,
-    ...env,
-    GH_TOKEN: githubToken,
-  };
-}
-
-function codespaceSelectionArgs(env) {
-  const name = readNonEmptyEnv(env, "CODESPACE_NAME");
-  return name ? ["-c", name] : [];
-}
-
-function formatCodespacesVisibilityCommand(env, ports) {
-  const uniquePorts = [...new Set(ports.filter((value) => Number.isFinite(value) && value > 0))];
-  const visibilityArgs = uniquePorts.map((port) => `${port}:public`);
-  const selectionArgs = codespaceSelectionArgs(env);
-  return ["gh", "codespace", "ports", "visibility", ...visibilityArgs, ...selectionArgs].join(" ");
-}
-
-function sleepSync(ms) {
-  if (!Number.isFinite(ms) || ms <= 0) {
-    return;
-  }
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-function updateCodespacesBrowseUrls(env, ports) {
-  if (!commandExists("gh")) {
-    return;
-  }
-
-  const result = spawnSync(
-    "gh",
-    ["codespace", "ports", "--json", "sourcePort,browseUrl", ...codespaceSelectionArgs(env)],
-    {
-      encoding: "utf8",
-      env: ghAuthEnv(env),
-      stdio: ["ignore", "pipe", "pipe"],
-    }
-  );
-  if ((result.status ?? 1) !== 0 || !result.stdout) {
-    return;
-  }
-
-  let rows;
-  try {
-    rows = JSON.parse(result.stdout);
-  } catch {
-    return;
-  }
-
-  if (!Array.isArray(rows)) {
-    return;
-  }
-
-  for (const row of rows) {
-    if (!row || typeof row !== "object") {
-      continue;
-    }
-    const sourcePort = parsePort(row.sourcePort, 0);
-    const browseUrl = normalizeBaseUrl(row.browseUrl);
-    if (!sourcePort || !browseUrl || !ports.includes(sourcePort)) {
-      continue;
-    }
-
-    if (sourcePort === parsePort(env.BRIDGE_PORT, 8787)) {
-      env.BRIDGE_CONNECT_URL = browseUrl;
-    }
-    if (sourcePort === parsePort(env.BRIDGE_PREVIEW_PORT, sourcePort + 1)) {
-      env.BRIDGE_PREVIEW_CONNECT_URL = browseUrl;
-    }
-  }
-}
-
-function ensureCodespacesPortsArePublic(env, ports) {
-  if (!isCodespacesMode(env) || !isCodespacesAutoPublicEnabled(env)) {
-    return [];
-  }
-
-  const uniquePorts = [...new Set(ports.filter((value) => Number.isFinite(value) && value > 0))];
-  const notes = [];
-
-  if (uniquePorts.length === 0) {
-    return notes;
-  }
-
-  if (!commandExists("gh")) {
-    notes.push(
-      `Codespaces mode detected, but GitHub CLI is unavailable. Run '${formatCodespacesVisibilityCommand(
-        env,
-        uniquePorts
-      )}' or mark those forwarded ports public in the Ports panel.`
-    );
-    return notes;
-  }
-
-  const publishedPorts = [];
-  const failedPorts = [];
-  const selectionArgs = codespaceSelectionArgs(env);
-
-  for (const port of uniquePorts) {
-    let lastDetail = "";
-    for (let attempt = 1; attempt <= 8; attempt += 1) {
-      const result = spawnSync(
-        "gh",
-        ["codespace", "ports", "visibility", `${port}:public`, ...selectionArgs],
-        {
-          encoding: "utf8",
-          env: ghAuthEnv(env),
-          stdio: ["ignore", "pipe", "pipe"],
-        }
-      );
-
-      if ((result.status ?? 1) === 0) {
-        publishedPorts.push(port);
-        lastDetail = "";
-        break;
-      }
-
-      lastDetail = (result.stderr || result.stdout || "").trim();
-      if (attempt < 8) {
-        sleepSync(1_500);
-      }
-    }
-
-    if (lastDetail) {
-      failedPorts.push({ port, detail: lastDetail });
-    }
-  }
-
-  if (publishedPorts.length > 0) {
-    updateCodespacesBrowseUrls(env, publishedPorts);
-    notes.push(
-      `Codespaces forwarded ports are set to public for bridge access: ${publishedPorts.join(", ")}.`
-    );
-  }
-
-  for (const failure of failedPorts) {
-    const suffix = failure.detail ? ` (${failure.detail.split(/\r?\n/, 1)[0]})` : "";
-    notes.push(
-      `Could not set Codespaces forwarded port ${failure.port} public automatically${suffix}. Run '${formatCodespacesVisibilityCommand(
-        env,
-        [failure.port]
-      )}' or update the Ports panel manually.`
-    );
-  }
-
-  return notes;
 }
 
 function bridgePidFile(rootDir) {
@@ -653,16 +460,7 @@ function spawnAndRelay(command, args, options) {
   });
 
   if (child.pid) {
-    const bridgePort = parsePort(env.BRIDGE_PORT, 8787);
-    const previewPort = parsePort(env.BRIDGE_PREVIEW_PORT, bridgePort + 1);
-    void waitForHealth(env, child.pid, healthTimeoutMs)
-      .then(() => {
-        const notes = ensureCodespacesPortsArePublic(env, [bridgePort, previewPort]);
-        for (const note of notes) {
-          console.log(note);
-        }
-      })
-      .catch(() => {});
+    void waitForHealth(env, child.pid, healthTimeoutMs).catch(() => {});
   }
 
   child.on("exit", (code, signal) => {
@@ -679,7 +477,6 @@ async function spawnDetachedAndWait(command, args, options) {
   const logPath = bridgeLogFile(rootDir);
   const host = env.BRIDGE_HOST || "127.0.0.1";
   const port = env.BRIDGE_PORT || "8787";
-  const previewPort = parsePort(env.BRIDGE_PREVIEW_PORT, parsePort(port, 8787) + 1);
   const healthUrl = new URL(`http://${formatHostForUrl(host)}:${port}/health`);
   const existingPid = readPidFile(rootDir);
 
@@ -689,11 +486,7 @@ async function spawnDetachedAndWait(command, args, options) {
       console.log(`Logs: ${logPath}`);
       console.log("Bridge is healthy.");
       const endpoint = { host, port };
-      const notes = ensureCodespacesPortsArePublic(env, [parsePort(port, 8787), previewPort]);
       printBridgeAccessDetails(env, endpoint);
-      for (const note of notes) {
-        console.log(note);
-      }
       if (shouldShowPairingQr(env) && !printPairingQr(env, endpoint)) {
         printPairingQrUnavailableMessage(env);
       }
@@ -704,22 +497,6 @@ async function spawnDetachedAndWait(command, args, options) {
   }
 
   if (await probeHealth(healthUrl)) {
-    if (isCodespacesMode(env)) {
-      console.log(`Bridge already responding at http://${formatHostForUrl(host)}:${port}.`);
-      console.log(`Logs: ${logPath}`);
-      console.log("Bridge is healthy.");
-      const endpoint = { host, port };
-      const notes = ensureCodespacesPortsArePublic(env, [parsePort(port, 8787), previewPort]);
-      printBridgeAccessDetails(env, endpoint);
-      for (const note of notes) {
-        console.log(note);
-      }
-      if (shouldShowPairingQr(env) && !printPairingQr(env, endpoint)) {
-        printPairingQrUnavailableMessage(env);
-      }
-      return;
-    }
-
     console.error(
       `error: another bridge is already responding at http://${formatHostForUrl(host)}:${port}. Stop it first with 'clawdex stop'.`
     );
@@ -756,11 +533,7 @@ async function spawnDetachedAndWait(command, args, options) {
   try {
     const endpoint = await waitForHealth(env, child.pid, healthTimeoutMs);
     console.log("Bridge is healthy.");
-    const notes = ensureCodespacesPortsArePublic(env, [parsePort(endpoint.port, 8787), previewPort]);
     printBridgeAccessDetails(env, endpoint);
-    for (const note of notes) {
-      console.log(note);
-    }
 
     if (shouldShowPairingQr(env) && !printPairingQr(env, endpoint)) {
       printPairingQrUnavailableMessage(env);
@@ -795,9 +568,7 @@ function buildBridgeFromSource(packageDir, env, profile) {
 }
 
 function resolveLaunch(workspaceDir, packageDir, env, { devMode, forceSourceBuild }) {
-  const defaultHealthTimeoutMs = isCodespacesMode(env)
-    ? CODESPACES_HEALTH_TIMEOUT_MS
-    : DEFAULT_HEALTH_TIMEOUT_MS;
+  const defaultHealthTimeoutMs = DEFAULT_HEALTH_TIMEOUT_MS;
 
   if (devMode) {
     if (!commandExists("cargo")) {

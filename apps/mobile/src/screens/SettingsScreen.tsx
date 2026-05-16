@@ -43,7 +43,7 @@ import type {
 } from '../api/types';
 import type { HostBridgeWsClient } from '../api/ws';
 import clawdexMark from '../../assets/brand/mark.png';
-import { isGitHubBridgeProfile, type BridgeProfile } from '../bridgeProfiles';
+import type { BridgeProfile } from '../bridgeProfiles';
 import { BridgeProfileManagerSheet } from '../components/bridge-profile-manager-sheet';
 import { SelectionSheet, type SelectionSheetOption } from '../components/SelectionSheet';
 import {
@@ -120,7 +120,6 @@ interface SettingsScreenProps {
   onFontPreferenceChange?: (preference: FontPreference) => void;
   onEditBridgeProfile?: () => void;
   onAddBridgeProfile?: () => void;
-  onConnectGitHubCodespaces?: () => void;
   onSwitchBridgeProfile?: (profileId: string) => void | Promise<void>;
   onRenameBridgeProfile?: (profileId: string, nextName: string) => void | Promise<void>;
   onDeleteBridgeProfile?: (profileId: string) => void | Promise<void>;
@@ -174,7 +173,6 @@ export function SettingsScreen({
   onFontPreferenceChange,
   onEditBridgeProfile,
   onAddBridgeProfile,
-  onConnectGitHubCodespaces,
   onSwitchBridgeProfile,
   onRenameBridgeProfile,
   onDeleteBridgeProfile,
@@ -352,13 +350,9 @@ export function SettingsScreen({
       null,
     [activeBridgeProfileId, bridgeProfiles]
   );
-  const activeConnectionType = activeBridgeProfile
-    ? isGitHubBridgeProfile(activeBridgeProfile)
-      ? 'GitHub Codespace'
-      : 'Private bridge'
-    : 'Connection';
+  const activeConnectionType = activeBridgeProfile ? 'Private bridge' : 'Connection';
   const shouldOpenPrivateBridgeEditor = Boolean(
-    activeBridgeProfile && !isGitHubBridgeProfile(activeBridgeProfile) && onEditBridgeProfile
+    activeBridgeProfile && onEditBridgeProfile
   );
   const connectionStatusSummary = wsConnected
     ? 'Connected'
@@ -424,7 +418,7 @@ export function SettingsScreen({
   const appearanceSummary = `${appearancePreferenceLabel} · ${darkUiPaletteLabel} · ${fontPreferenceLabel}`;
   const accountSummary = 'See sign-in status and plan';
   const usageLimitsSummary = 'View weekly usage and reset times';
-  const bridgeSummary = 'Add GitHub Codespaces or private connections';
+  const bridgeSummary = 'Add or manage private connections';
   const enginesSummary = formatEnginesSummary(
     runtimeAvailableEngines,
     cursorCredentials,
@@ -1185,20 +1179,13 @@ export function SettingsScreen({
 
   const handleConnectEngine = useCallback(
     (engine: Exclude<ChatEngine, 'codex'>) => {
-      const label = getChatEngineLabel(engine);
-      if (activeBridgeProfile && isGitHubBridgeProfile(activeBridgeProfile) && onConnectGitHubCodespaces) {
-        setEngineActionMessage(`${label} setup continues from GitHub Codespaces.`);
-        onConnectGitHubCodespaces();
-        return;
-      }
-
       const command =
         engine === 'cursor'
           ? 'clawdex init --engines codex,cursor'
           : 'clawdex init --engines codex,opencode';
       setEngineActionMessage(`Run ${command} on the bridge host, then restart the connection.`);
     },
-    [activeBridgeProfile, onConnectGitHubCodespaces]
+    []
   );
 
   const enginePickerOptions = useMemo<SelectionSheetOption[]>(
@@ -1634,15 +1621,6 @@ export function SettingsScreen({
         <Row label="Current connection" value={bridgeProfileName} />
         <Row label="Type" value={activeConnectionType} />
         <Row label="Saved connections" value={String(bridgeProfiles.length)} isLast />
-        {onConnectGitHubCodespaces ? (
-          <MenuEntry
-            icon="logo-github"
-            logo="github"
-            title="GitHub Codespaces"
-            description="View, pause, delete, or connect a Codespace."
-            onPress={onConnectGitHubCodespaces}
-          />
-        ) : null}
         {(onAddBridgeProfile || shouldOpenPrivateBridgeEditor) ? (
           <MenuEntry
             icon="hardware-chip-outline"
@@ -3059,7 +3037,7 @@ function formatRateLimitsError(error: unknown): string {
     normalized.includes('chatgptauthtokens/refresh');
 
   if (authRequired) {
-    return 'Codex is not signed in on this connection. For GitHub Codespaces, finish the Codex login step and it will persist in the Codespace.';
+    return 'Codex is not signed in on this connection. Finish Codex login on the bridge host, then reconnect.';
   }
 
   return message || 'Unable to read Codex usage limits.';

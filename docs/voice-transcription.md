@@ -21,12 +21,10 @@ The bridge resolves transcription credentials in order:
 2. `BRIDGE_CHATGPT_ACCESS_TOKEN` env var → `https://chatgpt.com/backend-api/transcribe` (no model param)
 3. Legacy ChatGPT auth tokens previously handed to Codex from the mobile app:
    - cached in bridge memory
-   - persisted in `BRIDGE_WORKDIR/.clawdex-chatgpt-auth.json`
+   - persisted in `~/.clawdex/chatgpt-auth.json`
 4. `~/.codex/auth.json` fallback:
    - `OPENAI_API_KEY` field present → same as path 1
    - `auth_mode: "chatgpt"` with `tokens.access_token` → same as path 2
-
-In GitHub Codespaces, setup writes `CODEX_HOME=$HOME/.codex` and the app starts Codex's managed ChatGPT login flow. That keeps Codex auth in the normal `auth.json` file, so bridge restarts and Codespace wakes reuse the same account without mobile token replay.
 
 ## Files
 

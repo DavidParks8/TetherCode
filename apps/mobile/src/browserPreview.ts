@@ -279,10 +279,6 @@ function getBrowserPreviewBaseUrl(
 
   try {
     const parsed = new URL(bridgeUrl.trim());
-    const codespacesBaseUrl = rewriteCodespacesForwardedUrl(parsed, previewPort);
-    if (codespacesBaseUrl) {
-      return codespacesBaseUrl;
-    }
     parsed.port = String(previewPort);
     parsed.pathname = '/';
     parsed.search = '';
@@ -291,24 +287,6 @@ function getBrowserPreviewBaseUrl(
   } catch {
     return null;
   }
-}
-
-function rewriteCodespacesForwardedUrl(parsedBridgeUrl: URL, previewPort: number): string | null {
-  if (parsedBridgeUrl.port) {
-    return null;
-  }
-
-  const match = parsedBridgeUrl.hostname.match(/^(.*)-\d+(\.app\.github\.dev)$/i);
-  if (!match) {
-    return null;
-  }
-
-  const rewritten = new URL(parsedBridgeUrl.toString());
-  rewritten.hostname = `${match[1]}-${previewPort}${match[2]}`;
-  rewritten.pathname = '/';
-  rewritten.search = '';
-  rewritten.hash = '';
-  return rewritten.toString().replace(/\/$/, '');
 }
 
 function normalizeBrowserPreviewBaseUrl(value: string | null | undefined): string | null {

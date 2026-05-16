@@ -243,16 +243,6 @@ export interface MainScreenHandle {
   startNewChat: () => void;
 }
 
-interface GitHubCodespaceRecoveryAction {
-  codespaceName: string;
-  repositoryFullName?: string | null;
-  checking: boolean;
-  waking: boolean;
-  message?: string | null;
-  onWake: () => void | Promise<void>;
-  onOpenSetup: () => void;
-}
-
 interface MainScreenProps {
   api: HostBridgeApiClient;
   ws: HostBridgeWsClient;
@@ -262,7 +252,6 @@ interface MainScreenProps {
   onOpenGit: (chat: Chat) => void;
   onOpenLocalPreview?: (targetUrl: string) => void;
   onOpenBridgeRecoveryGuide?: () => void;
-  githubCodespaceRecovery?: GitHubCodespaceRecoveryAction | null;
   defaultStartCwd?: string | null;
   defaultChatEngine?: ChatEngine | null;
   defaultEngineSettings?: EngineDefaultSettingsMap | null;
@@ -294,7 +283,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       onOpenGit,
       onOpenLocalPreview: onOpenLocalPreviewHandler,
       onOpenBridgeRecoveryGuide,
-      githubCodespaceRecovery = null,
       defaultStartCwd,
       defaultChatEngine,
       defaultEngineSettings,
@@ -7506,19 +7494,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     ]);
 
     const showBridgeRecoveryBanner = bridgeRecoveryBannerVisible && !ws.isConnected;
-    const showGitHubCodespaceRecovery = Boolean(githubCodespaceRecovery);
-    const githubCodespaceRecoveryBusy = Boolean(
-      githubCodespaceRecovery?.checking || githubCodespaceRecovery?.waking
-    );
-    const githubCodespaceRecoveryTitle =
-      githubCodespaceRecovery?.checking
-        ? 'Checking Codespace'
-        : githubCodespaceRecovery?.waking
-          ? 'Starting Codespace'
-          : 'Wake Codespace';
-    const githubCodespaceRecoveryBody = githubCodespaceRecovery
-      ? 'The active GitHub Codespace is not responding. Wake it and Clawdex will reconnect automatically.'
-      : null;
     const turnFailureDetail =
       error?.trim() ||
       (selectedChat?.status === 'error' ? selectedChat.lastError?.trim() ?? null : null) ||
@@ -7595,10 +7570,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
         return {
           tone: 'error',
-          title: showGitHubCodespaceRecovery ? 'Codespace not responding' : 'Bridge disconnected',
-          detail: showGitHubCodespaceRecovery
-            ? 'Wake the Codespace to continue.'
-            : 'Start the bridge on your computer to continue.',
+          title: 'Bridge disconnected',
+          detail: 'Start the bridge on your computer to continue.',
         } satisfies ActivityState;
       }
 
@@ -7919,67 +7892,21 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             <View style={styles.bridgeRecoveryBannerTopRow}>
               <View style={styles.bridgeRecoveryBannerIconWrap}>
                 <Ionicons
-                  name={showGitHubCodespaceRecovery ? 'cloud-outline' : 'warning-outline'}
+                  name="warning-outline"
                   size={16}
                   color={theme.colors.warning}
                 />
               </View>
               <View style={styles.bridgeRecoveryBannerCopy}>
                 <Text style={styles.bridgeRecoveryBannerTitle}>
-                  {showGitHubCodespaceRecovery ? 'Codespace not responding' : 'Bridge disconnected'}
+                  Bridge disconnected
                 </Text>
                 <Text style={styles.bridgeRecoveryBannerBody}>
-                  {githubCodespaceRecoveryBody ??
-                    'Start the bridge on your computer to continue. The app will reconnect automatically.'}
+                  Start the bridge on your computer to continue. The app will reconnect automatically.
                 </Text>
-                {githubCodespaceRecovery?.message ? (
-                  <Text style={styles.bridgeRecoveryBannerStatus}>
-                    {githubCodespaceRecovery.message}
-                  </Text>
-                ) : null}
               </View>
             </View>
-            {githubCodespaceRecovery ? (
-              <View style={styles.bridgeRecoveryBannerActions}>
-                <Pressable
-                  disabled={githubCodespaceRecoveryBusy}
-                  onPress={() => {
-                    void githubCodespaceRecovery.onWake();
-                  }}
-                  style={({ pressed }) => [
-                    styles.bridgeRecoveryBannerButton,
-                    githubCodespaceRecoveryBusy && styles.bridgeRecoveryBannerButtonDisabled,
-                    pressed &&
-                      !githubCodespaceRecoveryBusy &&
-                      styles.bridgeRecoveryBannerButtonPressed,
-                  ]}
-                >
-                  {githubCodespaceRecoveryBusy ? (
-                    <ActivityIndicator size="small" color={theme.colors.accentText} />
-                  ) : (
-                    <Ionicons
-                      name="power-outline"
-                      size={14}
-                      color={theme.colors.accentText}
-                    />
-                  )}
-                  <Text style={styles.bridgeRecoveryBannerButtonText}>
-                    {githubCodespaceRecoveryTitle}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={githubCodespaceRecovery.onOpenSetup}
-                  style={({ pressed }) => [
-                    styles.bridgeRecoveryBannerSecondaryButton,
-                    pressed && styles.bridgeRecoveryBannerSecondaryButtonPressed,
-                  ]}
-                >
-                  <Text style={styles.bridgeRecoveryBannerSecondaryButtonText}>
-                    Open setup
-                  </Text>
-                </Pressable>
-              </View>
-            ) : onOpenBridgeRecoveryGuide ? (
+            {onOpenBridgeRecoveryGuide ? (
               <Pressable
                 onPress={onOpenBridgeRecoveryGuide}
                 style={({ pressed }) => [

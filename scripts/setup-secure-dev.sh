@@ -112,51 +112,6 @@ is_non_loopback_ipv4() {
   [[ "$ip" != 127.* ]]
 }
 
-normalize_base_url() {
-  local value="$1"
-  value="$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-  if [[ -z "$value" ]]; then
-    return 1
-  fi
-
-  case "$value" in
-    http://*|https://*)
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-
-  printf '%s' "${value%/}"
-}
-
-resolve_codespaces_forwarded_url() {
-  local port="$1"
-  local override="$2"
-  local normalized_override=""
-  local codespace_name=""
-  local forwarding_domain=""
-
-  if [[ -n "$override" ]]; then
-    normalized_override="$(normalize_base_url "$override" || true)"
-    if [[ -z "$normalized_override" ]]; then
-      echo "error: invalid Codespaces URL override '$override'." >&2
-      return 1
-    fi
-    printf '%s' "$normalized_override"
-    return 0
-  fi
-
-  codespace_name="$(printf '%s' "${CODESPACE_NAME:-}" | tr -d '[:space:]')"
-  forwarding_domain="$(printf '%s' "${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}" | tr -d '[:space:]')"
-  if [[ -z "$codespace_name" ]] || [[ -z "$forwarding_domain" ]]; then
-    echo "error: GitHub Codespaces env vars are missing. Run this inside an active codespace or set BRIDGE_CONNECT_URL_OVERRIDE." >&2
-    return 1
-  fi
-
-  printf 'https://%s-%s.%s' "$codespace_name" "$port" "$forwarding_domain"
-}
-
 resolve_tailscale_ipv4() {
   local ip
   ip="$(tailscale ip -4 2>/dev/null | head -n1 | tr -d '[:space:]' || true)"
@@ -272,10 +227,10 @@ HOST_SOURCE=""
 BRIDGE_NETWORK_MODE="${BRIDGE_NETWORK_MODE:-tailscale}"
 
 case "$BRIDGE_NETWORK_MODE" in
-  tailscale|local|codespaces)
+  tailscale|local)
     ;;
   *)
-    echo "error: BRIDGE_NETWORK_MODE must be 'tailscale', 'local', or 'codespaces'." >&2
+    echo "error: BRIDGE_NETWORK_MODE must be 'tailscale' or 'local'." >&2
     exit 1
     ;;
 esac
@@ -345,9 +300,6 @@ else
     ensure_tailscale_cli
     BRIDGE_HOST="$(resolve_tailscale_ipv4)"
     HOST_SOURCE="tailscale"
-  elif [[ "$BRIDGE_NETWORK_MODE" == "codespaces" ]]; then
-    BRIDGE_HOST="127.0.0.1"
-    HOST_SOURCE="codespaces"
   else
     BRIDGE_HOST="$(resolve_local_ipv4)"
     HOST_SOURCE="local"
@@ -361,17 +313,8 @@ if [[ "$BRIDGE_PREVIEW_PORT" == "$BRIDGE_PORT" ]]; then
   exit 1
 fi
 
-if [[ "$BRIDGE_NETWORK_MODE" == "codespaces" ]]; then
-  BRIDGE_CONNECT_URL="$(
-    resolve_codespaces_forwarded_url "$BRIDGE_PORT" "${BRIDGE_CONNECT_URL_OVERRIDE:-}"
-  )"
-  BRIDGE_PREVIEW_CONNECT_URL="$(
-    resolve_codespaces_forwarded_url "$BRIDGE_PREVIEW_PORT" "${BRIDGE_PREVIEW_CONNECT_URL_OVERRIDE:-}"
-  )"
-else
-  BRIDGE_CONNECT_URL="http://$BRIDGE_HOST:$BRIDGE_PORT"
-  BRIDGE_PREVIEW_CONNECT_URL="http://$BRIDGE_HOST:$BRIDGE_PREVIEW_PORT"
-fi
+BRIDGE_CONNECT_URL="http://$BRIDGE_HOST:$BRIDGE_PORT"
+BRIDGE_PREVIEW_CONNECT_URL="http://$BRIDGE_HOST:$BRIDGE_PREVIEW_PORT"
 
 EXISTING_TOKEN=""
 if [[ -f "$SECURE_ENV_FILE" ]]; then
@@ -383,17 +326,6 @@ if [[ -z "$BRIDGE_TOKEN" ]]; then
   BRIDGE_TOKEN="$(openssl rand -hex 24)"
 fi
 
-GITHUB_CODESPACES_AUTH_ENABLED="false"
-GITHUB_CODESPACES_NAME=""
-CODEX_HOME_ENV_BLOCK=""
-if [[ "$BRIDGE_NETWORK_MODE" == "codespaces" ]]; then
-  GITHUB_CODESPACES_AUTH_ENABLED="true"
-  GITHUB_CODESPACES_NAME="$(printf '%s' "${CODESPACE_NAME:-}" | tr -d '[:space:]')"
-  CODEX_AUTH_HOME="${CODEX_HOME:-$HOME/.codex}"
-  mkdir -p "$CODEX_AUTH_HOME"
-  CODEX_HOME_ENV_BLOCK="CODEX_HOME=$CODEX_AUTH_HOME"
-fi
-
 cat > "$SECURE_ENV_FILE" <<EOT
 BRIDGE_NETWORK_MODE=$BRIDGE_NETWORK_MODE
 BRIDGE_HOST=$BRIDGE_HOST
@@ -403,12 +335,8 @@ BRIDGE_CONNECT_URL=$BRIDGE_CONNECT_URL
 BRIDGE_PREVIEW_CONNECT_URL=$BRIDGE_PREVIEW_CONNECT_URL
 BRIDGE_AUTH_TOKEN=$BRIDGE_TOKEN
 BRIDGE_ALLOW_QUERY_TOKEN_AUTH=true
-BRIDGE_GITHUB_CODESPACES_AUTH=$GITHUB_CODESPACES_AUTH_ENABLED
-BRIDGE_GITHUB_CODESPACE_NAME=$GITHUB_CODESPACES_NAME
-BRIDGE_GITHUB_API_URL=https://api.github.com
 BRIDGE_ACTIVE_ENGINE=$BRIDGE_ACTIVE_ENGINE
 BRIDGE_ENABLED_ENGINES=$BRIDGE_ENABLED_ENGINES
-$CODEX_HOME_ENV_BLOCK
 CODEX_CLI_BIN=codex
 OPENCODE_CLI_BIN=$OPENCODE_CLI_BIN
 CURSOR_APP_SERVER_BIN=$CURSOR_APP_SERVER_BIN
@@ -433,9 +361,6 @@ echo "Bridge network mode: $BRIDGE_NETWORK_MODE"
 echo "Bridge host: $BRIDGE_HOST ($HOST_SOURCE)"
 echo "Bridge port: $BRIDGE_PORT"
 echo "Bridge connect URL: $BRIDGE_CONNECT_URL"
-if [[ "$GITHUB_CODESPACES_AUTH_ENABLED" == "true" ]]; then
-  echo "GitHub Codespaces auth: enabled"
-fi
 echo "Harnesses: $BRIDGE_ENABLED_ENGINES"
 echo "Token source: $SECURE_ENV_FILE"
 if has_local_mobile_workspace; then

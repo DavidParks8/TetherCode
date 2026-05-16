@@ -32,24 +32,6 @@ const revenueCatTestStoreApiKey =
   process.env.EXPO_PUBLIC_REVENUECAT_TEST_STORE_API_KEY?.trim() || null;
 const revenueCatTipsOfferingId =
   process.env.EXPO_PUBLIC_REVENUECAT_TIPS_OFFERING_ID?.trim() || null;
-const githubClientId =
-  process.env.EXPO_PUBLIC_GITHUB_APP_CLIENT_ID?.trim() ||
-  process.env.EXPO_PUBLIC_GITHUB_CLIENT_ID?.trim() ||
-  null;
-const githubAppSlug = process.env.EXPO_PUBLIC_GITHUB_APP_SLUG?.trim() || null;
-const githubAppAuthBaseUrl = process.env.EXPO_PUBLIC_GITHUB_APP_AUTH_BASE_URL?.trim() || null;
-const githubCodespacesPortForwardingDomain =
-  process.env.EXPO_PUBLIC_GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN?.trim() ||
-  'app.github.dev';
-const githubCodespacesPreferredRepositoryName =
-  process.env.EXPO_PUBLIC_GITHUB_CODESPACES_REPO_NAME?.trim() || 'clawdex-codespace';
-const githubCodespacesSourceRepositoryOwner =
-  process.env.EXPO_PUBLIC_GITHUB_CODESPACES_SOURCE_OWNER?.trim() || null;
-const githubCodespacesRepositoryRef =
-  process.env.EXPO_PUBLIC_GITHUB_CODESPACES_REPO_REF?.trim() || null;
-const githubCodespacesDevcontainerPath =
-  process.env.EXPO_PUBLIC_GITHUB_CODESPACES_DEVCONTAINER_PATH?.trim() ||
-  '.devcontainer/devcontainer.json';
 const externalStatusFullSyncDebounceMs = parseNonNegativeIntEnv(
   process.env.EXPO_PUBLIC_EXTERNAL_STATUS_FULL_SYNC_DEBOUNCE_MS,
   450
@@ -73,14 +55,6 @@ export const env = {
   revenueCatAndroidApiKey,
   revenueCatTestStoreApiKey,
   revenueCatTipsOfferingId,
-  githubClientId,
-  githubAppSlug,
-  githubAppAuthBaseUrl,
-  githubCodespacesPortForwardingDomain,
-  githubCodespacesPreferredRepositoryName,
-  githubCodespacesSourceRepositoryOwner,
-  githubCodespacesRepositoryRef,
-  githubCodespacesDevcontainerPath,
 };
 
 function parseNonNegativeIntEnv(value: string | undefined, fallback: number): number {

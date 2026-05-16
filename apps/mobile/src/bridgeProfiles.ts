@@ -17,18 +17,9 @@ export interface BridgeProfile {
   name: string;
   bridgeUrl: string;
   bridgeToken: string;
-  authMode: BridgeProfileAuthMode;
-  githubUserLogin: string | null;
-  githubCodespaceName: string | null;
-  githubRepositoryFullName: string | null;
-  githubRefreshToken: string | null;
-  githubAccessTokenExpiresAt: string | null;
-  githubRefreshTokenExpiresAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
-
-export type BridgeProfileAuthMode = 'bridgeToken' | 'githubApp';
 
 export interface BridgeProfileStore {
   activeProfileId: string | null;
@@ -40,13 +31,6 @@ export interface BridgeProfileDraft {
   name?: string | null;
   bridgeUrl: string;
   bridgeToken: string;
-  authMode?: BridgeProfileAuthMode | null;
-  githubUserLogin?: string | null;
-  githubCodespaceName?: string | null;
-  githubRepositoryFullName?: string | null;
-  githubRefreshToken?: string | null;
-  githubAccessTokenExpiresAt?: string | null;
-  githubRefreshTokenExpiresAt?: string | null;
   activate?: boolean;
 }
 
@@ -132,29 +116,6 @@ export function upsertBridgeProfile(
     name: resolvedName,
     bridgeUrl: normalizedUrl,
     bridgeToken: normalizedToken,
-    authMode: normalizeBridgeProfileAuthMode(draft.authMode) ?? existing?.authMode ?? 'bridgeToken',
-    githubUserLogin:
-      normalizeOptionalMetadataValue(draft.githubUserLogin) ?? existing?.githubUserLogin ?? null,
-    githubCodespaceName:
-      normalizeOptionalMetadataValue(draft.githubCodespaceName) ??
-      existing?.githubCodespaceName ??
-      null,
-    githubRepositoryFullName:
-      normalizeOptionalMetadataValue(draft.githubRepositoryFullName) ??
-      existing?.githubRepositoryFullName ??
-      null,
-    githubRefreshToken:
-      normalizeOptionalMetadataValue(draft.githubRefreshToken) ??
-      existing?.githubRefreshToken ??
-      null,
-    githubAccessTokenExpiresAt:
-      normalizeOptionalTimestamp(draft.githubAccessTokenExpiresAt) ??
-      existing?.githubAccessTokenExpiresAt ??
-      null,
-    githubRefreshTokenExpiresAt:
-      normalizeOptionalTimestamp(draft.githubRefreshTokenExpiresAt) ??
-      existing?.githubRefreshTokenExpiresAt ??
-      null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -294,13 +255,6 @@ function normalizeBridgeProfile(value: unknown): BridgeProfile | null {
     name?: unknown;
     bridgeUrl?: unknown;
     bridgeToken?: unknown;
-    authMode?: unknown;
-    githubUserLogin?: unknown;
-    githubCodespaceName?: unknown;
-    githubRepositoryFullName?: unknown;
-    githubRefreshToken?: unknown;
-    githubAccessTokenExpiresAt?: unknown;
-    githubRefreshTokenExpiresAt?: unknown;
     createdAt?: unknown;
     updatedAt?: unknown;
   };
@@ -310,11 +264,7 @@ function normalizeBridgeProfile(value: unknown): BridgeProfile | null {
       ? normalizeBridgeUrlInput(record.bridgeUrl)
       : null;
   const bridgeToken = normalizeBridgeToken(record.bridgeToken);
-  const authMode =
-    typeof record.authMode === 'undefined'
-      ? 'bridgeToken'
-      : normalizeBridgeProfileAuthMode(record.authMode);
-  if (!id || !bridgeUrl || !bridgeToken || !authMode) {
+  if (!id || !bridgeUrl || !bridgeToken) {
     return null;
   }
 
@@ -323,47 +273,9 @@ function normalizeBridgeProfile(value: unknown): BridgeProfile | null {
     name: deriveBridgeProfileName(normalizeNonEmptyString(record.name), bridgeUrl),
     bridgeUrl,
     bridgeToken,
-    authMode,
-    githubUserLogin: normalizeOptionalMetadataValue(record.githubUserLogin),
-    githubCodespaceName: normalizeOptionalMetadataValue(record.githubCodespaceName),
-    githubRepositoryFullName: normalizeOptionalMetadataValue(record.githubRepositoryFullName),
-    githubRefreshToken: normalizeOptionalMetadataValue(record.githubRefreshToken),
-    githubAccessTokenExpiresAt: normalizeOptionalTimestamp(record.githubAccessTokenExpiresAt),
-    githubRefreshTokenExpiresAt: normalizeOptionalTimestamp(record.githubRefreshTokenExpiresAt),
     createdAt: normalizeTimestamp(record.createdAt),
     updatedAt: normalizeTimestamp(record.updatedAt),
   };
-}
-
-function normalizeBridgeProfileAuthMode(value: unknown): BridgeProfileAuthMode | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim();
-  if (normalized === 'bridgeToken' || normalized === 'githubApp') {
-    return normalized;
-  }
-
-  return null;
-}
-
-export function isGitHubBridgeAuthMode(value: unknown): value is Extract<
-  BridgeProfileAuthMode,
-  'githubApp'
-> {
-  const normalized = normalizeBridgeProfileAuthMode(value);
-  return normalized === 'githubApp';
-}
-
-export function isGitHubBridgeProfile(
-  profile: Pick<BridgeProfile, 'authMode'> | null | undefined
-): boolean {
-  return isGitHubBridgeAuthMode(profile?.authMode);
-}
-
-function normalizeOptionalMetadataValue(value: unknown): string | null {
-  return normalizeNonEmptyString(value);
 }
 
 function normalizeBridgeToken(value: unknown): string | null {
@@ -383,10 +295,6 @@ function normalizeNonEmptyString(value: unknown): string | null {
 function normalizeTimestamp(value: unknown): string {
   const normalized = normalizeNonEmptyString(value);
   return normalized ?? new Date().toISOString();
-}
-
-function normalizeOptionalTimestamp(value: unknown): string | null {
-  return normalizeNonEmptyString(value);
 }
 
 function createBridgeProfileId(): string {

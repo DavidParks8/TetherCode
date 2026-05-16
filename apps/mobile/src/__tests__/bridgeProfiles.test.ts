@@ -37,33 +37,6 @@ describe('bridgeProfiles', () => {
     expect(updated.profiles).toHaveLength(1);
     expect(updated.profiles[0]?.name).toBe('Office Mac Mini');
     expect(updated.profiles[0]?.bridgeToken).toBe('secret-two');
-    expect(updated.profiles[0]?.authMode).toBe('bridgeToken');
-  });
-
-  it('stores GitHub auth metadata for Codespaces profiles', () => {
-    const created = upsertBridgeProfile(createEmptyBridgeProfileStore(), {
-      name: 'clawdex-codespace · octocat-codespace',
-      bridgeUrl: 'https://octocat-codespace-8787.app.github.dev',
-      bridgeToken: 'ghu_token',
-      authMode: 'githubApp',
-      githubUserLogin: 'octocat',
-      githubCodespaceName: 'octocat-codespace',
-      githubRepositoryFullName: 'octocat/clawdex-codespace',
-      githubRefreshToken: 'ghr_refresh',
-      githubAccessTokenExpiresAt: '2026-04-16T12:00:00.000Z',
-      githubRefreshTokenExpiresAt: '2026-10-16T12:00:00.000Z',
-      activate: true,
-    }).store;
-
-    expect(created.profiles[0]?.authMode).toBe('githubApp');
-    expect(created.profiles[0]?.githubUserLogin).toBe('octocat');
-    expect(created.profiles[0]?.githubCodespaceName).toBe('octocat-codespace');
-    expect(created.profiles[0]?.githubRepositoryFullName).toBe('octocat/clawdex-codespace');
-    expect(created.profiles[0]?.githubRefreshToken).toBe('ghr_refresh');
-    expect(created.profiles[0]?.githubAccessTokenExpiresAt).toBe('2026-04-16T12:00:00.000Z');
-    expect(created.profiles[0]?.githubRefreshTokenExpiresAt).toBe(
-      '2026-10-16T12:00:00.000Z'
-    );
   });
 
   it('parses stores and drops invalid active ids', () => {
@@ -85,15 +58,15 @@ describe('bridgeProfiles', () => {
     expect(parsed.profiles).toHaveLength(1);
   });
 
-  it('drops profiles with unsupported auth modes instead of reclassifying them', () => {
+  it('parses legacy auth fields without exposing them on profiles', () => {
     const parsed = parseBridgeProfileStore(
       JSON.stringify({
         activeProfileId: 'profile-1',
         profiles: [
           {
             id: 'profile-1',
-            name: 'Old GitHub flow',
-            bridgeUrl: 'https://octocat-codespace-8787.app.github.dev',
+            name: 'Legacy profile',
+            bridgeUrl: 'http://10.0.0.1:8787',
             bridgeToken: 'gho_old',
             authMode: 'githubOAuth',
           },
@@ -101,8 +74,9 @@ describe('bridgeProfiles', () => {
       })
     );
 
-    expect(parsed.activeProfileId).toBeNull();
-    expect(parsed.profiles).toHaveLength(0);
+    expect(parsed.activeProfileId).toBe('profile-1');
+    expect(parsed.profiles).toHaveLength(1);
+    expect(parsed.profiles[0]).not.toHaveProperty('authMode');
   });
 
   it('changes the active profile without altering saved entries', () => {
@@ -320,13 +294,6 @@ describe('bridgeProfiles storage', () => {
           name: 'Blocked Web Bridge',
           bridgeUrl: 'http://127.0.0.1:8787',
           bridgeToken: 'token-web',
-          authMode: 'bridgeToken' as const,
-          githubUserLogin: null,
-          githubCodespaceName: null,
-          githubRepositoryFullName: null,
-          githubRefreshToken: null,
-          githubAccessTokenExpiresAt: null,
-          githubRefreshTokenExpiresAt: null,
           createdAt: '2026-04-07T00:00:00.000Z',
           updatedAt: '2026-04-07T00:00:00.000Z',
         },

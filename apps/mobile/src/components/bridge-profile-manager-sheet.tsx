@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { isGitHubBridgeProfile, type BridgeProfile } from '../bridgeProfiles';
+import type { BridgeProfile } from '../bridgeProfiles';
 import { useAppTheme, type AppTheme } from '../theme';
 
 interface BridgeProfileManagerSheetProps {
@@ -195,15 +195,8 @@ export function BridgeProfileManagerSheet({
                             </View>
                             <View style={styles.profileMetaRow}>
                               <View style={styles.metaBadge}>
-                                <Text style={styles.metaBadgeText}>
-                                  {isGitHubBridgeProfile(profile)
-                                    ? 'GitHub Codespace'
-                                    : 'Private connection'}
-                                </Text>
+                                <Text style={styles.metaBadgeText}>Private connection</Text>
                               </View>
-                              {profile.githubUserLogin ? (
-                                <Text style={styles.metaText}>@{profile.githubUserLogin}</Text>
-                              ) : null}
                             </View>
                             <Text selectable style={styles.profileUrl} numberOfLines={2}>
                               {profile.bridgeUrl}
@@ -358,7 +351,7 @@ export function BridgeProfileManagerSheet({
                   <View style={styles.emptyState}>
                     <Text style={styles.emptyStateTitle}>No saved connections</Text>
                     <Text style={styles.emptyStateBody}>
-                      Add a private connection or connect a GitHub Codespace to create one.
+                      Add a private connection to create one.
                     </Text>
                   </View>
                 )}

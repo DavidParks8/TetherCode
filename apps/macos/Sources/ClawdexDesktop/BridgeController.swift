@@ -539,6 +539,7 @@ enum BridgeBinaryResolver {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+            .deletingLastPathComponent()
         let runtimeTarget = RuntimeTarget.current
         candidates.append(
             repoRoot

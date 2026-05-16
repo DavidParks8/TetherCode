@@ -60,7 +60,7 @@ const REQUEST_USER_INPUT_METHOD: &str = "item/tool/requestUserInput";
 const REQUEST_USER_INPUT_METHOD_ALT: &str = "tool/requestUserInput";
 const DYNAMIC_TOOL_CALL_METHOD: &str = "item/tool/call";
 const ACCOUNT_CHATGPT_TOKENS_REFRESH_METHOD: &str = "account/chatgptAuthTokens/refresh";
-const BRIDGE_CHATGPT_AUTH_CACHE_FILE_NAME: &str = ".clawdex-chatgpt-auth.json";
+const BRIDGE_CHATGPT_AUTH_CACHE_FILE_NAME: &str = "chatgpt-auth.json";
 const MOBILE_ATTACHMENTS_DIR: &str = ".clawdex-mobile-attachments";
 const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 const DEFAULT_MAX_VOICE_TRANSCRIPTION_BYTES: usize = 100 * 1024 * 1024;
@@ -94,22 +94,13 @@ const BROWSER_PREVIEW_MAX_SESSIONS: usize = 12;
 const BROWSER_PREVIEW_HTTP_BODY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 const BROWSER_PREVIEW_HTML_REWRITE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 const BROWSER_PREVIEW_DISCOVERY_HTTP_TIMEOUT: Duration = Duration::from_millis(500);
-const GITHUB_CODESPACES_AUTH_CACHE_TTL: Duration = Duration::from_secs(60 * 5);
-const GITHUB_CODESPACES_ACTIVE_TURN_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60 * 5);
-const GITHUB_CODESPACES_ACTIVE_TURN_KEEPALIVE_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 6);
-const GITHUB_CODESPACES_API_VERSION: &str = "2022-11-28";
+const GITHUB_API_VERSION: &str = "2022-11-28";
 const GITHUB_API_URL: &str = "https://api.github.com";
 const GITHUB_HOST: &str = "github.com";
 const GITHUB_CREDENTIALS_DIR_NAME: &str = ".clawdex";
 const GITHUB_CREDENTIALS_FILE_NAME: &str = "github-credentials";
 const GITHUB_GIT_CONFIG_FILE_NAME: &str = "github-git-auth.gitconfig";
 const CURSOR_API_BASE_URL: &str = "https://api.cursor.com";
-
-#[derive(Debug, Clone)]
-struct GitHubCodespacesAuthConfig {
-    api_url: String,
-    codespace_name: String,
-}
 
 #[derive(Clone)]
 struct BridgeConfig {
@@ -132,7 +123,6 @@ struct BridgeConfig {
     auth_enabled: bool,
     allow_insecure_no_auth: bool,
     allow_query_token_auth: bool,
-    github_codespaces_auth: Option<GitHubCodespacesAuthConfig>,
     allow_outside_root_cwd: bool,
     disable_terminal_exec: bool,
     terminal_allowed_commands: HashSet<String>,
@@ -188,7 +178,6 @@ impl BridgeConfig {
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
-        let github_codespaces_auth = parse_github_codespaces_auth_config()?;
         let opencode_server_username = env::var("BRIDGE_OPENCODE_SERVER_USERNAME")
             .or_else(|_| env::var("OPENCODE_SERVER_USERNAME"))
             .unwrap_or_else(|_| "opencode".to_string())
@@ -202,14 +191,14 @@ impl BridgeConfig {
             .or_else(|| auth_token.clone());
 
         let allow_insecure_no_auth = parse_bool_env("BRIDGE_ALLOW_INSECURE_NO_AUTH");
-        if auth_token.is_none() && github_codespaces_auth.is_none() && !allow_insecure_no_auth {
+        if auth_token.is_none() && !allow_insecure_no_auth {
             return Err(
-                "BRIDGE_AUTH_TOKEN is required unless GitHub Codespaces auth is enabled. Set BRIDGE_ALLOW_INSECURE_NO_AUTH=true only for local development."
+                "BRIDGE_AUTH_TOKEN is required. Set BRIDGE_ALLOW_INSECURE_NO_AUTH=true only for local development."
                     .to_string(),
             );
         }
 
-        let auth_enabled = auth_token.is_some() || github_codespaces_auth.is_some();
+        let auth_enabled = auth_token.is_some();
         let allow_query_token_auth = parse_bool_env("BRIDGE_ALLOW_QUERY_TOKEN_AUTH");
         let allow_outside_root_cwd =
             parse_bool_env_with_default("BRIDGE_ALLOW_OUTSIDE_ROOT_CWD", true);
@@ -241,7 +230,6 @@ impl BridgeConfig {
             auth_enabled,
             allow_insecure_no_auth,
             allow_query_token_auth,
-            github_codespaces_auth,
             allow_outside_root_cwd,
             disable_terminal_exec,
             terminal_allowed_commands,
@@ -277,35 +265,6 @@ impl BridgeConfig {
     }
 }
 
-fn parse_github_codespaces_auth_config() -> Result<Option<GitHubCodespacesAuthConfig>, String> {
-    if !parse_bool_env("BRIDGE_GITHUB_CODESPACES_AUTH") {
-        return Ok(None);
-    }
-
-    let codespace_name = env::var("BRIDGE_GITHUB_CODESPACE_NAME")
-        .or_else(|_| env::var("CODESPACE_NAME"))
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            "BRIDGE_GITHUB_CODESPACES_AUTH=true requires BRIDGE_GITHUB_CODESPACE_NAME or CODESPACE_NAME."
-                .to_string()
-        })?;
-    let api_url = env::var("BRIDGE_GITHUB_API_URL")
-        .unwrap_or_else(|_| "https://api.github.com".to_string())
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    if api_url.is_empty() {
-        return Err("BRIDGE_GITHUB_API_URL must not be empty.".to_string());
-    }
-
-    Ok(Some(GitHubCodespacesAuthConfig {
-        api_url,
-        codespace_name,
-    }))
-}
-
 fn extract_bearer_token<'a>(headers: &'a HeaderMap) -> Option<&'a str> {
     let raw = headers.get("authorization")?.to_str().ok()?;
     let mut parts = raw.trim().split_whitespace();
@@ -319,82 +278,6 @@ fn extract_bearer_token<'a>(headers: &'a HeaderMap) -> Option<&'a str> {
         return None;
     }
     Some(trimmed)
-}
-
-fn hash_token_for_cache(token: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    token.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn prune_expired_auth_cache_entries(cache: &mut HashMap<u64, Instant>) {
-    let now = Instant::now();
-    cache.retain(|_, expires_at| *expires_at > now);
-}
-
-struct GitHubCodespacesAuthService {
-    config: GitHubCodespacesAuthConfig,
-    http: HttpClient,
-    cache: Mutex<HashMap<u64, Instant>>,
-}
-
-impl GitHubCodespacesAuthService {
-    fn new(config: GitHubCodespacesAuthConfig) -> Result<Self, String> {
-        let http = HttpClient::builder()
-            .user_agent("clawdex-rust-bridge")
-            .build()
-            .map_err(|error| format!("failed to build GitHub auth client: {error}"))?;
-
-        Ok(Self {
-            config,
-            http,
-            cache: Mutex::new(HashMap::new()),
-        })
-    }
-
-    async fn is_authorized(&self, token: &str) -> bool {
-        let trimmed = token.trim();
-        if trimmed.is_empty() {
-            return false;
-        }
-
-        let cache_key = hash_token_for_cache(trimmed);
-        {
-            let mut cache = self.cache.lock().await;
-            prune_expired_auth_cache_entries(&mut cache);
-            if let Some(expires_at) = cache.get(&cache_key) {
-                if *expires_at > Instant::now() {
-                    return true;
-                }
-            }
-        }
-
-        let url = format!(
-            "{}/user/codespaces/{}",
-            self.config.api_url, self.config.codespace_name
-        );
-        let response = match self
-            .http
-            .get(url)
-            .header("accept", "application/vnd.github+json")
-            .header("x-github-api-version", GITHUB_CODESPACES_API_VERSION)
-            .bearer_auth(trimmed)
-            .send()
-            .await
-        {
-            Ok(response) => response,
-            Err(_) => return false,
-        };
-
-        if !response.status().is_success() {
-            return false;
-        }
-
-        let mut cache = self.cache.lock().await;
-        prune_expired_auth_cache_entries(&mut cache);
-        cache.insert(cache_key, Instant::now() + GITHUB_CODESPACES_AUTH_CACHE_TTL);
-        true
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -423,7 +306,7 @@ async fn install_github_git_auth(
     let mut login = None;
     let mut scopes = Vec::new();
     if let Some(first_grant) = resolved_grants.first() {
-        if let Ok(viewer) = fetch_github_viewer(state, &first_grant.access_token).await {
+        if let Ok(viewer) = fetch_github_viewer(&first_grant.access_token).await {
             if !github_token_can_be_used_for_git_auth(&viewer.scopes) {
                 return Err(BridgeError::forbidden(
                     "github_repo_scope_required",
@@ -488,21 +371,12 @@ fn resolve_github_auth_grants(
     Ok(grants)
 }
 
-async fn fetch_github_viewer(
-    state: &Arc<AppState>,
-    access_token: &str,
-) -> Result<GitHubViewer, BridgeError> {
+async fn fetch_github_viewer(access_token: &str) -> Result<GitHubViewer, BridgeError> {
     let trimmed = access_token.trim();
     if trimmed.is_empty() {
         return Err(BridgeError::invalid_params("accessToken must not be empty"));
     }
 
-    let api_url = state
-        .config
-        .github_codespaces_auth
-        .as_ref()
-        .map(|config| config.api_url.as_str())
-        .unwrap_or(GITHUB_API_URL);
     let http = HttpClient::builder()
         .user_agent("clawdex-rust-bridge")
         .build()
@@ -510,9 +384,9 @@ async fn fetch_github_viewer(
             BridgeError::server(&format!("failed to build GitHub auth client: {error}"))
         })?;
     let response = http
-        .get(format!("{api_url}/user"))
+        .get(format!("{GITHUB_API_URL}/user"))
         .header("accept", "application/vnd.github+json")
-        .header("x-github-api-version", GITHUB_CODESPACES_API_VERSION)
+        .header("x-github-api-version", GITHUB_API_VERSION)
         .bearer_auth(trimmed)
         .send()
         .await
@@ -801,7 +675,6 @@ struct AppState {
     git: Arc<GitService>,
     updater: Arc<UpdateService>,
     preview: Arc<BrowserPreviewService>,
-    github_codespaces_auth: Option<Arc<GitHubCodespacesAuthService>>,
 }
 
 #[allow(dead_code)]
@@ -856,23 +729,8 @@ impl AppState {
             return true;
         }
 
-        if self
-            .config
+        self.config
             .is_authorized_with_bridge_token(headers, query_token)
-        {
-            return true;
-        }
-
-        let Some(service) = &self.github_codespaces_auth else {
-            return false;
-        };
-        let Some(token) =
-            extract_auth_token(headers, query_token, self.config.allow_query_token_auth)
-        else {
-            return false;
-        };
-
-        service.is_authorized(token).await
     }
 }
 
@@ -894,24 +752,6 @@ fn sanitize_client_metadata(value: Option<&str>, fallback: &str, max_chars: usiz
     } else {
         sanitized
     }
-}
-
-fn extract_auth_token<'a>(
-    headers: &'a HeaderMap,
-    query_token: Option<&'a str>,
-    allow_query_token_auth: bool,
-) -> Option<&'a str> {
-    if let Some(token) = extract_bearer_token(headers) {
-        return Some(token);
-    }
-
-    if allow_query_token_auth {
-        if let Some(token) = query_token.map(str::trim).filter(|token| !token.is_empty()) {
-            return Some(token);
-        }
-    }
-
-    None
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2268,117 +2108,6 @@ impl ClientHub {
     fn latest_event_id(&self) -> u64 {
         self.next_event_id.load(Ordering::Relaxed).saturating_sub(1)
     }
-}
-
-fn spawn_github_codespaces_active_turn_keepalive(config: Arc<BridgeConfig>, hub: Arc<ClientHub>) {
-    let Some(github_auth) = config.github_codespaces_auth.clone() else {
-        return;
-    };
-
-    tokio::spawn(async move {
-        let mut notifications = hub.subscribe_notifications();
-        let mut active_threads: HashMap<String, Instant> = HashMap::new();
-        let mut ticker = tokio::time::interval(GITHUB_CODESPACES_ACTIVE_TURN_KEEPALIVE_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        loop {
-            tokio::select! {
-                _ = ticker.tick() => {
-                    prune_stale_codespaces_keepalive_threads(&mut active_threads);
-                    if !active_threads.is_empty() {
-                        emit_codespaces_active_turn_keepalive(&github_auth.codespace_name, active_threads.len());
-                    }
-                }
-                notification = notifications.recv() => {
-                    match notification {
-                        Ok(notification) => {
-                            handle_codespaces_keepalive_notification(&mut active_threads, notification);
-                            prune_stale_codespaces_keepalive_threads(&mut active_threads);
-                        }
-                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                            eprintln!("codespaces active-turn keepalive missed {skipped} bridge notification(s)");
-                        }
-                        Err(broadcast::error::RecvError::Closed) => break,
-                    }
-                }
-            }
-        }
-    });
-}
-
-fn handle_codespaces_keepalive_notification(
-    active_threads: &mut HashMap<String, Instant>,
-    notification: HubNotification,
-) {
-    match notification.method.as_str() {
-        "turn/started" => {
-            if let Some(thread_id) = read_notification_thread_id(&notification.params) {
-                let was_empty = active_threads.is_empty();
-                active_threads.insert(thread_id, Instant::now());
-                if was_empty {
-                    eprintln!("codespaces active-turn keepalive started at {}", now_iso());
-                }
-            }
-        }
-        "turn/completed" => {
-            if let Some(thread_id) = read_notification_thread_id(&notification.params) {
-                active_threads.remove(&thread_id);
-            }
-        }
-        "thread/status/changed" => {
-            let Some(thread_id) = read_notification_thread_id(&notification.params) else {
-                return;
-            };
-            let status = read_string(
-                notification
-                    .params
-                    .as_object()
-                    .and_then(|params| params.get("status")),
-            )
-            .unwrap_or_default()
-            .trim()
-            .to_lowercase();
-
-            if status == "running" {
-                active_threads.insert(thread_id, Instant::now());
-            } else if matches!(
-                status.as_str(),
-                "completed" | "failed" | "interrupted" | "idle"
-            ) {
-                active_threads.remove(&thread_id);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn read_notification_thread_id(params: &Value) -> Option<String> {
-    let params = params.as_object()?;
-    read_string(params.get("threadId"))
-        .or_else(|| read_string(params.get("thread_id")))
-        .or_else(|| {
-            params
-                .get("turn")
-                .and_then(Value::as_object)
-                .and_then(|turn| {
-                    read_string(turn.get("threadId")).or_else(|| read_string(turn.get("thread_id")))
-                })
-        })
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn prune_stale_codespaces_keepalive_threads(active_threads: &mut HashMap<String, Instant>) {
-    active_threads.retain(|_, started_at| {
-        started_at.elapsed() <= GITHUB_CODESPACES_ACTIVE_TURN_KEEPALIVE_MAX_AGE
-    });
-}
-
-fn emit_codespaces_active_turn_keepalive(codespace_name: &str, active_turn_count: usize) {
-    eprintln!(
-        "codespaces active-turn keepalive: {active_turn_count} active turn(s) in {codespace_name} at {}",
-        now_iso()
-    );
 }
 
 impl BridgeQueuedMessageEntry {
@@ -6711,15 +6440,7 @@ async fn main() {
             "query-token auth is enabled (BRIDGE_ALLOW_QUERY_TOKEN_AUTH=true); prefer Authorization headers instead"
         );
     }
-    if let Some(github_auth) = &config.github_codespaces_auth {
-        eprintln!(
-            "GitHub Codespaces auth is enabled for '{}'; bearer tokens with Codespaces access are accepted",
-            github_auth.codespace_name
-        );
-    }
-
     let hub = Arc::new(ClientHub::new());
-    spawn_github_codespaces_active_turn_keepalive(config.clone(), hub.clone());
     let backend = match RuntimeBackend::start(&config, hub.clone()).await {
         Ok(client) => client,
         Err(error) => {
@@ -6746,15 +6467,6 @@ async fn main() {
         config.preview_connect_url.clone(),
     ));
     let queue = BridgeQueueService::new(backend.clone(), hub.clone());
-    let github_codespaces_auth = match config.github_codespaces_auth.clone() {
-        Some(github_auth) => Some(Arc::new(
-            GitHubCodespacesAuthService::new(github_auth).unwrap_or_else(|error| {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }),
-        )),
-        None => None,
-    };
 
     let state = Arc::new(AppState {
         config: config.clone(),
@@ -6767,7 +6479,6 @@ async fn main() {
         git,
         updater,
         preview,
-        github_codespaces_auth,
     });
 
     let app = Router::new()
@@ -8714,8 +8425,11 @@ fn resolve_bridge_chatgpt_auth_cache_path() -> Option<PathBuf> {
         }
     }
 
-    let workdir = read_non_empty_env("BRIDGE_WORKDIR").map(PathBuf::from)?;
-    Some(workdir.join(BRIDGE_CHATGPT_AUTH_CACHE_FILE_NAME))
+    let home = read_non_empty_env("HOME").map(PathBuf::from)?;
+    Some(
+        home.join(GITHUB_CREDENTIALS_DIR_NAME)
+            .join(BRIDGE_CHATGPT_AUTH_CACHE_FILE_NAME),
+    )
 }
 
 fn load_persisted_bridge_chatgpt_auth() -> Option<BridgeChatGptAuthBundle> {
@@ -8745,9 +8459,22 @@ fn cache_bridge_chatgpt_auth(auth: BridgeChatGptAuthBundle) {
 
     if let Some(path) = resolve_bridge_chatgpt_auth_cache_path() {
         if let Ok(payload) = serde_json::to_vec_pretty(&auth) {
-            let _ = std::fs::write(path, payload);
+            let _ = write_private_bridge_chatgpt_auth_cache(&path, &payload);
         }
     }
+}
+
+fn write_private_bridge_chatgpt_auth_cache(path: &Path, payload: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+    }
+
+    std::fs::write(path, payload)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
 }
 
 fn clear_cached_bridge_chatgpt_auth() {
@@ -13880,7 +13607,6 @@ mod tests {
             auth_enabled: true,
             allow_insecure_no_auth: false,
             allow_query_token_auth: false,
-            github_codespaces_auth: None,
             allow_outside_root_cwd: false,
             disable_terminal_exec: true,
             terminal_allowed_commands: HashSet::new(),
@@ -13920,7 +13646,6 @@ mod tests {
             git,
             updater,
             preview,
-            github_codespaces_auth: None,
         })
     }
 
@@ -14917,31 +14642,6 @@ mod tests {
     }
 
     #[test]
-    fn codespaces_keepalive_tracks_active_turn_notifications() {
-        let mut active_threads = HashMap::new();
-
-        handle_codespaces_keepalive_notification(
-            &mut active_threads,
-            HubNotification {
-                event_id: 1,
-                method: "turn/started".to_string(),
-                params: json!({ "threadId": "thr_1" }),
-            },
-        );
-        assert!(active_threads.contains_key("thr_1"));
-
-        handle_codespaces_keepalive_notification(
-            &mut active_threads,
-            HubNotification {
-                event_id: 2,
-                method: "turn/completed".to_string(),
-                params: json!({ "threadId": "thr_1" }),
-            },
-        );
-        assert!(active_threads.is_empty());
-    }
-
-    #[test]
     fn parse_enabled_bridge_engines_csv_preserves_order_and_removes_duplicates() {
         let parsed =
             parse_enabled_bridge_engines_csv("opencode,cursor,codex,opencode").expect("engine csv");
@@ -15856,7 +15556,6 @@ mod tests {
             auth_enabled: true,
             allow_insecure_no_auth: false,
             allow_query_token_auth: false,
-            github_codespaces_auth: None,
             allow_outside_root_cwd: false,
             disable_terminal_exec: false,
             terminal_allowed_commands: HashSet::new(),
@@ -15893,7 +15592,6 @@ mod tests {
             auth_enabled: true,
             allow_insecure_no_auth: false,
             allow_query_token_auth: false,
-            github_codespaces_auth: None,
             allow_outside_root_cwd: false,
             disable_terminal_exec: false,
             terminal_allowed_commands: HashSet::new(),
@@ -15931,7 +15629,6 @@ mod tests {
             auth_enabled: true,
             allow_insecure_no_auth: false,
             allow_query_token_auth: false,
-            github_codespaces_auth: None,
             allow_outside_root_cwd: false,
             disable_terminal_exec: false,
             terminal_allowed_commands: HashSet::new(),
@@ -15968,7 +15665,6 @@ mod tests {
             auth_enabled: true,
             allow_insecure_no_auth: false,
             allow_query_token_auth: false,
-            github_codespaces_auth: None,
             allow_outside_root_cwd: false,
             disable_terminal_exec: false,
             terminal_allowed_commands: HashSet::new(),
@@ -16518,11 +16214,11 @@ mod tests {
 
     #[test]
     fn github_oauth_scope_header_parsing_is_trimmed_and_lowercased() {
-        let scopes = parse_github_oauth_scopes(Some("codespace, repo, Read:User , public_repo"));
+        let scopes = parse_github_oauth_scopes(Some("workflow, repo, Read:User , public_repo"));
         assert_eq!(
             scopes,
             vec![
-                "codespace".to_string(),
+                "workflow".to_string(),
                 "repo".to_string(),
                 "read:user".to_string(),
                 "public_repo".to_string()
@@ -16537,7 +16233,7 @@ mod tests {
             &["public_repo".to_string()]
         ));
         assert!(!github_scopes_allow_repo_access(&[
-            "codespace".to_string(),
+            "workflow".to_string(),
             "read:user".to_string()
         ]));
     }
@@ -16547,7 +16243,7 @@ mod tests {
         assert!(github_token_can_be_used_for_git_auth(&[]));
         assert!(github_token_can_be_used_for_git_auth(&["repo".to_string()]));
         assert!(!github_token_can_be_used_for_git_auth(&[
-            "codespace".to_string(),
+            "workflow".to_string(),
             "read:user".to_string()
         ]));
     }

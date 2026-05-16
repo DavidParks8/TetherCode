@@ -81,12 +81,14 @@ describe('HostBridgeWsClient', () => {
     });
     client.connect();
 
-    if (Platform.OS === 'web') {
+    if (Platform.OS === 'web' || Platform.OS === 'android') {
       expect(global.WebSocket).toHaveBeenCalledWith('ws://localhost:8787/rpc?token=token-xyz');
       return;
     }
 
-    expect(global.WebSocket).toHaveBeenCalledWith('ws://localhost:8787/rpc?token=token-xyz');
+    expect(global.WebSocket).toHaveBeenCalledWith('ws://localhost:8787/rpc', undefined, {
+      headers: { Authorization: 'Bearer token-xyz' },
+    });
   });
 
   it('onEvent emits rpc notifications', () => {

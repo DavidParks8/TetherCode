@@ -323,10 +323,11 @@ export class HostBridgeWsClient {
       await new Promise<void>((resolve, reject) => {
         const WebSocketCtor = globalThis.WebSocket as unknown as ReactNativeWebSocketConstructor;
         const socketUrl = this.socketUrl();
+        const shouldUseQueryTokenAuth = this.shouldUseQueryTokenAuth();
         const shouldUseHeaderAuth =
           Boolean(this.authToken) &&
           Platform.OS !== 'web' &&
-          !this.allowQueryTokenAuth;
+          !shouldUseQueryTokenAuth;
         const socket =
           shouldUseHeaderAuth
             ? new WebSocketCtor(socketUrl, undefined, {
@@ -678,12 +679,20 @@ export class HostBridgeWsClient {
       : this.baseUrl.replace('http://', 'ws://');
     const base = `${wsBase}/rpc`;
 
-    if (!this.authToken || !this.allowQueryTokenAuth) {
+    if (!this.authToken || !this.shouldUseQueryTokenAuth()) {
       return base;
     }
 
     const separator = base.includes('?') ? '&' : '?';
     return `${base}${separator}token=${encodeURIComponent(this.authToken)}`;
+  }
+
+  private shouldUseQueryTokenAuth(): boolean {
+    return (
+      Boolean(this.authToken) &&
+      this.allowQueryTokenAuth &&
+      (Platform.OS === 'android' || Platform.OS === 'web')
+    );
   }
 }
 

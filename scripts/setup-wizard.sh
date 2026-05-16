@@ -1129,11 +1129,7 @@ choose_config_action() {
 }
 
 choose_bridge_network_mode() {
-  if [[ "${CODESPACES:-}" == "true" ]]; then
-    menu_select "Bridge network mode" "GitHub Codespaces" "Local (LAN)" "Tailscale"
-  else
-    menu_select "Bridge network mode" "Local (LAN)" "Tailscale" "GitHub Codespaces"
-  fi
+  menu_select "Bridge network mode" "Local (LAN)" "Tailscale"
   case "$MENU_RESULT" in
     "Local (LAN)")
       NETWORK_MODE="local"
@@ -1142,10 +1138,6 @@ choose_bridge_network_mode() {
     "Tailscale")
       NETWORK_MODE="tailscale"
       info "Tailscale mode selected."
-      ;;
-    "GitHub Codespaces")
-      NETWORK_MODE="codespaces"
-      info "GitHub Codespaces mode selected."
       ;;
     *)
       abort_wizard "Unexpected bridge network mode."
@@ -1196,12 +1188,6 @@ infer_network_mode_from_host() {
 
 infer_network_mode() {
   local host="$1"
-  local connect_url="$2"
-  connect_url="$(printf '%s' "$connect_url" | tr -d '[:space:]')"
-  if [[ "$connect_url" == https://*.app.github.dev* ]]; then
-    printf '%s' "codespaces"
-    return 0
-  fi
   infer_network_mode_from_host "$host"
 }
 
@@ -1641,16 +1627,6 @@ Steps:
 - Scan the bridge token QR from the bridge terminal."
 }
 
-print_phone_codespaces_note() {
-  print_note_box "Phone setup (GitHub Codespaces)" "Use the forwarded HTTPS bridge URL from this codespace.
-
-Steps:
-- Keep the codespace running while using Clawdex.
-- The bridge startup script will try to make bridge ports public automatically on each start.
-- Pair in the mobile app with the shown HTTPS bridge URL and bridge token.
-- If pairing fails after a codespace restart, rerun the bridge start command or set the bridge + preview forwarded ports public again with 'gh codespace ports visibility ...'."
-}
-
 confirm_phone_local_quickstart() {
   local note_shown="false"
 
@@ -1721,34 +1697,6 @@ confirm_phone_local_ready() {
   confirm_phone_local_manual
 }
 
-confirm_phone_codespaces_ready() {
-  print_phone_codespaces_note
-  if [[ "$FLOW" == "quickstart" ]]; then
-    if ! confirm_prompt "Will you pair from the forwarded HTTPS bridge URL shown after startup?" "Y"; then
-      abort_wizard "Use the forwarded GitHub Codespaces bridge URL, then rerun: npm run setup:wizard"
-    fi
-    return 0
-  fi
-
-  menu_select "Phone Codespaces status" \
-    "Ready to pair from forwarded URL" \
-    "Show instructions again" \
-    "Abort"
-
-  case "$MENU_RESULT" in
-    "Ready to pair from forwarded URL")
-      return 0
-      ;;
-    "Show instructions again")
-      confirm_phone_codespaces_ready
-      return 0
-      ;;
-    *)
-      abort_wizard "Use the forwarded GitHub Codespaces bridge URL, then rerun: npm run setup:wizard"
-      ;;
-  esac
-}
-
 confirm_phone_network_ready() {
   case "$NETWORK_MODE" in
     tailscale)
@@ -1756,9 +1704,6 @@ confirm_phone_network_ready() {
       ;;
     local)
       confirm_phone_local_ready
-      ;;
-    codespaces)
-      confirm_phone_codespaces_ready
       ;;
     *)
       abort_wizard "Unknown network mode '$NETWORK_MODE'."
@@ -1846,14 +1791,6 @@ if [[ "$CONFIG_ACTION" != "keep" ]]; then
       BRIDGE_HOST="$(resolve_local_ip)"
       ok "Local LAN IPv4 detected: $BRIDGE_HOST"
       ;;
-    codespaces)
-      section "GitHub Codespaces connectivity"
-      if [[ "${CODESPACES:-}" != "true" ]]; then
-        warn "GitHub Codespaces env was not detected. This mode expects to run inside an active codespace."
-      fi
-      BRIDGE_HOST="127.0.0.1"
-      ok "Codespaces mode will use forwarded HTTPS bridge URLs."
-      ;;
     *)
       abort_wizard "Unknown network mode '$NETWORK_MODE'."
       ;;
@@ -1870,7 +1807,7 @@ else
     NETWORK_MODE="$(infer_network_mode "$BRIDGE_HOST" "$BRIDGE_CONNECT_URL")"
   fi
 
-  if ([[ "$BRIDGE_HOST" == "0.0.0.0" ]] || [[ "$BRIDGE_HOST" == "::" ]] || [[ "$BRIDGE_HOST" == "[::]" ]]) && [[ "$NETWORK_MODE" != "codespaces" ]]; then
+  if [[ "$BRIDGE_HOST" == "0.0.0.0" ]] || [[ "$BRIDGE_HOST" == "::" ]] || [[ "$BRIDGE_HOST" == "[::]" ]]; then
     warn "Existing BRIDGE_HOST=$BRIDGE_HOST is a bind address, not a phone-connectable host."
     if [[ "$NETWORK_MODE" == "tailscale" ]]; then
       section "Tailscale connectivity"
@@ -1900,8 +1837,6 @@ section "Phone pairing"
 confirm_phone_network_ready
 if [[ "$NETWORK_MODE" == "tailscale" ]]; then
   ok "Phone Tailscale readiness confirmed."
-elif [[ "$NETWORK_MODE" == "codespaces" ]]; then
-  ok "Phone Codespaces pairing readiness confirmed."
 else
   ok "Phone local network readiness confirmed."
 fi
