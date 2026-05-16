@@ -1301,7 +1301,7 @@ ensure_cursor_app_server() {
 
   if [[ -f "$PACKAGE_ROOT/services/cursor-app-server/src/stdio.ts" ]]; then
     info "Building Cursor app-server package."
-    npm run build -w @clawdex/cursor-app-server
+    npm --prefix "$PACKAGE_ROOT" run build -w @clawdex/cursor-app-server
     hash -r
   fi
 
