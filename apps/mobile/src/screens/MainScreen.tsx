@@ -224,6 +224,7 @@ import {
   describeWebSearchToolEvent,
   appendRunEventHistory,
   normalizeCodexEventType,
+  extractCodexFailureMessage,
   isCodexRunHeartbeatEvent,
   extractNotificationThreadId,
   extractNotificationParentThreadId,
@@ -2071,6 +2072,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
 
         if (CODEX_RUN_ABORT_EVENT_TYPES.has(codexEventType)) {
+          const failureMessage = extractCodexFailureMessage(null, msg);
           delete planItemTurnIdByThreadRef.current[threadId];
           clearPendingPlanImplementationPrompt(threadId);
           cacheThreadTurnState(threadId, {
@@ -2081,6 +2083,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             activity: {
               tone: 'error',
               title: 'Turn interrupted',
+              detail: failureMessage ?? undefined,
             },
             activeCommands: [],
             streamingText: null,
@@ -2089,6 +2092,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
 
         if (CODEX_RUN_FAILURE_EVENT_TYPES.has(codexEventType)) {
+          const failureMessage = extractCodexFailureMessage(null, msg);
           delete planItemTurnIdByThreadRef.current[threadId];
           clearPendingPlanImplementationPrompt(threadId);
           cacheThreadTurnState(threadId, {
@@ -2099,6 +2103,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             activity: {
               tone: 'error',
               title: 'Turn failed',
+              detail: failureMessage ?? undefined,
             },
             activeCommands: [],
             streamingText: null,
@@ -6031,6 +6036,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           }
 
           if (CODEX_RUN_ABORT_EVENT_TYPES.has(codexEventType)) {
+            const failureMessage = extractCodexFailureMessage(params, msg);
             const interruptedByUser = stopRequestedRef.current;
             delete planItemTurnIdByThreadRef.current[activeThreadId];
             clearPendingPlanImplementationPrompt(activeThreadId);
@@ -6046,16 +6052,20 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             if (interruptedByUser) {
               setError(null);
               appendStopSystemMessageIfNeeded();
+            } else if (failureMessage) {
+              setError(failureMessage);
             }
             setActivity({
               tone: interruptedByUser ? 'complete' : 'error',
               title: interruptedByUser ? 'Turn stopped' : 'Turn interrupted',
+              detail: interruptedByUser ? undefined : failureMessage ?? undefined,
             });
             loadChat(activeThreadId).catch(() => {});
             return;
           }
 
           if (CODEX_RUN_FAILURE_EVENT_TYPES.has(codexEventType)) {
+            const failureMessage = extractCodexFailureMessage(params, msg);
             delete planItemTurnIdByThreadRef.current[activeThreadId];
             clearPendingPlanImplementationPrompt(activeThreadId);
             clearRunWatchdog();
@@ -6067,9 +6077,13 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             reasoningSummaryRef.current = {};
             codexReasoningBufferRef.current = '';
             hadCommandRef.current = false;
+            if (failureMessage) {
+              setError(failureMessage);
+            }
             setActivity({
               tone: 'error',
               title: 'Turn failed',
+              detail: failureMessage ?? undefined,
             });
             loadChat(activeThreadId).catch(() => {});
             return;
@@ -7496,6 +7510,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const githubCodespaceRecoveryBody = githubCodespaceRecovery
       ? 'The active GitHub Codespace is not responding. Wake it and Clawdex will reconnect automatically.'
       : null;
+    const turnFailureDetail =
+      error?.trim() ||
+      (selectedChat?.status === 'error' ? selectedChat.lastError?.trim() ?? null : null) ||
+      (activity.tone === 'error' ? activity.detail?.trim() ?? null : null);
     const visibleActivity = (() => {
       if (isOpeningChat) {
         return {
@@ -7549,8 +7567,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
       if (activity.tone === 'error' && activity.title === 'Turn failed') {
         return {
-          tone: 'idle',
-          title: 'Ready',
+          tone: 'error',
+          title: 'Turn failed',
+          detail: turnFailureDetail ?? undefined,
         } satisfies ActivityState;
       }
 

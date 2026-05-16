@@ -16,6 +16,69 @@ describe('chatMapping', () => {
     expect(chat.updatedAt).toBe('2023-11-14T22:13:20.000Z');
   });
 
+  it('maps failed turn error details into lastError', () => {
+    const chat = mapChat(
+      toRawThread({
+        id: 'thr_failed',
+        preview: 'failed',
+        createdAt: 1700000000,
+        updatedAt: 1700000001,
+        status: { type: 'idle' },
+        turns: [
+          {
+            status: 'error',
+            error: {
+              message: 'model quota exceeded',
+            },
+          },
+        ],
+      })
+    );
+
+    expect(chat.status).toBe('error');
+    expect(chat.lastError).toBe('model quota exceeded');
+  });
+
+  it('keeps a generic failed-turn fallback when no error detail is reported', () => {
+    const chat = mapChat(
+      toRawThread({
+        id: 'thr_failed_generic',
+        preview: 'failed',
+        createdAt: 1700000000,
+        updatedAt: 1700000001,
+        status: { type: 'idle' },
+        turns: [
+          {
+            status: 'aborted',
+          },
+        ],
+      })
+    );
+
+    expect(chat.status).toBe('error');
+    expect(chat.lastError).toBe('turn aborted');
+  });
+
+  it('maps cancelled turn status to an error state', () => {
+    const chat = mapChat(
+      toRawThread({
+        id: 'thr_cancelled',
+        preview: 'cancelled',
+        createdAt: 1700000000,
+        updatedAt: 1700000001,
+        status: { type: 'idle' },
+        turns: [
+          {
+            status: 'cancelled',
+          },
+        ],
+      })
+    );
+
+    expect(chat.status).toBe('error');
+    expect(chat.lastError).toBe('turn cancelled');
+  });
+
   it('maps command execution items into system trace messages', () => {
     const chat = mapChat(
       toRawThread({
@@ -164,6 +227,104 @@ describe('chatMapping', () => {
     expect(systemMessages[0].content).toContain('clawdex-mobile');
   });
 
+  it('maps Codex function call items into visible tool timeline entries', () => {
+    const chat = mapChat(
+      toRawThread({
+        id: 'thr_function_call',
+        preview: 'read files',
+        createdAt: 1700000000,
+        updatedAt: 1700000002,
+        status: { type: 'idle' },
+        turns: [
+          {
+            status: 'completed',
+            items: [
+              {
+                type: 'function_call',
+                id: 'call_read_file',
+                name: 'exec_command',
+                arguments: JSON.stringify({
+                  cmd: "sed -n '1,80p' apps/mobile/src/api/chatMapping.ts",
+                  workdir: '/repo',
+                }),
+                call_id: 'call_read_file',
+              },
+              {
+                type: 'function_call_output',
+                id: 'out_read_file',
+                call_id: 'call_read_file',
+                output: 'Chunk ID: abc\nOutput:\nimport type { Chat } from ./types;',
+              },
+              {
+                type: 'custom_tool_call_output',
+                id: 'custom_out_read_file',
+                call_id: 'custom_call_read_file',
+                output: 'custom output',
+              },
+              {
+                type: 'agentMessage',
+                id: 'a1',
+                text: 'I read the mapper.',
+              },
+            ],
+          },
+        ],
+      })
+    );
+
+    const systemMessages = chat.messages.filter((message) => message.role === 'system');
+    expect(systemMessages).toHaveLength(3);
+    expect(systemMessages.every((message) => message.systemKind === 'tool')).toBe(true);
+    expect(systemMessages[0].content).toContain(
+      "• Ran `sed -n '1,80p' apps/mobile/src/api/chatMapping.ts`"
+    );
+    expect(systemMessages[0].content).toContain('cwd: /repo');
+    expect(systemMessages[1].content).toContain('• Tool output `call_read_file`');
+    expect(systemMessages[1].content).toContain('import type { Chat }');
+    expect(systemMessages[2].content).toContain('• Tool output `custom_call_read_file`');
+    expect(systemMessages[2].content).toContain('custom output');
+  });
+
+  it('maps custom apply_patch calls into file change timeline entries', () => {
+    const chat = mapChat(
+      toRawThread({
+        id: 'thr_custom_tool',
+        preview: 'patch',
+        createdAt: 1700000000,
+        updatedAt: 1700000002,
+        status: { type: 'idle' },
+        turns: [
+          {
+            status: 'completed',
+            items: [
+              {
+                type: 'custom_tool_call',
+                id: 'patch_call',
+                name: 'apply_patch',
+                input: [
+                  '*** Begin Patch',
+                  '*** Update File: apps/mobile/src/screens/MainScreen.tsx',
+                  '@@',
+                  '-old',
+                  '+new',
+                  '*** End Patch',
+                ].join('\n'),
+              },
+            ],
+          },
+        ],
+      })
+    );
+
+    expect(chat.messages).toHaveLength(1);
+    expect(chat.messages[0].role).toBe('system');
+    expect(chat.messages[0].systemKind).toBe('tool');
+    expect(chat.messages[0].content).toContain(
+      '• Applied file changes to MainScreen.tsx'
+    );
+    expect(chat.messages[0].content).toContain('apps/mobile/src/screens/MainScreen.tsx');
+  });
+
   it('uses Cursor summary preview instead of generated Cursor chat names', () => {
     const chat = mapChat(
       toRawThread({
@@ -279,6 +440,43 @@ describe('chatMapping', () => {
     expect(chat.messages[0].systemKind).toBe('reasoning');
     expect(chat.messages[0].content).toContain('Checking how the bridge forwards live events.');
     expect(chat.messages[0].content).toContain('Comparing persisted thread items with live deltas.');
+  });
+
+  it('maps structured reasoning summary text into visible transcript details', () => {
+    const chat = mapChat(
+      toRawThread({
+        id: 'thr_reasoning_summary',
+        preview: 'thinking',
+        createdAt: 1700000000,
+        updatedAt: 1700000002,
+        status: { type: 'idle' },
+        turns: [
+          {
+            status: 'completed',
+            items: [
+              {
+                type: 'reasoning',
+                id: 'reasoning_summary',
+                summary: [
+                  {
+                    type: 'summary_text',
+                    text: 'Read the transcript mapper and checked tool item shapes.',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      })
+    );
+
+    expect(chat.messages).toHaveLength(1);
+    expect(chat.messages[0].role).toBe('system');
+    expect(chat.messages[0].systemKind).toBe('reasoning');
+    expect(chat.messages[0].content).toContain('• Reasoning');
+    expect(chat.messages[0].content).toContain(
+      'Read the transcript mapper and checked tool item shapes.'
+    );
   });
 
   it('maps assistant structured content arrays including images', () => {

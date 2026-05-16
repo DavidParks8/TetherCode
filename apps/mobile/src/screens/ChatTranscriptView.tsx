@@ -108,31 +108,42 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
     () => syncVisibleSubAgentStatuses(transcriptView.messages, agentThreadStatusById),
     [agentThreadStatusById, transcriptView.messages]
   );
-  const [visibleStartIndex, setVisibleStartIndex] = useState(() =>
-    getInitialVisibleMessageStartIndex(visibleMessages.length)
+  const transcriptItems = useMemo(
+    () => buildTranscriptDisplayItems(visibleMessages),
+    [visibleMessages]
   );
-  const paginatedMessages = useMemo(
-    () => visibleMessages.slice(visibleStartIndex),
-    [visibleMessages, visibleStartIndex]
+  const [visibleStartIndex, setVisibleStartIndex] = useState(() =>
+    getInitialVisibleMessageStartIndex(transcriptItems.length)
+  );
+  const paginatedTranscriptItems = useMemo(
+    () => transcriptItems.slice(visibleStartIndex),
+    [transcriptItems, visibleStartIndex]
   );
   const displayMessages = useMemo(
-    () => buildTranscriptDisplayItems(paginatedMessages, showToolCalls).reverse(),
-    [paginatedMessages, showToolCalls]
+    () => [...paginatedTranscriptItems].reverse(),
+    [paginatedTranscriptItems]
+  );
+  const paginatedMessages = useMemo(
+    () =>
+      paginatedTranscriptItems.flatMap((item) =>
+        item.kind === 'message' ? [item.message] : item.messages
+      ),
+    [paginatedTranscriptItems]
   );
   const inlineChoiceSet = useMemo(
     () => (inlineChoicesEnabled ? findInlineChoiceSet(paginatedMessages) : null),
     [inlineChoicesEnabled, paginatedMessages]
   );
   useEffect(() => {
-    setVisibleStartIndex(getInitialVisibleMessageStartIndex(visibleMessages.length));
+    setVisibleStartIndex(getInitialVisibleMessageStartIndex(transcriptItems.length));
   }, [chat.id]);
 
   useEffect(() => {
     setVisibleStartIndex((current) => {
-      const maxStartIndex = Math.max(visibleMessages.length - 1, 0);
+      const maxStartIndex = Math.max(transcriptItems.length - 1, 0);
       return current > maxStartIndex ? maxStartIndex : current;
     });
-  }, [visibleMessages.length]);
+  }, [transcriptItems.length]);
 
   const loadOlderMessages = useCallback(() => {
     setVisibleStartIndex((current) =>
@@ -221,7 +232,7 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
     [bottomInset, styles.messageListContent]
   );
   const liveTurnActive = chat.status === 'running';
-  const isLargeChat = displayMessages.length >= LARGE_CHAT_MESSAGE_COUNT_THRESHOLD;
+  const isLargeChat = transcriptItems.length >= LARGE_CHAT_MESSAGE_COUNT_THRESHOLD;
   const keyExtractor = useCallback(
     (item: TranscriptDisplayItem) => (item.kind === 'message' ? item.renderKey : item.id),
     []
@@ -237,7 +248,6 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
               bridgeUrl={bridgeUrl}
               bridgeToken={bridgeToken}
               liveTurnActive={liveTurnActive}
-              compact={item.compact}
             />
           </View>
         );

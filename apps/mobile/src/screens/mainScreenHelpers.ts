@@ -2334,6 +2334,76 @@ export function normalizeCodexEventType(value: string | null | undefined): strin
   return normalized.length > 0 ? normalized : null;
 }
 
+function readErrorMessageCandidate(value: unknown, depth = 0): string | null {
+  if (depth > 3) {
+    return null;
+  }
+
+  const direct = readString(value)?.trim();
+  if (direct) {
+    return direct;
+  }
+
+  const record = toRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  const fields = [
+    record.message,
+    record.errorMessage,
+    record.error_message,
+    record.detail,
+    record.details,
+    record.reason,
+    record.description,
+    record.stderr,
+    record.error,
+  ];
+
+  for (const field of fields) {
+    const message = readErrorMessageCandidate(field, depth + 1);
+    if (message) {
+      return message;
+    }
+  }
+
+  return null;
+}
+
+export function extractCodexFailureMessage(
+  params: Record<string, unknown> | null,
+  msgArg?: Record<string, unknown> | null
+): string | null {
+  const msg = msgArg ?? toRecord(params?.msg);
+  const turnRecord = toRecord(params?.turn) ?? toRecord(msg?.turn);
+  const statusRecord = toRecord(params?.status) ?? toRecord(msg?.status);
+  const candidates = [
+    msg?.error,
+    params?.error,
+    turnRecord?.error,
+    msg?.message,
+    params?.message,
+    msg?.detail,
+    params?.detail,
+    msg?.details,
+    params?.details,
+    msg?.reason,
+    params?.reason,
+    statusRecord?.message,
+    statusRecord?.error,
+  ];
+
+  for (const candidate of candidates) {
+    const message = readErrorMessageCandidate(candidate);
+    if (message) {
+      return message;
+    }
+  }
+
+  return null;
+}
+
 export function isCodexRunHeartbeatEvent(codexEventType: string): boolean {
   return CODEX_RUN_HEARTBEAT_EVENT_TYPES.has(codexEventType);
 }

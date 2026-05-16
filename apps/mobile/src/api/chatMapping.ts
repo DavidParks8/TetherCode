@@ -18,9 +18,9 @@ export type RawThreadStatus =
 export interface RawTurn {
   id?: string;
   status?: string;
-  error?: {
-    message?: string;
-  } | null;
+  error?: unknown;
+  message?: string;
+  detail?: string;
   items?: RawThreadItem[];
 }
 
@@ -147,6 +147,43 @@ function normalizeLifecycleStatus(value: string | null | undefined): string | nu
   return normalized.length > 0 ? normalized : null;
 }
 
+function readErrorMessage(value: unknown, depth = 0): string | null {
+  if (depth > 3) {
+    return null;
+  }
+
+  const direct = readString(value)?.trim();
+  if (direct) {
+    return direct;
+  }
+
+  const record = toRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  const fields = [
+    record.message,
+    record.errorMessage,
+    record.error_message,
+    record.detail,
+    record.details,
+    record.reason,
+    record.description,
+    record.stderr,
+    record.error,
+  ];
+
+  for (const field of fields) {
+    const message = readErrorMessage(field, depth + 1);
+    if (message) {
+      return message;
+    }
+  }
+
+  return null;
+}
+
 function mapRawStatus(status: unknown, turns: RawTurn[] | undefined): ChatStatus {
   const statusRecord = toRecord(status);
   const statusType = normalizeLifecycleStatus(
@@ -176,7 +213,9 @@ function mapRawStatus(status: unknown, turns: RawTurn[] | undefined): ChatStatus
     lastTurnStatus === 'failed' ||
     lastTurnStatus === 'interrupted' ||
     lastTurnStatus === 'error' ||
-    lastTurnStatus === 'aborted'
+    lastTurnStatus === 'aborted' ||
+    lastTurnStatus === 'cancelled' ||
+    lastTurnStatus === 'canceled'
   ) {
     return 'error';
   }
@@ -223,12 +262,22 @@ function mapRawStatus(status: unknown, turns: RawTurn[] | undefined): ChatStatus
 function extractLastError(turns: RawTurn[]): string | null {
   for (let i = turns.length - 1; i >= 0; i -= 1) {
     const turn = turns[i];
-    const turnStatus = readString(turn.status);
-    if (turnStatus !== 'failed' && turnStatus !== 'interrupted') {
+    const turnStatus = normalizeLifecycleStatus(readString(turn.status));
+    if (
+      turnStatus !== 'failed' &&
+      turnStatus !== 'interrupted' &&
+      turnStatus !== 'error' &&
+      turnStatus !== 'aborted' &&
+      turnStatus !== 'cancelled' &&
+      turnStatus !== 'canceled'
+    ) {
       continue;
     }
 
-    const message = readString(turn.error?.message);
+    const message =
+      readErrorMessage(turn.error) ??
+      readString(turn.message)?.trim() ??
+      readString(turn.detail)?.trim();
     if (message) {
       return message;
     }
@@ -288,7 +337,9 @@ function toRawTurn(value: unknown): RawTurn | null {
   return {
     id: readString(record.id) ?? undefined,
     status: readString(record.status) ?? undefined,
-    error: toRecord(record.error) as { message?: string } | null,
+    error: record.error,
+    message: readString(record.message) ?? undefined,
+    detail: readString(record.detail) ?? undefined,
     items,
   };
 }
@@ -661,8 +712,9 @@ function mapMessages(raw: RawThread, fallbackCreatedAt: string): ChatMessage[] {
       }
 
       const itemType = readString(itemRecord.type);
+      const normalizedItemType = normalizeType(itemType ?? '');
 
-      if (itemType === 'userMessage') {
+      if (normalizedItemType === 'usermessage') {
         const text = stringifyStructuredMessageContent(itemRecord);
 
         if (!text.trim()) {
@@ -678,7 +730,7 @@ function mapMessages(raw: RawThread, fallbackCreatedAt: string): ChatMessage[] {
         continue;
       }
 
-      if (itemType === 'agentMessage') {
+      if (normalizedItemType === 'agentmessage') {
         const text =
           stringifyStructuredMessageContent(itemRecord) || readString(itemRecord.text) || '';
         if (!text.trim()) {
@@ -697,11 +749,11 @@ function mapMessages(raw: RawThread, fallbackCreatedAt: string): ChatMessage[] {
       const toolLikeMessage = toToolLikeMessage(itemRecord);
       if (toolLikeMessage) {
         const systemKind =
-          itemType === 'collabToolCall'
+          normalizedItemType === 'collabtoolcall'
             ? 'subAgent'
-            : itemType === 'reasoning'
+            : normalizedItemType === 'reasoning'
               ? 'reasoning'
-              : itemType === 'contextCompaction'
+              : normalizedItemType === 'contextcompaction'
                 ? 'compaction'
               : 'tool';
         messages.push({
@@ -945,6 +997,22 @@ function toToolLikeMessage(item: Record<string, unknown>): string | null {
     return withNestedDetail(title, detail || null);
   }
 
+  if (type === 'functioncall' || type === 'customtoolcall') {
+    return toFunctionToolLikeMessage(item);
+  }
+
+  if (type === 'functioncalloutput' || type === 'customtoolcalloutput') {
+    const output =
+      normalizeMultiline(readString(item.output), 2400) ??
+      toStructuredPreview(item.output, 1200);
+    if (!output) {
+      return null;
+    }
+    const callId = normalizeInline(readString(item.call_id) ?? readString(item.callId), 120);
+    const title = callId ? `• Tool output \`${callId}\`` : '• Tool output';
+    return withNestedDetail(title, toNestedOutput(output, 8, 1600));
+  }
+
   if (type === 'collabtoolcall') {
     const tool = normalizeType(readString(item.tool) ?? '');
     const status = normalizeType(readString(item.status) ?? '');
@@ -1068,6 +1136,165 @@ function toToolLikeMessage(item: Record<string, unknown>): string | null {
   }
 
   return null;
+}
+
+function toFunctionToolLikeMessage(item: Record<string, unknown>): string | null {
+  const rawName =
+    readString(item.name) ??
+    readString(item.tool) ??
+    readString(item.function) ??
+    readString(item.function_name);
+  const toolName = normalizeInline(rawName, 160) ?? 'tool';
+  const normalizedToolName = toolName.replace(/^functions\./, '');
+  const status = normalizeType(readString(item.status) ?? '');
+  const args = readFunctionToolArguments(item);
+  const inputPreview = args ? toStructuredPreview(args, 900) : readFunctionToolInput(item);
+
+  if (normalizedToolName === 'exec_command') {
+    const command = readFunctionCommand(args) ?? normalizeInline(readFunctionToolInput(item), 240);
+    const title =
+      status === 'failed' || status === 'error'
+        ? `• Command failed \`${command ?? 'command'}\``
+        : status === 'running' || status === 'inprogress'
+          ? `• Running command \`${command ?? 'command'}\``
+          : `• Ran \`${command ?? 'command'}\``;
+    const workdir = normalizeInline(readString(args?.workdir), 220);
+    return withNestedDetail(title, workdir ? `cwd: ${workdir}` : null);
+  }
+
+  const mcpToolName = parseMcpFunctionToolName(normalizedToolName);
+  if (mcpToolName) {
+    const title =
+      status === 'failed' || status === 'error'
+        ? `• Tool failed \`${mcpToolName.server} / ${mcpToolName.tool}\``
+        : status === 'running' || status === 'inprogress'
+          ? `• Calling tool \`${mcpToolName.server} / ${mcpToolName.tool}\``
+          : `• Called tool \`${mcpToolName.server} / ${mcpToolName.tool}\``;
+    return withNestedDetail(title, inputPreview ? `Input: ${inputPreview}` : null);
+  }
+
+  if (normalizedToolName === 'search_query' || normalizedToolName === 'image_query') {
+    const query = normalizeInline(readFunctionSearchQuery(args), 180);
+    const title = query ? `• Searched web for "${query}"` : '• Searched web';
+    return withNestedDetail(title, null);
+  }
+
+  if (normalizedToolName === 'apply_patch') {
+    const patchInput = readFunctionToolInput(item);
+    const changedPaths = patchInput ? readPatchTargetPaths(patchInput) : [];
+    const detail = changedPaths.length > 0 ? changedPaths.join('\n') : null;
+    const title =
+      changedPaths.length === 0
+        ? '• Applied file changes'
+        : changedPaths.length === 1
+          ? `• Applied file changes to ${toFileChangeTargetLabel(changedPaths[0])}`
+          : `• Applied file changes to ${toFileChangeTargetLabel(changedPaths[0])} +${String(changedPaths.length - 1)} more`;
+    return withNestedDetail(title, detail);
+  }
+
+  const title =
+    status === 'failed' || status === 'error'
+      ? `• Tool failed \`${normalizedToolName}\``
+      : status === 'running' || status === 'inprogress'
+        ? `• Calling tool \`${normalizedToolName}\``
+        : `• Called tool \`${normalizedToolName}\``;
+  return withNestedDetail(title, inputPreview ? `Input: ${inputPreview}` : null);
+}
+
+function readFunctionToolArguments(item: Record<string, unknown>): Record<string, unknown> | null {
+  return (
+    toRecord(item.arguments) ??
+    toRecord(item.args) ??
+    parseJsonObject(readString(item.arguments)) ??
+    parseJsonObject(readString(item.args))
+  );
+}
+
+function readFunctionToolInput(item: Record<string, unknown>): string | null {
+  return (
+    normalizeMultiline(readString(item.input), 1800) ??
+    normalizeMultiline(readString(item.arguments), 1800) ??
+    normalizeMultiline(readString(item.args), 1800)
+  );
+}
+
+function readFunctionCommand(args: Record<string, unknown> | null): string | null {
+  if (!args) {
+    return null;
+  }
+
+  const direct =
+    normalizeInline(readString(args.cmd), 240) ??
+    normalizeInline(readString(args.command), 240);
+  if (direct) {
+    return direct;
+  }
+
+  const commandParts = readStringArray(args.cmd).concat(readStringArray(args.command));
+  return commandParts.length > 0 ? normalizeInline(commandParts.join(' '), 240) : null;
+}
+
+function parseMcpFunctionToolName(name: string): { server: string; tool: string } | null {
+  const segments = name.split('__').filter(Boolean);
+  if (segments.length < 3 || segments[0] !== 'mcp') {
+    return null;
+  }
+
+  const [, server, ...toolParts] = segments;
+  const tool = toolParts.join('__');
+  if (!server || !tool) {
+    return null;
+  }
+
+  return { server, tool };
+}
+
+function readFunctionSearchQuery(args: Record<string, unknown> | null): string | null {
+  if (!args) {
+    return null;
+  }
+
+  const direct = readString(args.q) ?? readString(args.query);
+  if (direct) {
+    return direct;
+  }
+
+  const searchQueries = Array.isArray(args.search_query)
+    ? args.search_query
+    : Array.isArray(args.image_query)
+      ? args.image_query
+      : [];
+  for (const entry of searchQueries) {
+    const query = readString(toRecord(entry)?.q) ?? readString(toRecord(entry)?.query);
+    if (query) {
+      return query;
+    }
+  }
+
+  return null;
+}
+
+function readPatchTargetPaths(input: string): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  const patterns = [
+    /^\*\*\* Update File:\s+(.+)$/gm,
+    /^\*\*\* Add File:\s+(.+)$/gm,
+    /^\*\*\* Delete File:\s+(.+)$/gm,
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of input.matchAll(pattern)) {
+      const path = match[1]?.trim();
+      if (!path || seen.has(path)) {
+        continue;
+      }
+      seen.add(path);
+      paths.push(path);
+    }
+  }
+
+  return paths;
 }
 
 function toCursorToolArgsPreview(item: Record<string, unknown>): string | null {
@@ -1202,9 +1429,23 @@ function reasoningTextFromItem(item: Record<string, unknown>): string | null {
     return content.join('\n');
   }
 
+  if (Array.isArray(item.content)) {
+    const structuredContent = stringifyStructuredContentEntries(item.content);
+    if (structuredContent.trim()) {
+      return structuredContent;
+    }
+  }
+
   const summary = readStringArray(item.summary);
   if (summary.length > 0) {
     return summary.join('\n');
+  }
+
+  if (Array.isArray(item.summary)) {
+    const structuredSummary = stringifyStructuredContentEntries(item.summary);
+    if (structuredSummary.trim()) {
+      return structuredSummary;
+    }
   }
 
   return null;
@@ -1212,6 +1453,18 @@ function reasoningTextFromItem(item: Record<string, unknown>): string | null {
 
 function normalizeType(value: string): string {
   return value.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+}
+
+function parseJsonObject(value: string | null): Record<string, unknown> | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return toRecord(JSON.parse(value));
+  } catch {
+    return null;
+  }
 }
 
 function normalizeInline(value: string | null, maxChars: number): string | null {
@@ -1342,7 +1595,8 @@ function stringifyStructuredContentEntry(entry: unknown): string[] {
   if (
     entryType === 'text' ||
     entryType === 'inputtext' ||
-    entryType === 'outputtext'
+    entryType === 'outputtext' ||
+    entryType === 'summarytext'
   ) {
     const text = readStructuredText(entryRecord);
     return text ? [text] : [];

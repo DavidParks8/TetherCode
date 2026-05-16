@@ -4,7 +4,6 @@ export interface ToolTranscriptGroup {
   kind: 'toolGroup';
   id: string;
   messages: ChatMessage[];
-  compact: boolean;
 }
 
 export type TranscriptDisplayItem =
@@ -27,7 +26,6 @@ export function getVisibleTranscriptMessages(
     if (
       !showToolCalls &&
       msg.role === 'system' &&
-      msg.systemKind !== 'tool' &&
       msg.systemKind !== 'subAgent' &&
       msg.systemKind !== 'reasoning' &&
       msg.systemKind !== 'compaction'
@@ -52,10 +50,7 @@ export function getVisibleTranscriptMessages(
   return filtered;
 }
 
-export function buildTranscriptDisplayItems(
-  messages: ChatMessage[],
-  showToolCalls = true
-): TranscriptDisplayItem[] {
+export function buildTranscriptDisplayItems(messages: ChatMessage[]): TranscriptDisplayItem[] {
   const items: TranscriptDisplayItem[] = [];
   let toolBuffer: ChatMessage[] = [];
   let userMessageOrdinal = 0;
@@ -69,14 +64,13 @@ export function buildTranscriptDisplayItems(
       kind: 'toolGroup',
       id: `tool-group-${toolBuffer[0]?.id ?? 'start'}-${toolBuffer[toolBuffer.length - 1]?.id ?? 'end'}`,
       messages: [...toolBuffer],
-      compact: !showToolCalls,
     });
 
     toolBuffer = [];
   };
 
   for (const message of messages) {
-    const isToolMessage = message.role === 'system' && message.systemKind === 'tool';
+    const isToolMessage = isToolTranscriptMessage(message);
     if (isToolMessage) {
       toolBuffer.push(message);
       if (toolBuffer.length >= MAX_TOOL_MESSAGES_PER_TRANSCRIPT_GROUP) {
@@ -98,6 +92,37 @@ export function buildTranscriptDisplayItems(
 
   flushToolBuffer();
   return items;
+}
+
+function isToolTranscriptMessage(message: ChatMessage): boolean {
+  if (message.role !== 'system') {
+    return false;
+  }
+
+  if (message.systemKind === 'tool') {
+    return true;
+  }
+
+  if (message.systemKind) {
+    return false;
+  }
+
+  return isLegacyToolTimelineContent(message.content);
+}
+
+function isLegacyToolTimelineContent(content: string): boolean {
+  const firstContentLine = content
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  const title = firstContentLine?.match(/^•\s+(.+)$/)?.[1]?.trim();
+  if (!title) {
+    return false;
+  }
+
+  return !/^(reasoning|thinking|spawned sub-agent|sub-agent|task|compacted conversation context|conversation compacted)\b/i.test(
+    title
+  );
 }
 
 function buildTranscriptRenderKey(message: ChatMessage, userMessageOrdinal: number): string {

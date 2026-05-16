@@ -41,8 +41,6 @@ interface ToolActivityGroupProps {
   bridgeToken?: string | null;
   /** While the server reports an in-flight turn, surface live affordances (badge, border). */
   liveTurnActive?: boolean;
-  /** Show a subtle status cue without exposing full tool input/output. */
-  compact?: boolean;
 }
 
 interface TimelineEntry {
@@ -577,7 +575,6 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
   bridgeUrl = null,
   bridgeToken = null,
   liveTurnActive = false,
-  compact = false,
 }: ToolActivityGroupProps) {
   const theme = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -636,31 +633,6 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
     : entries.slice(0, TOOL_GROUP_COLLAPSED_PREVIEW_COUNT);
   const hiddenCount = Math.max(entries.length - previewEntries.length, 0);
   const summary = summarizeToolGroup(entries.map((entry) => entry.title));
-  const compactVisual = toTimelineVisual(entries[0]?.title ?? summary);
-
-  if (compact) {
-    return (
-      <View style={[styles.messageWrapper, styles.messageWrapperAssistant]}>
-        <View style={[styles.toolCueRow, liveTurnActive && styles.toolCueRowLive]}>
-          <Ionicons
-            name={compactVisual.icon}
-            size={13}
-            color={
-              compactVisual.isError
-                ? theme.colors.statusError
-                : liveTurnActive
-                  ? theme.colors.statusRunning
-                  : theme.colors.textMuted
-            }
-            style={styles.toolCueIcon}
-          />
-          <Text style={styles.toolCueText} numberOfLines={1}>
-            {formatCompactToolSummary(summary, liveTurnActive)}
-          </Text>
-        </View>
-      </View>
-    );
-  }
 
   const listInner = (
     <>
@@ -1823,33 +1795,6 @@ const createStyles = (theme: AppTheme) => {
   toolGroupCardPressed: {
     opacity: 0.84,
   },
-  toolCueRow: {
-    alignSelf: 'flex-start',
-    maxWidth: '88%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    borderRadius: theme.radius.full,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.borderLight,
-    backgroundColor: theme.colors.bgItem,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: 6,
-  },
-  toolCueRowLive: {
-    borderColor: theme.colors.borderHighlight,
-    backgroundColor: theme.colors.bgInput,
-  },
-  toolCueIcon: {
-    width: 16,
-  },
-  toolCueText: {
-    ...theme.typography.caption,
-    color: theme.colors.textMuted,
-    fontWeight: '600',
-    lineHeight: 16,
-    flexShrink: 1,
-  },
   toolGroupHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2661,32 +2606,6 @@ function summarizeToolGroup(titles: string[]): string {
     return `${String(titles.length)} exploration${titles.length === 1 ? '' : 's'}`;
   }
   return `${String(titles.length)} tool step${titles.length === 1 ? '' : 's'}`;
-}
-
-function formatCompactToolSummary(summary: string, liveTurnActive: boolean): string {
-  if (!liveTurnActive) {
-    return summary;
-  }
-
-  if (/^\d+\s+command/i.test(summary)) {
-    return `Running ${summary}`;
-  }
-  if (/^\d+\s+tool call/i.test(summary)) {
-    return `Calling ${summary}`;
-  }
-  if (/^\d+\s+web search/i.test(summary)) {
-    return `Searching web`;
-  }
-  if (/^\d+\s+file read/i.test(summary)) {
-    return `Reading files`;
-  }
-  if (/^\d+\s+folder listing/i.test(summary)) {
-    return `Listing folders`;
-  }
-  if (/^\d+\s+exploration/i.test(summary)) {
-    return `Exploring`;
-  }
-  return `Running ${summary}`;
 }
 
 function toCursorActivityVisual(

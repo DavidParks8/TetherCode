@@ -52,7 +52,7 @@ describe('getVisibleTranscriptMessages', () => {
     ]);
   });
 
-  it('keeps tool cue rows when detailed tool calls are disabled', () => {
+  it('hides tool rows when detailed tool calls are disabled', () => {
     const messages = [
       message('u1', 'user', 'Investigate this bug'),
       message('t1', 'system', '• Ran `npm test`', { systemKind: 'tool' }),
@@ -61,7 +61,6 @@ describe('getVisibleTranscriptMessages', () => {
 
     expect(getVisibleTranscriptMessages(messages, false).map((entry) => entry.id)).toEqual([
       'u1',
-      't1',
       'a1',
     ]);
   });
@@ -179,11 +178,63 @@ describe('buildTranscriptDisplayItems', () => {
         kind: 'toolGroup',
         id: 'tool-group-t1-t2',
         messages: [messages[1], messages[2]],
-        compact: false,
       },
       {
         kind: 'message',
         message: messages[3],
+        renderKey: 'a1',
+      },
+    ]);
+  });
+
+  it('groups legacy untyped tool timeline rows into one toolGroup item', () => {
+    const messages = [
+      message('u1', 'user', 'Audit this'),
+      message('s1', 'system', '• Searched web for "react native flatlist"'),
+      message('s2', 'system', '• Called tool `openaiDeveloperDocs / search_openai_docs`'),
+      message('a1', 'assistant', 'Done.'),
+    ];
+
+    expect(buildTranscriptDisplayItems(messages)).toEqual([
+      {
+        kind: 'message',
+        message: messages[0],
+        renderKey: 'user-1-Audit this',
+      },
+      {
+        kind: 'toolGroup',
+        id: 'tool-group-s1-s2',
+        messages: [messages[1], messages[2]],
+      },
+      {
+        kind: 'message',
+        message: messages[3],
+        renderKey: 'a1',
+      },
+    ]);
+  });
+
+  it('keeps legacy untyped reasoning rows out of tool groups', () => {
+    const messages = [
+      message('u1', 'user', 'Think through this'),
+      message('r1', 'system', '• Reasoning\n  └ Inspecting the workspace state'),
+      message('a1', 'assistant', 'Done.'),
+    ];
+
+    expect(buildTranscriptDisplayItems(messages)).toEqual([
+      {
+        kind: 'message',
+        message: messages[0],
+        renderKey: 'user-1-Think through this',
+      },
+      {
+        kind: 'message',
+        message: messages[1],
+        renderKey: 'r1',
+      },
+      {
+        kind: 'message',
+        message: messages[2],
         renderKey: 'a1',
       },
     ]);
@@ -203,7 +254,6 @@ describe('buildTranscriptDisplayItems', () => {
         kind: 'toolGroup',
         id: 'tool-group-t1-t1',
         messages: [messages[0]],
-        compact: false,
       },
       {
         kind: 'message',
@@ -214,7 +264,6 @@ describe('buildTranscriptDisplayItems', () => {
         kind: 'toolGroup',
         id: 'tool-group-t2-t2',
         messages: [messages[2]],
-        compact: false,
       },
     ]);
   });
@@ -249,7 +298,6 @@ describe('buildTranscriptDisplayItems', () => {
         kind: 'toolGroup',
         id: 'tool-group-t1-t1',
         messages: [messages[1]],
-        compact: false,
       },
       {
         kind: 'message',
@@ -284,32 +332,5 @@ describe('buildTranscriptDisplayItems', () => {
       .map((item) => item.renderKey);
 
     expect(insertedUserKeys).toEqual(baseUserKeys);
-  });
-
-  it('marks tool groups compact when detailed tool calls are disabled', () => {
-    const messages = [
-      message('u1', 'user', 'Audit this'),
-      message('t1', 'system', '• Ran `pwd`', { systemKind: 'tool' }),
-      message('a1', 'assistant', 'Done.'),
-    ];
-
-    expect(buildTranscriptDisplayItems(messages, false)).toEqual([
-      {
-        kind: 'message',
-        message: messages[0],
-        renderKey: 'user-1-Audit this',
-      },
-      {
-        kind: 'toolGroup',
-        id: 'tool-group-t1-t1',
-        messages: [messages[1]],
-        compact: true,
-      },
-      {
-        kind: 'message',
-        message: messages[2],
-        renderKey: 'a1',
-      },
-    ]);
   });
 });
