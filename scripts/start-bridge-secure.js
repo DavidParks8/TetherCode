@@ -377,48 +377,6 @@ function commandExists(command) {
   return result.status === 0;
 }
 
-function walkFiles(directory) {
-  const entries = fs.readdirSync(directory, { withFileTypes: true });
-  const files = [];
-
-  for (const entry of entries) {
-    const entryPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...walkFiles(entryPath));
-      continue;
-    }
-    if (entry.isFile()) {
-      files.push(entryPath);
-    }
-  }
-
-  return files;
-}
-
-function isBuiltBinaryFresh(packageDir, binaryPath) {
-  if (!fs.existsSync(binaryPath)) {
-    return false;
-  }
-
-  const binaryMtime = fs.statSync(binaryPath).mtimeMs;
-  const watchPaths = [
-    path.join(packageDir, "services", "rust-bridge", "Cargo.toml"),
-    path.join(packageDir, "services", "rust-bridge", "Cargo.lock"),
-  ];
-  const sourceDir = path.join(packageDir, "services", "rust-bridge", "src");
-
-  if (fs.existsSync(sourceDir)) {
-    watchPaths.push(...walkFiles(sourceDir));
-  }
-
-  return watchPaths.every((watchPath) => {
-    if (!fs.existsSync(watchPath)) {
-      return true;
-    }
-    return fs.statSync(watchPath).mtimeMs <= binaryMtime;
-  });
-}
-
 function printMissingCompilerHint() {
   if (process.platform === "win32") {
     console.error("Install Visual Studio Build Tools (Desktop development with C++) and Rust, then retry.");
@@ -615,20 +573,15 @@ function resolveLaunch(workspaceDir, packageDir, env, { devMode, forceSourceBuil
   }
 
   const builtBinary = builtBinaryPath(packageDir, os.platform(), buildProfile);
-  if (isBuiltBinaryFresh(packageDir, builtBinary)) {
-    ensureExecutable(builtBinary);
-    return {
-      command: builtBinary,
-      args: [],
-      cwd: workspaceDir,
-      env,
-      healthTimeoutMs: defaultHealthTimeoutMs,
-    };
+
+  if (!forceSourceBuild) {
+    console.error("error: no packaged bridge binary was found for this host.");
+    console.error("Reinstall a published clawdex-mobile package with bundled bridge binaries.");
+    process.exit(1);
   }
 
   if (!commandExists("cargo")) {
-    console.error("error: no packaged bridge binary was found for this host, and cargo is not installed.");
-    console.error("Reinstall a published clawdex-mobile package with bundled bridge binaries, or install Rust and retry.");
+    console.error("error: CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=true was set, but cargo is not installed.");
     process.exit(1);
   }
 

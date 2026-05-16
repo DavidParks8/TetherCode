@@ -1296,38 +1296,19 @@ ensure_cursor_app_server() {
   local existing_api_key=""
   local existing_model=""
   local provided_api_key="${CURSOR_API_KEY:-}"
-  local bundled_cursor_app_server_bin="$PACKAGE_ROOT/services/cursor-app-server/dist/stdio.js"
   local resolved_cursor_app_server_bin=""
 
-  if [[ -f "$PACKAGE_ROOT/services/cursor-app-server/src/stdio.ts" ]]; then
-    info "Building Cursor app-server package."
-    npm --prefix "$PACKAGE_ROOT" run build -w @clawdex/cursor-app-server
-    hash -r
-  fi
-
-  if command -v cursor-app-server >/dev/null 2>&1; then
+  if [[ -n "${CURSOR_APP_SERVER_BIN:-}" ]]; then
+    resolved_cursor_app_server_bin="$CURSOR_APP_SERVER_BIN"
+  elif command -v cursor-app-server >/dev/null 2>&1; then
     resolved_cursor_app_server_bin="$(command -v cursor-app-server)"
-  elif [[ -x "$bundled_cursor_app_server_bin" ]]; then
-    resolved_cursor_app_server_bin="$bundled_cursor_app_server_bin"
   fi
 
-  while [[ -z "$resolved_cursor_app_server_bin" ]]; do
-    warn "Cursor app-server command not found in PATH."
-    warn "Cursor app-server is bundled with clawdex-mobile. Reinstall or upgrade clawdex-mobile, then rerun setup."
+  if [[ -z "$resolved_cursor_app_server_bin" ]]; then
+    abort_wizard "cursor-app-server was not found. Upgrade clawdex-mobile so npm links the bundled command, then rerun: clawdex init --engine cursor"
+  fi
 
-    if ! confirm_prompt "Retry Cursor app-server check?" "Y"; then
-      abort_wizard "Install or upgrade clawdex-mobile and rerun: clawdex init --engine cursor"
-    fi
-
-    hash -r
-    if command -v cursor-app-server >/dev/null 2>&1; then
-      resolved_cursor_app_server_bin="$(command -v cursor-app-server)"
-    elif [[ -x "$bundled_cursor_app_server_bin" ]]; then
-      resolved_cursor_app_server_bin="$bundled_cursor_app_server_bin"
-    fi
-  done
-
-  CURSOR_APP_SERVER_BIN="${CURSOR_APP_SERVER_BIN:-$resolved_cursor_app_server_bin}"
+  CURSOR_APP_SERVER_BIN="$resolved_cursor_app_server_bin"
   ok "Found cursor-app-server: $CURSOR_APP_SERVER_BIN"
 
   existing_api_key="$(extract_env_value "$SECURE_ENV_FILE" "CURSOR_API_KEY")"
@@ -1753,8 +1734,7 @@ ensure_core_tools
 if has_packaged_bridge_binary; then
   ok "Found packaged Rust bridge binary for this host."
 else
-  info "No packaged bridge binary found for this host. Falling back to local Rust build."
-  ensure_local_rust_build_toolchain
+  abort_wizard "No packaged bridge binary found for this host. Reinstall clawdex-mobile so npm installs the bundled bridge binary, then rerun setup."
 fi
 
 section "Config handling"
