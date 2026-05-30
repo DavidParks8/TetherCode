@@ -2,11 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## 5.2.3 - 2026-05-30
 
 ### Added
-- Prompt library in the mobile composer: save reusable prompt templates and insert them into the chat input with one tap. Includes search, inline add/edit/delete, first-run example prompts, and local persistence. A bookmark button next to the attach control opens the library.
-- Push notifications for turn completion and approval requests. Because the app's WebSocket closes when backgrounded, the always-on bridge is the sender: devices register an Expo push token (`bridge/push/register`/`unregister`/`list`) and the bridge POSTs a minimal, content-free payload to the Expo push service on `turn/completed` and approval requests. Auto-enabled — the app prompts for permission and registers on first bridge connect (no Settings trip); Settings → Notifications is the override (opt out + per-event switches). Banners are suppressed while foregrounded; backgrounded/killed apps receive the alert; tapping deep-links to the thread. Completed-turn notifications include a short preview of the agent's reply (last line, capped at 140 chars; a snippet of reply text therefore transits Expo/Apple when enabled). Approval notifications carry Approve/Deny action buttons that resolve the approval over the bridge WebSocket. See `docs/push-notifications.md`.
+- Push notifications for agent turn completion and approval requests. Because the app's WebSocket closes when backgrounded, the always-on bridge is the sender: devices register an Expo push token (`bridge/push/register`/`unregister`/`list`) and the bridge POSTs a minimal payload to the Expo push service, which relays via APNs (iOS) and FCM (Android). Auto-enabled on first bridge connect; Settings → Notifications is the override (opt out + per-event toggles). Foreground banners are suppressed; tapping a notification deep-links to the thread.
+- Reply preview on turn-completed notifications: the agent's last reply line, whitespace-collapsed and capped at 140 characters. A reply snippet therefore transits Expo/Apple/Google when notifications are enabled; disclosed in the privacy policy and store data-safety answers.
+- Actionable Approve/Deny buttons on approval notifications, resolved over the authenticated bridge WebSocket without opening the conversation.
+- Android push support (Firebase project + FCM v1 credentials).
+- Prompt library in the composer: save and one-tap-insert reusable prompts, with search and inline add/edit/delete.
+
+### Improved
+- Push delivery hardened for scale: retry with exponential backoff on Expo 429/5xx and transport errors, plus delayed receipt polling that prunes unregistered device tokens.
+- Version synced to 5.2.3 across the monorepo (CLI, mobile app, and Rust bridge).
 
 ## 5.2.0 - 2026-05-18
 
