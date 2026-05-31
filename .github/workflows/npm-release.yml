@@ -232,7 +232,9 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: "20"
-          registry-url: "https://registry.npmjs.org"
+          # No registry-url: it makes setup-node write an .npmrc with
+          # _authToken=${NODE_AUTH_TOKEN}, forcing (empty) token auth and
+          # breaking OIDC trusted publishing (npm returns 404 on PUT).
           cache: npm
           cache-dependency-path: package-lock.json
           package-manager-cache: false
