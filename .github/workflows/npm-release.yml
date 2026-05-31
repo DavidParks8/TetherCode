@@ -355,7 +355,10 @@ jobs:
 
       - name: Publish to npm (OIDC trusted publishing)
         if: steps.publish_target.outputs.publish_needed == 'true'
-        run: npm publish --access public --tag "${{ steps.publish_target.outputs.publish_tag }}"
+        # Provenance is disabled because it requires a public repository; this
+        # repo is currently private. OIDC auth still applies. Re-enable with
+        # --provenance once the repository is public.
+        run: npm publish --access public --provenance=false --tag "${{ steps.publish_target.outputs.publish_tag }}"
 
       - name: Create or update GitHub release
         if: startsWith(github.ref, 'refs/tags/')
