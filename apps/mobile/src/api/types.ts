@@ -4,6 +4,8 @@ export type ChatEngine = 'codex' | 'opencode' | 'cursor';
 export interface EngineDefaultSettings {
   modelId: string | null;
   effort: ReasoningEffort | null;
+  serviceTier?: ServiceTier | null;
+  collaborationMode?: CollaborationMode;
 }
 
 export type EngineDefaultSettingsMap = Partial<Record<ChatEngine, EngineDefaultSettings>>;
@@ -664,16 +666,24 @@ export interface RunEvent {
 
 export interface BridgeCapabilities {
   activeEngine: ChatEngine;
+  preferredEngine?: ChatEngine;
+  configuredEngines?: ChatEngine[];
   availableEngines: ChatEngine[];
   unifiedChatList: boolean;
-  supports: {
-    reviewStart: boolean;
-    turnSteer: boolean;
-    commandOutputDelta: boolean;
-    selfUpdate: boolean;
-    browserPreview: boolean;
-    genericUiSurface: boolean;
-  };
+  supports: BridgeCapabilitySupport;
+  supportsByEngine?: Partial<Record<ChatEngine, BridgeCapabilitySupport>>;
+}
+
+export interface BridgeCapabilitySupport {
+  reviewStart: boolean;
+  turnSteer: boolean;
+  commandOutputDelta: boolean;
+  fastMode?: boolean;
+  account?: boolean;
+  accountRateLimits?: boolean;
+  selfUpdate: boolean;
+  browserPreview: boolean;
+  genericUiSurface: boolean;
 }
 
 export interface BridgeDeviceConnection {

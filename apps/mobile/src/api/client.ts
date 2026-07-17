@@ -429,7 +429,7 @@ export class HostBridgeApiClient {
     }
 
     const request = this.ws
-      .request<Record<string, unknown>>('account/rateLimits/read')
+      .request<Record<string, unknown>>('account/rateLimits/read', { engine: 'codex' })
       .then((response) => {
         const snapshot = readSelectedAccountRateLimits(response);
         this.rememberAccountRateLimits(snapshot);
@@ -446,6 +446,7 @@ export class HostBridgeApiClient {
   async readAccount(options: AccountReadOptions = {}): Promise<AccountSnapshot> {
     const response = await this.ws.request<AppServerAccountReadResponse>('account/read', {
       refreshToken: options.refreshToken === true,
+      engine: 'codex',
     });
     return readAccountSnapshot(response);
   }
@@ -454,6 +455,7 @@ export class HostBridgeApiClient {
     const response = await this.ws.request<Record<string, unknown>>('account/login/start', {
       type: 'chatgpt',
       codexStreamlinedLogin: true,
+      engine: 'codex',
     });
     return readAccountLoginStartResponse(response);
   }
@@ -461,6 +463,7 @@ export class HostBridgeApiClient {
   async startChatGptDeviceCodeAccountLogin(): Promise<AccountLoginStartResponse> {
     const response = await this.ws.request<Record<string, unknown>>('account/login/start', {
       type: 'chatgptDeviceCode',
+      engine: 'codex',
     });
     return readAccountLoginStartResponse(response);
   }
@@ -533,16 +536,17 @@ export class HostBridgeApiClient {
       accessToken: input.accessToken,
       chatgptAccountId: input.chatgptAccountId,
       chatgptPlanType: input.chatgptPlanType ?? null,
+      engine: 'codex',
     });
     return readAccountLoginStartResponse(response);
   }
 
   async cancelAccountLogin(loginId: string): Promise<void> {
-    await this.ws.request('account/login/cancel', { loginId });
+    await this.ws.request('account/login/cancel', { loginId, engine: 'codex' });
   }
 
   async logoutAccount(): Promise<void> {
-    await this.ws.request('account/logout');
+    await this.ws.request('account/logout', { engine: 'codex' });
   }
 
   peekChats(options: ListChatsOptions = {}): ChatSummary[] | null {
@@ -1541,10 +1545,11 @@ export class HostBridgeApiClient {
     throw new Error('thread/fork did not return a chat payload');
   }
 
-  async readServiceTierPreference(): Promise<ServiceTier | null> {
+  async readServiceTierPreference(engine?: ChatEngine): Promise<ServiceTier | null> {
     const response = await this.ws.request<AppServerConfigReadResponse>('config/read', {
       includeLayers: false,
       cwd: null,
+      engine,
     });
     const config = toRecord(response.config);
     return normalizeServiceTier(readString(config?.service_tier));

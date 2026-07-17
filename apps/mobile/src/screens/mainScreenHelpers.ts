@@ -1494,7 +1494,7 @@ export function mergeChatEngines(
     }
   }
 
-  return merged.length > 0 ? merged : ['codex'];
+  return merged;
 }
 
 export function normalizeModelId(value: string | null | undefined): string | null {
@@ -2177,9 +2177,12 @@ export function findSlashCommandDefinition(name: string): SlashCommandDefinition
   );
 }
 
-export function filterSlashCommands(query: string): SlashCommandDefinition[] {
+export function filterSlashCommands(
+  query: string,
+  commands: SlashCommandDefinition[] = SLASH_COMMANDS
+): SlashCommandDefinition[] {
   const normalized = query.trim().toLowerCase();
-  const dedupedCommands = dedupeSlashCommandsByName(SLASH_COMMANDS);
+  const dedupedCommands = dedupeSlashCommandsByName(commands);
   if (!normalized) {
     return dedupedCommands;
   }

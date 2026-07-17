@@ -118,6 +118,9 @@ export const DrawerContent = memo(function DrawerContentComponent({
   const [selectedChatEngines, setSelectedChatEngines] = useState<ChatEngine[]>(() => [
     ...DEFAULT_DRAWER_CHAT_ENGINES,
   ]);
+  const [availableChatEngines, setAvailableChatEngines] = useState<ChatEngine[]>(() => [
+    ...DEFAULT_DRAWER_CHAT_ENGINES,
+  ]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMenuVisible, setFilterMenuVisible] = useState(false);
   const [collapsedWorkspaceKeys, setCollapsedWorkspaceKeys] = useState<Set<string>>(new Set());
@@ -144,6 +147,10 @@ export const DrawerContent = memo(function DrawerContentComponent({
   const activeRef = useRef(active);
   const chatsRef = useRef<ChatSummary[]>([]);
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const chatFilterOptions = useMemo(
+    () => CHAT_FILTER_OPTIONS.filter((option) => availableChatEngines.includes(option.key)),
+    [availableChatEngines]
+  );
   const engineFilteredChats = useMemo(
     () => filterDrawerChatsByEngines(chats, selectedChatEngines),
     [chats, selectedChatEngines]
@@ -152,6 +159,21 @@ export const DrawerContent = memo(function DrawerContentComponent({
     () => searchDrawerChats(engineFilteredChats, searchQuery),
     [engineFilteredChats, searchQuery]
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.readBridgeCapabilities().then((capabilities) => {
+      if (cancelled) {
+        return;
+      }
+      const engines = capabilities.availableEngines;
+      setAvailableChatEngines(engines);
+      setSelectedChatEngines(engines);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
   const pinnedChatIdSet = useMemo(() => new Set(pinnedChatIds), [pinnedChatIds]);
   const pinnedWorkspacePathSet = useMemo(
     () => new Set(pinnedWorkspacePaths),
@@ -885,7 +907,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
     () => new Set(selectedChatEngines),
     [selectedChatEngines]
   );
-  const hasFilteredEngines = selectedChatEngines.length < DEFAULT_DRAWER_CHAT_ENGINES.length;
+  const hasFilteredEngines = selectedChatEngines.length < availableChatEngines.length;
   const hasActiveFilters = hasFilteredEngines || isSearching;
   const singleSelectedEngine =
     selectedChatEngines.length === 1 ? selectedChatEngines[0] : null;
@@ -893,9 +915,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
     ? `No ${getChatEngineLabel(singleSelectedEngine)} chats`
     : 'No chats yet';
   const emptyHint = singleSelectedEngine
-    ? `Turn ${getChatEngineLabel(
-        singleSelectedEngine === 'codex' ? 'opencode' : 'codex'
-      )} back on or start a new ${getChatEngineLabel(singleSelectedEngine)} chat.`
+    ? `Turn another engine back on or start a new ${getChatEngineLabel(singleSelectedEngine)} chat.`
     : 'Start a new chat and it will show up here with live activity.';
   const resolvedEmptyTitle = isSearching ? 'No matching chats' : emptyTitle;
   const resolvedEmptyHint = isSearching
@@ -1126,7 +1146,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
                 ) : null}
               </View>
               <View style={styles.filterChipRow}>
-                {CHAT_FILTER_OPTIONS.map((option) => {
+                {chatFilterOptions.map((option) => {
                   const selected = selectedChatEngineSet.has(option.key);
                   return (
                     <Pressable

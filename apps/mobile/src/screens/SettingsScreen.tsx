@@ -340,6 +340,7 @@ export function SettingsScreen({
   }, []);
 
   const runtimeAvailableEngines = bridgeCapabilities?.availableEngines ?? [];
+  const configuredEngines = bridgeCapabilities?.configuredEngines ?? runtimeAvailableEngines;
   const availableEngines = useMemo(
     () =>
       mergeChatEngines(
@@ -353,7 +354,7 @@ export function SettingsScreen({
       ? defaultChatEngine
       : bridgeCapabilities?.activeEngine && availableEngines.includes(bridgeCapabilities.activeEngine)
         ? bridgeCapabilities.activeEngine
-        : availableEngines[0] ?? 'codex';
+        : availableEngines[0] ?? defaultChatEngine ?? bridgeCapabilities?.activeEngine ?? 'codex';
   const selectedEngineDefaults = defaultEngineSettings?.[normalizedDefaultChatEngine] ?? null;
   const normalizedDefaultModelId = normalizeModelId(selectedEngineDefaults?.modelId);
   const normalizedDefaultEffort = normalizeReasoningEffort(selectedEngineDefaults?.effort);
@@ -406,9 +407,12 @@ export function SettingsScreen({
     [accountRateLimits]
   );
   const showCodexUsageLimits =
-    runtimeAvailableEngines.length > 0
-      ? runtimeAvailableEngines.includes('codex')
-      : availableEngines.includes('codex');
+    bridgeCapabilities?.supportsByEngine?.codex?.accountRateLimits === true ||
+    (bridgeCapabilities?.activeEngine === 'codex' &&
+      bridgeCapabilities.supports.accountRateLimits === true);
+  const showCodexAccount =
+    bridgeCapabilities?.supportsByEngine?.codex?.account === true ||
+    (bridgeCapabilities?.activeEngine === 'codex' && bridgeCapabilities.supports.account === true);
   const canSelfUpdateBridge =
     bridgeCapabilities?.supports.selfUpdate === true &&
     bridgeRuntime?.selfUpdateSupported === true;
@@ -497,6 +501,7 @@ export function SettingsScreen({
   const bridgeSummary = 'Add or manage private connections';
   const enginesSummary = formatEnginesSummary(
     runtimeAvailableEngines,
+    configuredEngines,
     cursorCredentials,
     cursorCredentialsLoading
   );
@@ -510,8 +515,8 @@ export function SettingsScreen({
   const canRateOnAppStore =
     Platform.OS === 'ios' && canOpenAppStoreWriteReviewPage();
   const shouldLoadChatSettings = route === 'chat';
-  const shouldLoadAccountSettings = route === 'account';
-  const shouldLoadLimitsSettings = route === 'limits';
+  const shouldLoadAccountSettings = route === 'account' && showCodexAccount;
+  const shouldLoadLimitsSettings = route === 'limits' && showCodexUsageLimits;
   const shouldLoadBridgeSettings = route === 'bridge';
   const shouldLoadEngineSettings = route === 'engines';
 
@@ -1255,13 +1260,13 @@ export function SettingsScreen({
 
   const handleConnectEngine = useCallback(
     (engine: Exclude<ChatEngine, 'codex'>) => {
-      const command =
-        engine === 'cursor'
-          ? 'clawdex init --engines codex,cursor'
-          : 'clawdex init --engines codex,opencode';
+      const engines = [...configuredEngines, engine].filter(
+        (value, index, values) => values.indexOf(value) === index
+      );
+      const command = `clawdex init --engines ${engines.join(',')}`;
       setEngineActionMessage(`Run ${command} on the bridge host, then restart the connection.`);
     },
-    []
+    [configuredEngines]
   );
 
   const enginePickerOptions = useMemo<SelectionSheetOption[]>(
@@ -1376,12 +1381,14 @@ export function SettingsScreen({
 
       <Text style={[styles.sectionLabel, styles.sectionLabelGap]}>Connection</Text>
       <BlurView intensity={50} tint={theme.blurTint} style={styles.card}>
-        <MenuEntry
-          icon="person-circle-outline"
-          title="Account"
-          description={accountSummary}
-          onPress={() => navigateToRoute('account')}
-        />
+        {showCodexAccount ? (
+          <MenuEntry
+            icon="person-circle-outline"
+            title="Codex Account"
+            description={accountSummary}
+            onPress={() => navigateToRoute('account')}
+          />
+        ) : null}
         <MenuEntry
           icon="hardware-chip-outline"
           title="Engines"
@@ -1506,7 +1513,7 @@ export function SettingsScreen({
       </BlurView>
       <Text style={styles.subtleHintText}>
         This controls command/file-change approvals only. It does not affect
-        request_user_input questions. Mobile chats request full Codex sandbox
+        request_user_input questions. Mobile chats request full harness sandbox
         access by default.
       </Text>
 
@@ -1920,8 +1927,8 @@ export function SettingsScreen({
         : cursorCredentials?.configured
           ? colors.error
           : colors.textMuted;
-    const codexConnected =
-      runtimeAvailableEngines.length === 0 || runtimeAvailableEngines.includes('codex');
+    const codexConfigured = configuredEngines.includes('codex');
+    const codexConnected = runtimeAvailableEngines.includes('codex');
     const cursorConnected =
       cursorCredentials?.valid === true &&
       (cursorCredentials.runtimeAvailable || runtimeAvailableEngines.includes('cursor'));
@@ -1935,8 +1942,14 @@ export function SettingsScreen({
           <EngineConnectionEntry
             icon="sparkles-outline"
             title="Codex"
-            description="Already available on this connection."
-            status={codexConnected ? 'Connected' : 'Unavailable'}
+            description={
+              codexConnected
+                ? 'Codex is available for new chats.'
+                : codexConfigured
+                  ? 'Configured, but the Codex backend is unavailable.'
+                  : 'Enable Codex on the bridge or hosted workspace.'
+            }
+            status={codexConnected ? 'Connected' : codexConfigured ? 'Unavailable' : 'Not connected'}
             statusTone={codexConnected ? 'connected' : 'muted'}
           />
           <EngineConnectionEntry
@@ -1968,8 +1981,8 @@ export function SettingsScreen({
         </BlurView>
 
         <Text style={styles.subtleHintText}>
-          Codex is connected by default. Cursor uses a Cursor API key on the bridge; OpenCode uses
-          the provider credentials configured for OpenCode.
+          Cursor uses a Cursor API key on the bridge; OpenCode and Codex use their configured host
+          credentials.
         </Text>
         {engineActionMessage ? (
           <Text style={styles.successText}>{engineActionMessage}</Text>
@@ -2219,9 +2232,9 @@ export function SettingsScreen({
       case 'appearance':
         return renderAppearanceContent();
       case 'account':
-        return renderAccountContent();
+        return showCodexAccount ? renderAccountContent() : renderHomeContent();
       case 'limits':
-        return renderLimitsContent();
+        return showCodexUsageLimits ? renderLimitsContent() : renderHomeContent();
       case 'bridge':
         return renderBridgeContent();
       case 'engines':
@@ -3224,43 +3237,31 @@ function mergeChatEngines(
     }
   }
 
-  return merged.length > 0 ? merged : ['codex'];
+  return merged;
 }
 
 function formatEnginesSummary(
   availableEngines: readonly ChatEngine[],
+  configuredEngines: readonly ChatEngine[],
   status: CursorCredentialStatus | null,
   loading: boolean
 ): string {
   const connected = new Set<ChatEngine>(availableEngines);
-  connected.add('codex');
   if (status?.valid === true && status.runtimeAvailable) {
     connected.add('cursor');
   }
 
   const parts = [...connected].map((engine) => getChatEngineLabel(engine));
-  if (parts.length >= 3) {
-    return 'Codex, Cursor, OpenCode connected';
-  }
   if (parts.length > 1) {
     return `${parts.join(', ')} connected`;
   }
+  if (parts.length === 1) {
+    return `${parts[0]} connected`;
+  }
   if (loading && !status) {
-    return 'Codex connected · Checking Cursor';
+    return 'Checking engines';
   }
-  if (!status) {
-    return 'Codex connected';
-  }
-  if (!status.configured) {
-    return 'Codex connected · Cursor API key required';
-  }
-  if (status.valid === true) {
-    return status.runtimeAvailable ? 'Codex and Cursor connected' : 'Codex connected · Cursor key saved';
-  }
-  if (status.valid === false) {
-    return 'Codex connected · Cursor key invalid';
-  }
-  return 'Codex connected · Cursor status unknown';
+  return configuredEngines.length > 0 ? 'Configured · unavailable' : 'Server managed';
 }
 
 function formatCursorEngineDescription(

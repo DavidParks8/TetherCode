@@ -969,13 +969,14 @@ impl PushService {
         let (title, body) = match event {
             PushEvent::TurnCompleted => (
                 "Turn finished".to_string(),
-                reply_preview
-                    .unwrap_or_else(|| format!("Codex finished working in {}", self.project_label)),
+                reply_preview.unwrap_or_else(|| {
+                    format!("The agent finished working in {}", self.project_label)
+                }),
             ),
             PushEvent::ApprovalRequested => (
                 "Approval needed".to_string(),
                 format!(
-                    "Codex is waiting for your approval in {}",
+                    "The agent is waiting for your approval in {}",
                     self.project_label
                 ),
             ),
@@ -1236,17 +1237,23 @@ enum BridgeRuntimeEngine {
 #[serde(rename_all = "camelCase")]
 struct BridgeCapabilities {
     active_engine: BridgeRuntimeEngine,
+    preferred_engine: BridgeRuntimeEngine,
+    configured_engines: Vec<BridgeRuntimeEngine>,
     available_engines: Vec<BridgeRuntimeEngine>,
     unified_chat_list: bool,
     supports: BridgeCapabilitySupport,
+    supports_by_engine: HashMap<BridgeRuntimeEngine, BridgeCapabilitySupport>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BridgeCapabilitySupport {
     review_start: bool,
     turn_steer: bool,
     command_output_delta: bool,
+    fast_mode: bool,
+    account: bool,
+    account_rate_limits: bool,
     self_update: bool,
     browser_preview: bool,
     generic_ui_surface: bool,
@@ -1255,9 +1262,15 @@ struct BridgeCapabilitySupport {
 impl AppState {
     fn bridge_capabilities(&self) -> BridgeCapabilities {
         let mut capabilities = self.backend.capabilities();
+        capabilities.configured_engines = self.config.enabled_engines.clone();
         capabilities.supports.self_update = self.updater.is_self_update_supported();
         capabilities.supports.browser_preview = self.preview.is_available();
         capabilities.supports.generic_ui_surface = true;
+        for supports in capabilities.supports_by_engine.values_mut() {
+            supports.self_update = capabilities.supports.self_update;
+            supports.browser_preview = capabilities.supports.browser_preview;
+            supports.generic_ui_surface = true;
+        }
         capabilities
     }
 
@@ -1881,12 +1894,15 @@ impl RuntimeBackend {
     }
 
     fn capabilities(&self) -> BridgeCapabilities {
-        let active_engine = self.engine();
-        let supports = match active_engine {
+        let preferred_engine = self.engine();
+        let supports_for_engine = |engine| match engine {
             BridgeRuntimeEngine::Codex => BridgeCapabilitySupport {
                 review_start: true,
                 turn_steer: true,
                 command_output_delta: true,
+                fast_mode: true,
+                account: true,
+                account_rate_limits: true,
                 self_update: false,
                 browser_preview: false,
                 generic_ui_surface: true,
@@ -1895,6 +1911,9 @@ impl RuntimeBackend {
                 review_start: false,
                 turn_steer: false,
                 command_output_delta: false,
+                fast_mode: false,
+                account: false,
+                account_rate_limits: false,
                 self_update: false,
                 browser_preview: false,
                 generic_ui_surface: true,
@@ -1903,18 +1922,42 @@ impl RuntimeBackend {
                 review_start: false,
                 turn_steer: false,
                 command_output_delta: false,
+                fast_mode: false,
+                account: false,
+                account_rate_limits: false,
                 self_update: false,
                 browser_preview: false,
                 generic_ui_surface: true,
             },
         };
         let available_engines = self.available_engines();
+        let active_engine = if available_engines.contains(&preferred_engine) {
+            preferred_engine
+        } else {
+            available_engines
+                .first()
+                .copied()
+                .unwrap_or(preferred_engine)
+        };
+        let supports = supports_for_engine(active_engine);
+        let supports_by_engine = [
+            BridgeRuntimeEngine::Codex,
+            BridgeRuntimeEngine::Opencode,
+            BridgeRuntimeEngine::Cursor,
+        ]
+        .iter()
+        .copied()
+        .map(|engine| (engine, supports_for_engine(engine)))
+        .collect();
 
         BridgeCapabilities {
             active_engine,
+            preferred_engine,
+            configured_engines: available_engines.clone(),
             unified_chat_list: available_engines.len() > 1,
             available_engines,
             supports,
+            supports_by_engine,
         }
     }
 
@@ -11833,17 +11876,7 @@ fn parse_enabled_bridge_engines_env() -> Result<Option<Vec<BridgeRuntimeEngine>>
 fn legacy_default_enabled_engines(
     requested_active_engine: BridgeRuntimeEngine,
 ) -> Vec<BridgeRuntimeEngine> {
-    match requested_active_engine {
-        BridgeRuntimeEngine::Codex => {
-            vec![BridgeRuntimeEngine::Codex, BridgeRuntimeEngine::Opencode]
-        }
-        BridgeRuntimeEngine::Opencode => {
-            vec![BridgeRuntimeEngine::Opencode, BridgeRuntimeEngine::Codex]
-        }
-        BridgeRuntimeEngine::Cursor => {
-            vec![BridgeRuntimeEngine::Cursor, BridgeRuntimeEngine::Codex]
-        }
-    }
+    vec![requested_active_engine]
 }
 
 impl BridgeRuntimeEngine {
@@ -15675,13 +15708,20 @@ mod tests {
 
         let capabilities = state.bridge_capabilities();
         assert_eq!(capabilities.active_engine, BridgeRuntimeEngine::Codex);
+        assert_eq!(capabilities.preferred_engine, BridgeRuntimeEngine::Codex);
+        assert_eq!(
+            capabilities.configured_engines,
+            vec![BridgeRuntimeEngine::Codex, BridgeRuntimeEngine::Opencode]
+        );
         assert_eq!(
             capabilities.available_engines,
             vec![BridgeRuntimeEngine::Codex, BridgeRuntimeEngine::Opencode]
         );
         assert!(capabilities.unified_chat_list);
         assert!(capabilities.supports.review_start);
+        assert!(capabilities.supports.fast_mode);
         assert!(capabilities.supports.generic_ui_surface);
+        assert!(!capabilities.supports_by_engine[&BridgeRuntimeEngine::Opencode].fast_mode);
 
         shutdown_test_backend(&state.backend).await;
     }
@@ -15697,6 +15737,18 @@ mod tests {
                 BridgeRuntimeEngine::Cursor,
                 BridgeRuntimeEngine::Codex
             ]
+        );
+    }
+
+    #[test]
+    fn legacy_engine_default_does_not_enable_codex_for_other_harnesses() {
+        assert_eq!(
+            legacy_default_enabled_engines(BridgeRuntimeEngine::Opencode),
+            vec![BridgeRuntimeEngine::Opencode]
+        );
+        assert_eq!(
+            legacy_default_enabled_engines(BridgeRuntimeEngine::Cursor),
+            vec![BridgeRuntimeEngine::Cursor]
         );
     }
 
@@ -15736,23 +15788,26 @@ mod tests {
         );
         assert!(!capabilities.unified_chat_list);
         assert!(capabilities.supports.review_start);
+        assert!(capabilities.supports.fast_mode);
         assert!(capabilities.supports.generic_ui_surface);
 
         shutdown_test_backend(&backend).await;
     }
 
     #[tokio::test]
-    async fn bridge_capabilities_keep_preferred_engine_when_unavailable() {
+    async fn bridge_capabilities_distinguish_preferred_engine_when_unavailable() {
         let hub = Arc::new(ClientHub::new());
         let backend = build_test_runtime_backend(hub, BridgeRuntimeEngine::Cursor, false).await;
 
         let capabilities = backend.capabilities();
-        assert_eq!(capabilities.active_engine, BridgeRuntimeEngine::Cursor);
+        assert_eq!(capabilities.active_engine, BridgeRuntimeEngine::Codex);
+        assert_eq!(capabilities.preferred_engine, BridgeRuntimeEngine::Cursor);
         assert_eq!(
             capabilities.available_engines,
             vec![BridgeRuntimeEngine::Codex]
         );
-        assert!(!capabilities.supports.review_start);
+        assert!(capabilities.supports.review_start);
+        assert!(capabilities.supports.fast_mode);
         assert!(capabilities.supports.generic_ui_surface);
 
         shutdown_test_backend(&backend).await;

@@ -810,18 +810,28 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const draftScopeKey = getDraftScopeKey(selectedChatId);
     const persistedDefaultChatEngine = resolveChatEngine(defaultChatEngine ?? 'codex');
     const availableNewChatEngines = mergeChatEngines(
-      bridgeCapabilities?.availableEngines ?? [],
-      bridgeCapabilities?.activeEngine
+      [
+        ...(bridgeCapabilities?.availableEngines ?? []),
+        ...(bridgeCapabilities?.configuredEngines ?? []),
+      ],
+      bridgeCapabilities ? bridgeCapabilities.activeEngine : null
     );
     const preferredNewChatEngine = availableNewChatEngines.includes(pendingChatEngine)
       ? pendingChatEngine
       : availableNewChatEngines.includes(persistedDefaultChatEngine)
         ? persistedDefaultChatEngine
-        : availableNewChatEngines[0] ?? 'codex';
+        : availableNewChatEngines[0] ?? persistedDefaultChatEngine;
     const activeChatEngine = selectedChat?.engine
       ? resolveChatEngine(selectedChat.engine)
       : preferredNewChatEngine;
     const activeChatEngineLabel = getChatEngineLabel(activeChatEngine);
+    const activeEngineSupports =
+      bridgeCapabilities?.supportsByEngine?.[activeChatEngine] ??
+      (bridgeCapabilities?.activeEngine === activeChatEngine
+        ? bridgeCapabilities.supports
+        : null);
+    const supportsFastMode = activeEngineSupports?.fastMode === true;
+    const supportsReview = activeEngineSupports?.reviewStart === true;
     const modelOptions = modelOptionsByEngine[activeChatEngine] ?? EMPTY_MODEL_OPTIONS;
     const pendingEngineDefaults = defaultEngineSettings?.[preferredNewChatEngine] ?? null;
     const preferredDefaultModelId = normalizeModelId(pendingEngineDefaults?.modelId);
@@ -832,7 +842,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const slashQuery = parseSlashQuery(draft);
     const slashSuggestions =
       slashQuery !== null
-        ? filterSlashCommands(slashQuery)
+        ? filterSlashCommands(
+            slashQuery,
+            SLASH_COMMANDS.filter((command) => command.name !== 'review' || supportsReview)
+          )
         : [];
     const mentionQuery = parseMentionQuery(draft);
     const mentionPathSuggestions = useMemo(
@@ -1282,6 +1295,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     }, []);
 
     useEffect(() => {
+      if (bridgeCapabilities?.supportsByEngine?.codex?.fastMode !== true) {
+        setDefaultServiceTier(null);
+        return;
+      }
+
       let cancelled = false;
 
       const load = async () => {
@@ -1563,7 +1581,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
       const load = async () => {
         try {
-          const serviceTier = await api.readServiceTierPreference();
+          const serviceTier = await api.readServiceTierPreference('codex');
           if (!cancelled) {
             setDefaultServiceTier(toSelectedServiceTier(serviceTier));
           }
@@ -1578,7 +1596,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       return () => {
         cancelled = true;
       };
-    }, [api]);
+    }, [api, bridgeCapabilities?.supportsByEngine]);
 
     useEffect(() => {
       let cancelled = false;
@@ -2439,8 +2457,17 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         return;
       }
 
-      setPendingChatEngine(availableNewChatEngines[0] ?? 'codex');
-    }, [availableNewChatEngines, pendingChatEngine, selectedChatId]);
+      const fallbackEngine = bridgeCapabilities?.activeEngine ?? defaultChatEngine;
+      if (fallbackEngine) {
+        setPendingChatEngine(fallbackEngine);
+      }
+    }, [
+      availableNewChatEngines,
+      bridgeCapabilities?.activeEngine,
+      defaultChatEngine,
+      pendingChatEngine,
+      selectedChatId,
+    ]);
 
     useEffect(() => {
       if (!chatModelPreferencesLoaded) {
@@ -2510,10 +2537,12 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           )
         : defaultServiceTier
     );
-    const activeServiceTier = resolveSelectedServiceTier(
-      selectedServiceTier,
-      selectedChatId ? null : defaultServiceTier
-    );
+    const activeServiceTier = supportsFastMode
+      ? resolveSelectedServiceTier(
+          selectedServiceTier,
+          selectedChatId ? null : defaultServiceTier
+        )
+      : null;
     const fastModeEnabled = activeServiceTier === 'fast';
     const supportsSelectedEffort =
       requestedEffort &&
@@ -3739,6 +3768,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     }, []);
 
     const toggleFastMode = useCallback(() => {
+      if (!supportsFastMode) {
+        return;
+      }
       const nextServiceTier: ServiceTier | null =
         activeServiceTier === 'fast' ? null : 'fast';
       const enablingFastMode = nextServiceTier === 'fast';
@@ -3750,7 +3782,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         title: nextTitle,
         detail: selectedChatId ? 'Applies to the next message' : 'Applies to the next new chat',
       });
-    }, [activeServiceTier, selectedChatId]);
+    }, [activeServiceTier, selectedChatId, supportsFastMode]);
 
     const openModelReasoningMenu = useCallback(() => {
       setModelSettingsMenuVisible(true);
@@ -3935,20 +3967,24 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             setCollaborationModeMenuVisible(true);
           },
         },
-        {
-          key: 'fast-mode',
-          title: fastModeEnabled ? 'Disable fast mode' : 'Enable fast mode',
-          description:
-            selectedChatId !== null
-              ? 'Applies to the next message in this chat.'
-              : 'Applies to the next new chat.',
-          icon: 'flash-outline',
-          meta: fastModeEnabled ? 'On' : 'Off',
-          onPress: () => {
-            setModelSettingsMenuVisible(false);
-            void toggleFastMode();
-          },
-        },
+        ...(supportsFastMode
+          ? [
+              {
+                key: 'fast-mode',
+                title: fastModeEnabled ? 'Disable fast mode' : 'Enable fast mode',
+                description:
+                  selectedChatId !== null
+                    ? 'Applies to the next message in this chat.'
+                    : 'Applies to the next new chat.',
+                icon: 'flash-outline' as const,
+                meta: fastModeEnabled ? 'On' : 'Off',
+                onPress: () => {
+                  setModelSettingsMenuVisible(false);
+                  void toggleFastMode();
+                },
+              },
+            ]
+          : []),
       ],
       [
         activeEffortLabel,
@@ -3958,6 +3994,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         openEffortModal,
         openModelModal,
         selectedChatId,
+        supportsFastMode,
         toggleFastMode,
         activeChatEngineLabel,
         availableNewChatEngines.length,
@@ -4509,7 +4546,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
 
         if (name === 'help') {
-          const lines = SLASH_COMMANDS.map((command) => {
+          const lines = SLASH_COMMANDS.filter(
+            (command) => command.name !== 'review' || supportsReview
+          ).map((command) => {
             const suffix = command.argsHint ? ` ${command.argsHint}` : '';
             const scope = command.mobileSupported ? 'mobile' : 'CLI only';
             return `/${command.name}${suffix} — ${command.summary} (${scope})`;
@@ -4816,10 +4855,12 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           const lines = [
             `Model: ${activeModelLabel}`,
             `Reasoning: ${activeEffortLabel}`,
-            `Fast mode: ${fastModeEnabled ? 'On' : 'Off'}`,
             `Mode: ${formatCollaborationModeLabel(selectedCollaborationMode)}`,
             `Default workspace: ${preferredStartCwd ?? 'Select project'}`,
           ];
+          if (supportsFastMode) {
+            lines.splice(2, 0, `Fast mode: ${fastModeEnabled ? 'On' : 'Off'}`);
+          }
           if (selectedChat) {
             lines.push(`Chat: ${selectedChat.title || selectedChat.id}`);
             lines.push(`Chat workspace: ${selectedChat.cwd ?? 'Not set'}`);
@@ -4897,8 +4938,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             return true;
           }
 
-          if (selectedChat?.engine === 'opencode') {
-            const detail = 'Review is not supported for OpenCode chats yet.';
+          if (!supportsReview) {
+            const detail = `Review is not supported for ${activeChatEngineLabel} chats.`;
             setError(detail);
             setActivity({
               tone: 'error',
@@ -8507,7 +8548,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           attachments={composerAttachments}
           onRemoveAttachment={removeComposerAttachment}
           isLoading={isLoading}
-          placeholder={selectedChat ? 'Reply...' : 'Message Codex...'}
+          placeholder={selectedChat ? 'Reply...' : `Message ${activeChatEngineLabel}...`}
           safeAreaBottomInset={composerSafeAreaBottomInset}
           keyboardVisible={keyboardVisible}
           reserveFooterSpace={activeChatEngine === 'codex'}
@@ -8797,33 +8838,35 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                   </Text>
                 </Pressable>
               ) : null}
-              <Pressable
-                style={({ pressed }) => [
-                  styles.fastChip,
-                  fastModeEnabled && styles.fastChipEnabled,
-                  pressed && styles.modelChipPressed,
-                  fastModeControlDisabled && styles.sessionMetaChipDisabled,
-                ]}
-                onPress={() => {
-                  void toggleFastMode();
-                }}
-                disabled={fastModeControlDisabled}
-              >
-                <Ionicons
-                  name={fastModeEnabled ? 'flash' : 'flash-outline'}
-                  size={12}
-                  color={fastModeEnabled ? theme.colors.textPrimary : theme.colors.textMuted}
-                />
-                <Text
-                  style={[
-                    styles.modelChipText,
-                    fastModeEnabled && styles.fastChipTextEnabled,
+              {supportsFastMode ? (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.fastChip,
+                    fastModeEnabled && styles.fastChipEnabled,
+                    pressed && styles.modelChipPressed,
+                    fastModeControlDisabled && styles.sessionMetaChipDisabled,
                   ]}
-                  numberOfLines={1}
+                  onPress={() => {
+                    void toggleFastMode();
+                  }}
+                  disabled={fastModeControlDisabled}
                 >
-                  Fast
-                </Text>
-              </Pressable>
+                  <Ionicons
+                    name={fastModeEnabled ? 'flash' : 'flash-outline'}
+                    size={12}
+                    color={fastModeEnabled ? theme.colors.textPrimary : theme.colors.textMuted}
+                  />
+                  <Text
+                    style={[
+                      styles.modelChipText,
+                      fastModeEnabled && styles.fastChipTextEnabled,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    Fast
+                  </Text>
+                </Pressable>
+              ) : null}
             </ScrollView>
           </View>
         ) : null}
@@ -8912,6 +8955,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                   engineLabel={activeChatEngineLabel}
                   modelReasoningLabel={modelReasoningLabel}
                   collaborationModeLabel={collaborationModeLabel}
+                  showFastMode={supportsFastMode}
                   fastModeEnabled={fastModeEnabled}
                   fastModeLabel={fastModeLabel}
                   keyboardVisible={keyboardVisible}
@@ -8964,6 +9008,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 engineLabel={activeChatEngineLabel}
                 modelReasoningLabel={modelReasoningLabel}
                 collaborationModeLabel={collaborationModeLabel}
+                showFastMode={supportsFastMode}
                 fastModeEnabled={fastModeEnabled}
                 fastModeLabel={fastModeLabel}
                 keyboardVisible={false}
@@ -9038,7 +9083,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           visible={collaborationModeMenuVisible}
           eyebrow="Mode"
           title="Collaboration mode"
-          subtitle="Choose how Codex should steer the next turn."
+          subtitle={`Choose how ${activeChatEngineLabel} should steer the next turn.`}
           options={collaborationModeOptions}
           onClose={() => setCollaborationModeMenuVisible(false)}
         />
@@ -9537,6 +9582,7 @@ function ComposeView({
   engineLabel,
   modelReasoningLabel,
   collaborationModeLabel,
+  showFastMode,
   fastModeEnabled,
   fastModeLabel,
   keyboardVisible,
@@ -9553,6 +9599,7 @@ function ComposeView({
   engineLabel: string;
   modelReasoningLabel: string;
   collaborationModeLabel: string;
+  showFastMode: boolean;
   fastModeEnabled: boolean;
   fastModeLabel: string;
   keyboardVisible: boolean;
@@ -9645,23 +9692,25 @@ function ComposeView({
         </Text>
         <Ionicons name="chevron-forward" size={14} color={theme.colors.textMuted} />
       </Pressable>
-      <Pressable
-        style={({ pressed }) => [
-          styles.workspaceSelectBtn,
-          pressed && styles.workspaceSelectBtnPressed,
-        ]}
-        onPress={onToggleFastMode}
-      >
-        <Ionicons name="flash-outline" size={16} color={theme.colors.textMuted} />
-        <Text style={styles.workspaceSelectLabel} numberOfLines={1}>
-          {fastModeLabel}
-        </Text>
-        <Ionicons
-          name={fastModeEnabled ? 'checkmark-circle' : 'ellipse-outline'}
-          size={14}
-          color={theme.colors.textMuted}
-        />
-      </Pressable>
+      {showFastMode ? (
+        <Pressable
+          style={({ pressed }) => [
+            styles.workspaceSelectBtn,
+            pressed && styles.workspaceSelectBtnPressed,
+          ]}
+          onPress={onToggleFastMode}
+        >
+          <Ionicons name="flash-outline" size={16} color={theme.colors.textMuted} />
+          <Text style={styles.workspaceSelectLabel} numberOfLines={1}>
+            {fastModeLabel}
+          </Text>
+          <Ionicons
+            name={fastModeEnabled ? 'checkmark-circle' : 'ellipse-outline'}
+            size={14}
+            color={theme.colors.textMuted}
+          />
+        </Pressable>
+      ) : null}
       <View style={styles.suggestions}>
         {SUGGESTIONS.map((s, index) => (
           <Pressable

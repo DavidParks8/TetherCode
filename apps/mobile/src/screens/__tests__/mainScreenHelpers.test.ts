@@ -2,12 +2,18 @@ import {
   buildOptimisticGoalBridgeUiSurface,
   extractCodexFailureMessage,
   formatGitCloneFailureMessage,
+  mergeChatEngines,
   parseChatBridgeUiSurfaces,
   parseGoalSlashObjective,
   toBridgeUiSurface,
 } from '../mainScreenHelpers';
 
 describe('mainScreenHelpers', () => {
+  it('does not invent Codex when no harness is reported', () => {
+    expect(mergeChatEngines([])).toEqual([]);
+    expect(mergeChatEngines(['opencode'], 'opencode')).toEqual(['opencode']);
+  });
+
   it('keeps successful git clone responses quiet', () => {
     expect(
       formatGitCloneFailureMessage({

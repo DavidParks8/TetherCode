@@ -82,7 +82,7 @@ describe('HostBridgeApiClient', () => {
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
     const result = await client.readAccountRateLimits();
 
-    expect(ws.request).toHaveBeenCalledWith('account/rateLimits/read');
+    expect(ws.request).toHaveBeenCalledWith('account/rateLimits/read', { engine: 'codex' });
     expect(result).toMatchObject({
       limitId: 'codex',
       planType: 'plus',
@@ -285,7 +285,10 @@ describe('HostBridgeApiClient', () => {
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
     const result = await client.readAccount();
 
-    expect(ws.request).toHaveBeenCalledWith('account/read', { refreshToken: false });
+    expect(ws.request).toHaveBeenCalledWith('account/read', {
+      refreshToken: false,
+      engine: 'codex',
+    });
     expect(result).toEqual({
       type: 'chatgpt',
       email: 'mohit@example.com',
@@ -328,7 +331,10 @@ describe('HostBridgeApiClient', () => {
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
     await client.readAccount({ refreshToken: true });
 
-    expect(ws.request).toHaveBeenCalledWith('account/read', { refreshToken: true });
+    expect(ws.request).toHaveBeenCalledWith('account/read', {
+      refreshToken: true,
+      engine: 'codex',
+    });
   });
 
   it('logoutAccount() requests account/logout', async () => {
@@ -338,7 +344,7 @@ describe('HostBridgeApiClient', () => {
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
     await client.logoutAccount();
 
-    expect(ws.request).toHaveBeenCalledWith('account/logout');
+    expect(ws.request).toHaveBeenCalledWith('account/logout', { engine: 'codex' });
   });
 
   it('startChatGptAccountLogin() requests account/login/start and maps auth URL details', async () => {
@@ -356,6 +362,7 @@ describe('HostBridgeApiClient', () => {
     expect(ws.request).toHaveBeenCalledWith('account/login/start', {
       type: 'chatgpt',
       codexStreamlinedLogin: true,
+      engine: 'codex',
     });
     expect(result).toEqual({
       type: 'chatgpt',
@@ -379,6 +386,7 @@ describe('HostBridgeApiClient', () => {
 
     expect(ws.request).toHaveBeenCalledWith('account/login/start', {
       type: 'chatgptDeviceCode',
+      engine: 'codex',
     });
     expect(result).toEqual({
       type: 'chatgptDeviceCode',
@@ -466,6 +474,7 @@ describe('HostBridgeApiClient', () => {
       accessToken: 'access_123',
       chatgptAccountId: 'acct_123',
       chatgptPlanType: 'plus',
+      engine: 'codex',
     });
     expect(result).toEqual({
       type: 'chatgptAuthTokens',
@@ -481,6 +490,7 @@ describe('HostBridgeApiClient', () => {
 
     expect(ws.request).toHaveBeenCalledWith('account/login/cancel', {
       loginId: 'login_123',
+      engine: 'codex',
     });
   });
 

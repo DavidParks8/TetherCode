@@ -75,7 +75,7 @@ export function PrivacyScreen({ policyUrl, onOpenDrawer }: PrivacyScreenProps) {
           </Section>
 
           <Section title="Data Storage and Retention">
-            - Data is stored by services you run (Codex app-server cache, repo files, and logs).
+            - Data is stored by services you run (harness caches, repo files, and logs).
             - This app does not define automatic cloud retention.
             - You control deletion by removing local bridge/cache/repo data.
           </Section>

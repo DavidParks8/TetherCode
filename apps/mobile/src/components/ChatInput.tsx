@@ -52,7 +52,7 @@ export function ChatInput({
   isLoading,
   showStopButton = false,
   isStopping = false,
-  placeholder = 'Message Codex...',
+  placeholder = 'Message agent...',
   safeAreaBottomInset = 0,
   keyboardVisible = false,
   footer = null,
