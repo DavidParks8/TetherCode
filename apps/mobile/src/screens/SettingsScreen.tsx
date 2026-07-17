@@ -37,10 +37,7 @@ import type {
   BridgeRuntimeInfo,
   ChatEngine,
   CursorCredentialStatus,
-  EngineDefaultSettingsMap,
-  ModelOption,
   PlanType,
-  ReasoningEffort,
 } from '../api/types';
 import type { HostBridgeWsClient } from '../api/ws';
 import clawdexMark from '../../assets/brand/mark.png';
@@ -74,10 +71,6 @@ import {
   type FontPreference,
 } from '../fonts';
 import {
-  formatModelOptionDescription,
-  formatModelOptionLabel,
-} from '../modelOptions';
-import {
   useAppTheme,
   type AppearancePreference,
   type AppTheme,
@@ -106,20 +99,12 @@ interface SettingsScreenProps {
   activeBridgeProfileId?: string | null;
   bridgeProfileName: string;
   bridgeProfiles: BridgeProfile[];
-  defaultChatEngine?: ChatEngine | null;
-  defaultEngineSettings?: EngineDefaultSettingsMap | null;
   approvalMode?: ApprovalMode;
   showToolCalls?: boolean;
   workspaceChatLimit?: WorkspaceChatLimit;
   appearancePreference?: AppearancePreference;
   darkUiPalette?: DarkUiPalette;
   fontPreference?: FontPreference;
-  onDefaultChatEngineChange?: (engine: ChatEngine) => void;
-  onDefaultModelSettingsChange?: (
-    engine: ChatEngine,
-    modelId: string | null,
-    effort: ReasoningEffort | null
-  ) => void;
   onApprovalModeChange?: (mode: ApprovalMode) => void;
   onShowToolCallsChange?: (value: boolean) => void;
   onWorkspaceChatLimitChange?: (limit: WorkspaceChatLimit) => void;
@@ -163,15 +148,11 @@ export function SettingsScreen({
   activeBridgeProfileId = null,
   bridgeProfileName,
   bridgeProfiles,
-  defaultChatEngine,
-  defaultEngineSettings,
   approvalMode,
   showToolCalls = true,
   appearancePreference = 'system',
   darkUiPalette = 'classic',
   fontPreference = DEFAULT_FONT_PREFERENCE,
-  onDefaultChatEngineChange,
-  onDefaultModelSettingsChange,
   onApprovalModeChange,
   onShowToolCallsChange,
   workspaceChatLimit = DEFAULT_WORKSPACE_CHAT_LIMIT,
@@ -217,11 +198,6 @@ export function SettingsScreen({
   const [healthyAt, setHealthyAt] = useState<string | null>(null);
   const [wsConnected, setWsConnected] = useState(ws.isConnected);
   const [error, setError] = useState<string | null>(null);
-  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
-  const [loadingModels, setLoadingModels] = useState(false);
-  const [engineModalVisible, setEngineModalVisible] = useState(false);
-  const [modelModalVisible, setModelModalVisible] = useState(false);
-  const [effortModalVisible, setEffortModalVisible] = useState(false);
   const [approvalModeModalVisible, setApprovalModeModalVisible] = useState(false);
   const [workspaceChatLimitModalVisible, setWorkspaceChatLimitModalVisible] = useState(false);
   const [appearanceModalVisible, setAppearanceModalVisible] = useState(false);
@@ -341,45 +317,6 @@ export function SettingsScreen({
 
   const runtimeAvailableEngines = bridgeCapabilities?.availableEngines ?? [];
   const configuredEngines = bridgeCapabilities?.configuredEngines ?? runtimeAvailableEngines;
-  const availableEngines = useMemo(
-    () =>
-      mergeChatEngines(
-        runtimeAvailableEngines,
-        bridgeCapabilities?.activeEngine
-      ),
-    [bridgeCapabilities?.activeEngine, runtimeAvailableEngines]
-  );
-  const normalizedDefaultChatEngine =
-    defaultChatEngine && availableEngines.includes(defaultChatEngine)
-      ? defaultChatEngine
-      : bridgeCapabilities?.activeEngine && availableEngines.includes(bridgeCapabilities.activeEngine)
-        ? bridgeCapabilities.activeEngine
-        : availableEngines[0] ?? defaultChatEngine ?? bridgeCapabilities?.activeEngine ?? 'codex';
-  const selectedEngineDefaults = defaultEngineSettings?.[normalizedDefaultChatEngine] ?? null;
-  const normalizedDefaultModelId = normalizeModelId(selectedEngineDefaults?.modelId);
-  const normalizedDefaultEffort = normalizeReasoningEffort(selectedEngineDefaults?.effort);
-  const selectedDefaultModel = useMemo(
-    () =>
-      normalizedDefaultModelId
-        ? modelOptions.find((model) => model.id === normalizedDefaultModelId) ?? null
-        : null,
-    [modelOptions, normalizedDefaultModelId]
-  );
-  const selectedDefaultModelEfforts = selectedDefaultModel?.reasoningEffort ?? [];
-  const canSelectDefaultEffort = Boolean(normalizedDefaultModelId);
-  const defaultEngineLabel = getChatEngineLabel(normalizedDefaultChatEngine);
-  const defaultModelLabel = normalizedDefaultModelId
-    ? selectedDefaultModel
-      ? formatModelOptionLabel(selectedDefaultModel)
-      : normalizedDefaultModelId
-    : 'Server default';
-  const defaultEffortLabel = normalizedDefaultModelId
-    ? normalizedDefaultEffort
-      ? formatReasoningEffort(normalizedDefaultEffort)
-      : selectedDefaultModel?.defaultReasoningEffort
-        ? `Default (${formatReasoningEffort(selectedDefaultModel.defaultReasoningEffort)})`
-        : 'Model default'
-    : 'Server default';
   const normalizedApprovalMode = approvalMode === 'yolo' ? 'yolo' : 'normal';
   const normalizedAppearancePreference =
     appearancePreference === 'light' || appearancePreference === 'dark'
@@ -492,9 +429,7 @@ export function SettingsScreen({
                   : route === 'legal'
                     ? ('document-text-outline' as const)
                     : ('settings' as const);
-  const chatDefaultsSummary = normalizedDefaultModelId
-    ? `${defaultEngineLabel} · ${defaultModelLabel} · ${defaultEffortLabel}`
-    : `${defaultEngineLabel} · Server default`;
+  const chatPreferencesSummary = 'Approvals, transcript, notifications, and sidebar';
   const appearanceSummary = `${appearancePreferenceLabel} · ${darkUiPaletteLabel} · ${fontPreferenceLabel}`;
   const accountSummary = 'See sign-in status and plan';
   const usageLimitsSummary = 'View weekly usage and reset times';
@@ -603,21 +538,6 @@ export function SettingsScreen({
     }
   }, [api]);
 
-  const refreshModelOptions = useCallback(async () => {
-    setLoadingModels(true);
-    try {
-      const models = await api.listModels(false, {
-        engine: normalizedDefaultChatEngine,
-      });
-      setModelOptions(models);
-      setError(null);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setLoadingModels(false);
-    }
-  }, [api, normalizedDefaultChatEngine]);
-
   const loadAccount = useCallback(async () => {
     setAccountLoading(true);
     try {
@@ -695,7 +615,6 @@ export function SettingsScreen({
       }
       if (shouldLoadChatSettings) {
         void loadBridgeCapabilities();
-        void refreshModelOptions();
       }
       if (shouldLoadAccountSettings) {
         void loadAccount();
@@ -712,7 +631,6 @@ export function SettingsScreen({
     loadBridgeRuntime,
     loadCursorCredentials,
     loadRateLimits,
-    refreshModelOptions,
     shouldLoadAccountSettings,
     shouldLoadBridgeSettings,
     shouldLoadChatSettings,
@@ -736,7 +654,6 @@ export function SettingsScreen({
           }
           if (shouldLoadChatSettings) {
             void loadBridgeCapabilities();
-            void refreshModelOptions();
           }
           if (shouldLoadAccountSettings) {
             void loadAccount();
@@ -753,7 +670,6 @@ export function SettingsScreen({
       loadBridgeRuntime,
       loadCursorCredentials,
       loadRateLimits,
-      refreshModelOptions,
       shouldLoadAccountSettings,
       shouldLoadBridgeSettings,
       shouldLoadChatSettings,
@@ -817,127 +733,6 @@ export function SettingsScreen({
 
     void loadTips();
   }, [loadTips, route, tipOffering, tipPackages.length, tipsError, tipsLoading]);
-
-  const openEngineModal = useCallback(() => {
-    if (availableEngines.length <= 1) {
-      return;
-    }
-    setEngineModalVisible(true);
-    setError(null);
-  }, [availableEngines.length]);
-
-  const closeEngineModal = useCallback(() => {
-    setEngineModalVisible(false);
-  }, []);
-
-  const openModelModal = useCallback(() => {
-    setModelModalVisible(true);
-    if (modelOptions.length === 0 && !loadingModels) {
-      void refreshModelOptions();
-    }
-  }, [loadingModels, modelOptions.length, refreshModelOptions]);
-
-  const closeModelModal = useCallback(() => {
-    if (loadingModels) {
-      return;
-    }
-    setModelModalVisible(false);
-  }, [loadingModels]);
-
-  const selectDefaultEngine = useCallback(
-    (engine: ChatEngine) => {
-      onDefaultChatEngineChange?.(engine);
-      setEngineModalVisible(false);
-      setModelModalVisible(false);
-      setEffortModalVisible(false);
-      setError(null);
-    },
-    [onDefaultChatEngineChange]
-  );
-
-  const openEffortModal = useCallback(() => {
-    if (!normalizedDefaultModelId) {
-      setError('Select a default model first');
-      return;
-    }
-
-    const selectedModel =
-      modelOptions.find((model) => model.id === normalizedDefaultModelId) ?? null;
-    if (!selectedModel) {
-      setError('Loading model info. Try again.');
-      if (!loadingModels) {
-        void refreshModelOptions();
-      }
-      return;
-    }
-
-    if ((selectedModel.reasoningEffort?.length ?? 0) === 0) {
-      setError('Selected model does not expose reasoning levels');
-      return;
-    }
-
-    setEffortModalVisible(true);
-    setError(null);
-  }, [
-    loadingModels,
-    modelOptions,
-    normalizedDefaultModelId,
-    refreshModelOptions,
-  ]);
-
-  const selectDefaultModel = useCallback(
-    (modelId: string | null) => {
-      const normalizedModel = normalizeModelId(modelId);
-      const nextModel = normalizedModel
-        ? modelOptions.find((model) => model.id === normalizedModel) ?? null
-        : null;
-      const currentEffort = normalizeReasoningEffort(selectedEngineDefaults?.effort);
-
-      let nextEffort: ReasoningEffort | null = null;
-      if (normalizedModel && nextModel) {
-        const supportedEfforts = nextModel.reasoningEffort ?? [];
-        nextEffort =
-          currentEffort &&
-          supportedEfforts.some((entry) => entry.effort === currentEffort)
-            ? currentEffort
-            : null;
-      }
-
-      onDefaultModelSettingsChange?.(normalizedDefaultChatEngine, normalizedModel, nextEffort);
-      setModelModalVisible(false);
-      setError(null);
-
-      if (normalizedModel && nextModel && (nextModel.reasoningEffort?.length ?? 0) > 0) {
-        setEffortModalVisible(true);
-      } else {
-        setEffortModalVisible(false);
-      }
-    },
-    [
-      modelOptions,
-      normalizedDefaultChatEngine,
-      onDefaultModelSettingsChange,
-      selectedEngineDefaults?.effort,
-    ]
-  );
-
-  const selectDefaultEffort = useCallback(
-    (effort: ReasoningEffort | null) => {
-      if (!normalizedDefaultModelId) {
-        setError('Select a default model first');
-        return;
-      }
-
-      onDefaultModelSettingsChange?.(
-        normalizedDefaultChatEngine,
-        normalizedDefaultModelId,
-        effort
-      );
-      setEffortModalVisible(false);
-      setError(null);
-    },
-    [normalizedDefaultChatEngine, normalizedDefaultModelId, onDefaultModelSettingsChange]
-  );
 
   const selectApprovalMode = useCallback(
     (mode: ApprovalMode) => {
@@ -1269,88 +1064,6 @@ export function SettingsScreen({
     [configuredEngines]
   );
 
-  const enginePickerOptions = useMemo<SelectionSheetOption[]>(
-    () =>
-      availableEngines.map((engine) => ({
-        key: engine,
-        title: getChatEngineLabel(engine),
-        description:
-          engine === 'opencode'
-            ? 'Use OpenCode defaults for new chats.'
-            : engine === 'cursor'
-              ? 'Use Cursor SDK defaults for new chats.'
-              : 'Use Codex defaults for new chats.',
-        icon:
-          engine === 'opencode'
-            ? ('layers-outline' as const)
-            : engine === 'cursor'
-              ? ('code-slash-outline' as const)
-              : ('sparkles-outline' as const),
-        selected: engine === normalizedDefaultChatEngine,
-        onPress: () => selectDefaultEngine(engine),
-      })),
-    [availableEngines, normalizedDefaultChatEngine, selectDefaultEngine]
-  );
-
-  const modelPickerOptions = useMemo<SelectionSheetOption[]>(
-    () => [
-      {
-        key: 'server-default',
-        title: 'Use server default',
-        description: 'Follow the bridge default model for new chats.',
-        icon: 'sparkles-outline',
-        badge: 'Auto',
-        selected: normalizedDefaultModelId === null,
-        onPress: () => selectDefaultModel(null),
-      },
-      ...modelOptions.map((model) => ({
-        key: model.id,
-        title: formatModelOptionLabel(model),
-        description: formatModelOptionDescription(model),
-        icon: 'hardware-chip-outline' as const,
-        badge: model.isDefault ? 'Default' : undefined,
-        meta: model.defaultReasoningEffort
-          ? formatReasoningEffort(model.defaultReasoningEffort)
-          : undefined,
-        selected: model.id === normalizedDefaultModelId,
-        onPress: () => selectDefaultModel(model.id),
-      })),
-    ],
-    [modelOptions, normalizedDefaultModelId, selectDefaultModel]
-  );
-
-  const effortPickerOptions = useMemo<SelectionSheetOption[]>(
-    () => [
-      {
-        key: 'model-default',
-        title: 'Use model default',
-        description: selectedDefaultModel
-          ? `Follow ${formatModelOptionLabel(selectedDefaultModel)}'s default reasoning.`
-          : 'Follow the model default reasoning level.',
-        icon: 'sparkles-outline',
-        badge: 'Auto',
-        selected: normalizedDefaultEffort === null,
-        onPress: () => selectDefaultEffort(null),
-      },
-      ...selectedDefaultModelEfforts.map((option) => ({
-        key: option.effort,
-        title: formatReasoningEffort(option.effort),
-        description:
-          option.description?.trim() ||
-          'Override the default reasoning depth for new chats.',
-        icon: 'pulse-outline' as const,
-        selected: option.effort === normalizedDefaultEffort,
-        onPress: () => selectDefaultEffort(option.effort),
-      })),
-    ],
-    [
-      normalizedDefaultEffort,
-      selectDefaultEffort,
-      selectedDefaultModel,
-      selectedDefaultModelEfforts,
-    ]
-  );
-
   const renderHomeContent = () => (
     <>
       <Text style={styles.sectionLabel}>Preferences</Text>
@@ -1358,7 +1071,7 @@ export function SettingsScreen({
           <MenuEntry
             icon="sparkles-outline"
             title="Chat Preferences"
-            description={chatDefaultsSummary}
+            description={chatPreferencesSummary}
             onPress={() => navigateToRoute('chat')}
           />
           <MenuEntry
@@ -1441,58 +1154,7 @@ export function SettingsScreen({
 
   const renderChatContent = () => (
     <>
-      <Text style={styles.sectionLabel}>Defaults</Text>
-      <BlurView intensity={50} tint={theme.blurTint} style={styles.card}>
-        <Pressable
-          onPress={openEngineModal}
-          disabled={availableEngines.length <= 1}
-          style={({ pressed }) => [
-            styles.settingRow,
-            pressed && availableEngines.length > 1 && styles.linkRowPressed,
-            availableEngines.length <= 1 && styles.settingRowDisabled,
-          ]}
-        >
-          <View style={styles.settingRowLeft}>
-            <Text style={styles.rowLabel}>Default engine</Text>
-            <Text style={styles.settingValue} numberOfLines={1}>
-              {defaultEngineLabel}
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
-        </Pressable>
-        <Pressable
-          onPress={openModelModal}
-          style={({ pressed }) => [styles.settingRow, pressed && styles.linkRowPressed]}
-        >
-          <View style={styles.settingRowLeft}>
-            <Text style={styles.rowLabel}>Default model</Text>
-            <Text style={styles.settingValue} numberOfLines={1}>
-              {defaultModelLabel}
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
-        </Pressable>
-        <Pressable
-          onPress={openEffortModal}
-          disabled={!canSelectDefaultEffort}
-          style={({ pressed }) => [
-            styles.settingRow,
-            styles.settingRowLast,
-            pressed && canSelectDefaultEffort && styles.linkRowPressed,
-            !canSelectDefaultEffort && styles.settingRowDisabled,
-          ]}
-        >
-          <View style={styles.settingRowLeft}>
-            <Text style={styles.rowLabel}>Default reasoning</Text>
-            <Text style={styles.settingValue} numberOfLines={1}>
-              {defaultEffortLabel}
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
-        </Pressable>
-      </BlurView>
-
-      <Text style={[styles.sectionLabel, styles.sectionLabelGap]}>Approvals & Permissions</Text>
+      <Text style={styles.sectionLabel}>Approvals & Permissions</Text>
       <BlurView intensity={50} tint={theme.blurTint} style={styles.card}>
         <Pressable
           onPress={() => setApprovalModeModalVisible(true)}
@@ -1899,7 +1561,6 @@ export function SettingsScreen({
                 void checkHealth();
                 void loadBridgeCapabilities();
                 void loadBridgeRuntime();
-                void refreshModelOptions();
                 void loadAccount();
                 void loadRateLimits();
               }}
@@ -2309,15 +1970,6 @@ export function SettingsScreen({
       ) : null}
 
       <SelectionSheet
-        visible={engineModalVisible}
-        eyebrow="Defaults"
-        title="Default engine"
-        subtitle="Pick which backend new chats should start with."
-        options={enginePickerOptions}
-        onClose={closeEngineModal}
-      />
-
-      <SelectionSheet
         visible={appearanceModalVisible}
         eyebrow="Appearance"
         title="Light / Dark"
@@ -2394,31 +2046,6 @@ export function SettingsScreen({
         onClose={() => setWorkspaceChatLimitModalVisible(false)}
       />
 
-      <SelectionSheet
-        visible={modelModalVisible}
-        eyebrow="Defaults"
-        title="Default model"
-        subtitle={`Pick the ${defaultEngineLabel} model new chats should start with.`}
-        options={modelPickerOptions}
-        loading={loadingModels}
-        loadingLabel="Refreshing available models…"
-        presentation="expanded"
-        onClose={closeModelModal}
-      />
-
-      <SelectionSheet
-        visible={effortModalVisible}
-        eyebrow="Defaults"
-        title="Default reasoning"
-        subtitle={
-          selectedDefaultModel
-            ? `Current model: ${formatModelOptionLabel(selectedDefaultModel)}`
-            : `Choose the default reasoning depth for ${defaultEngineLabel} chats.`
-        }
-        options={effortPickerOptions}
-        presentation="expanded"
-        onClose={() => setEffortModalVisible(false)}
-      />
     </View>
   );
 }
@@ -3137,51 +2764,6 @@ const createStyles = (theme: AppTheme) => {
   });
 };
 
-function normalizeModelId(value: string | null | undefined): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function normalizeReasoningEffort(
-  effort: string | null | undefined
-): ReasoningEffort | null {
-  if (typeof effort !== 'string') {
-    return null;
-  }
-
-  const normalized = effort.trim().toLowerCase();
-  if (
-    normalized === 'none' ||
-    normalized === 'minimal' ||
-    normalized === 'low' ||
-    normalized === 'medium' ||
-    normalized === 'high' ||
-    normalized === 'xhigh'
-  ) {
-    return normalized;
-  }
-
-  return null;
-}
-
-function formatReasoningEffort(effort: ReasoningEffort): string {
-  if (effort === 'xhigh') {
-    return 'X-High';
-  }
-  if (effort === 'none') {
-    return 'None';
-  }
-  if (effort === 'minimal') {
-    return 'Minimal';
-  }
-
-  return effort.charAt(0).toUpperCase() + effort.slice(1);
-}
-
 function formatRateLimitsError(error: unknown): string {
   const message = String((error as Error)?.message ?? error).trim();
   const normalized = message.toLowerCase();
@@ -3221,23 +2803,6 @@ function formatAccountHelpText(account: AccountSnapshot | null): string {
   }
 
   return 'This connection can be used without a separate account sign-in.';
-}
-
-function mergeChatEngines(
-  engines: readonly ChatEngine[],
-  ...extraEngines: Array<ChatEngine | null | undefined>
-): ChatEngine[] {
-  const merged: ChatEngine[] = [];
-  for (const engine of [...engines, ...extraEngines]) {
-    if (
-      (engine === 'codex' || engine === 'opencode' || engine === 'cursor') &&
-      !merged.includes(engine)
-    ) {
-      merged.push(engine);
-    }
-  }
-
-  return merged;
 }
 
 function formatEnginesSummary(

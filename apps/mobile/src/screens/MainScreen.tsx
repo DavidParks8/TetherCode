@@ -272,6 +272,13 @@ interface MainScreenProps {
   approvalMode?: ApprovalMode;
   showToolCalls?: boolean;
   onDefaultStartCwdChange?: (cwd: string | null) => void;
+  onLastUsedThreadSettingsChange?: (
+    engine: ChatEngine,
+    modelId: string | null,
+    effort: ReasoningEffort | null,
+    serviceTier: ServiceTier | null,
+    collaborationMode: CollaborationMode
+  ) => void;
   onChatContextChange?: (chat: Chat | null) => void;
   onChatOpeningStateChange?: (chatId: string | null) => void;
   pendingOpenChatId?: string | null;
@@ -303,6 +310,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       approvalMode,
       showToolCalls = true,
       onDefaultStartCwdChange,
+      onLastUsedThreadSettingsChange,
       onChatContextChange,
       onChatOpeningStateChange,
       pendingOpenChatId,
@@ -747,10 +755,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const draftScopeKey = getDraftScopeKey(selectedChatId);
     const persistedDefaultChatEngine = resolveChatEngine(defaultChatEngine ?? 'codex');
     const availableNewChatEngines = mergeChatEngines(
-      [
-        ...(bridgeCapabilities?.availableEngines ?? []),
-        ...(bridgeCapabilities?.configuredEngines ?? []),
-      ],
+      bridgeCapabilities?.availableEngines ?? [],
       bridgeCapabilities ? bridgeCapabilities.activeEngine : null
     );
     const preferredNewChatEngine = availableNewChatEngines.includes(pendingChatEngine)
@@ -769,10 +774,25 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         : null);
     const supportsFastMode = activeEngineSupports?.fastMode === true;
     const supportsReview = activeEngineSupports?.reviewStart === true;
+    const activeSlashCommands = SLASH_COMMANDS.filter(
+      (command) =>
+        (activeChatEngine === 'codex' || command.mobileSupported) &&
+        (command.name !== 'review' || supportsReview)
+    );
     const modelOptions = modelOptionsByEngine[activeChatEngine] ?? EMPTY_MODEL_OPTIONS;
     const pendingEngineDefaults = defaultEngineSettings?.[preferredNewChatEngine] ?? null;
     const preferredDefaultModelId = normalizeModelId(pendingEngineDefaults?.modelId);
     const preferredDefaultEffort = normalizeReasoningEffort(pendingEngineDefaults?.effort);
+    const preferredServiceTier =
+      pendingEngineDefaults &&
+      Object.prototype.hasOwnProperty.call(pendingEngineDefaults, 'serviceTier')
+        ? toSelectedServiceTier(pendingEngineDefaults.serviceTier)
+        : undefined;
+    const preferredCollaborationMode =
+      pendingEngineDefaults?.collaborationMode === 'plan' ||
+      (pendingEngineDefaults?.collaborationMode === 'ask' && preferredNewChatEngine === 'cursor')
+        ? pendingEngineDefaults.collaborationMode
+        : 'default';
     const activeApprovalPolicy = toApprovalPolicyForMode(approvalMode);
     const attachmentWorkspace = selectedChat?.cwd ?? preferredStartCwd ?? null;
     attachmentWorkspaceRef.current = attachmentWorkspace;
@@ -781,7 +801,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       slashQuery !== null
         ? filterSlashCommands(
             slashQuery,
-            SLASH_COMMANDS.filter((command) => command.name !== 'review' || supportsReview)
+            activeSlashCommands
           )
         : [];
     const mentionQuery = parseMentionQuery(draft);
@@ -1232,11 +1252,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     }, []);
 
     useEffect(() => {
-      if (bridgeCapabilities?.supportsByEngine?.codex?.fastMode !== true) {
-        setDefaultServiceTier(null);
-        return;
-      }
-
       let cancelled = false;
 
       const load = async () => {
@@ -1514,6 +1529,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     }, []);
 
     useEffect(() => {
+      if (bridgeCapabilities?.supportsByEngine?.codex?.fastMode !== true) {
+        setDefaultServiceTier(null);
+        return;
+      }
+
       let cancelled = false;
 
       const load = async () => {
@@ -2429,12 +2449,15 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
       setSelectedModelId(preferredDefaultModelId);
       setSelectedEffort(preferredDefaultEffort);
-      setSelectedServiceTier(undefined);
+      setSelectedServiceTier(preferredServiceTier);
+      setSelectedCollaborationMode(preferredCollaborationMode);
     }, [
       defaultServiceTier,
       pendingChatEngine,
       preferredDefaultEffort,
       preferredDefaultModelId,
+      preferredCollaborationMode,
+      preferredServiceTier,
       selectedChatId,
     ]);
 
@@ -2554,11 +2577,21 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       setSelectedChat(null);
       setSelectedChatId(null);
       setPendingChatEngine(persistedDefaultChatEngine);
-      setSelectedCollaborationMode('default');
+      const rememberedSettings = defaultEngineSettings?.[persistedDefaultChatEngine];
+      setSelectedCollaborationMode(
+        rememberedSettings?.collaborationMode === 'plan' ||
+          (rememberedSettings?.collaborationMode === 'ask' && persistedDefaultChatEngine === 'cursor')
+          ? rememberedSettings.collaborationMode
+          : 'default'
+      );
       openingChatStartedAtRef.current = 0;
       setOpeningChatId(null);
       setError(null);
-      setSelectedServiceTier(undefined);
+      setSelectedServiceTier(
+        rememberedSettings && Object.prototype.hasOwnProperty.call(rememberedSettings, 'serviceTier')
+          ? toSelectedServiceTier(rememberedSettings.serviceTier)
+          : undefined
+      );
       setActiveCommands([]);
       setThreadContextUsage(null);
       setPendingApproval(null);
@@ -2604,6 +2637,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       clearExternalStatusFullSync,
       clearRunWatchdog,
       defaultServiceTier,
+      defaultEngineSettings,
       persistedDefaultChatEngine,
     ]);
 
@@ -3247,12 +3281,24 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       }
 
       const normalizedEngine = resolveChatEngine(engine);
+      const rememberedSettings = defaultEngineSettings?.[normalizedEngine];
       setPendingChatEngine(normalizedEngine);
-      setSelectedModelId(null);
-      setSelectedEffort(null);
+      setSelectedModelId(normalizeModelId(rememberedSettings?.modelId));
+      setSelectedEffort(normalizeReasoningEffort(rememberedSettings?.effort));
+      setSelectedServiceTier(
+        rememberedSettings && Object.prototype.hasOwnProperty.call(rememberedSettings, 'serviceTier')
+          ? toSelectedServiceTier(rememberedSettings.serviceTier)
+          : undefined
+      );
+      setSelectedCollaborationMode(
+        rememberedSettings?.collaborationMode === 'plan' ||
+          (rememberedSettings?.collaborationMode === 'ask' && normalizedEngine === 'cursor')
+          ? rememberedSettings.collaborationMode
+          : 'default'
+      );
       setEngineModalVisible(false);
       setError(null);
-    }, [selectedChatId]);
+    }, [defaultEngineSettings, selectedChatId]);
 
     const fetchAttachmentFileCandidates = useCallback(
       async (workspace: string): Promise<string[]> => {
@@ -4483,9 +4529,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
 
         if (name === 'help') {
-          const lines = SLASH_COMMANDS.filter(
-            (command) => command.name !== 'review' || supportsReview
-          ).map((command) => {
+          const lines = activeSlashCommands.map((command) => {
             const suffix = command.argsHint ? ` ${command.argsHint}` : '';
             const scope = command.mobileSupported ? 'mobile' : 'CLI only';
             return `/${command.name}${suffix} — ${command.summary} (${scope})`;
@@ -4613,6 +4657,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 title: 'Creating chat',
               });
               const created = await api.createChat({
+                engine: activeChatEngine,
                 cwd: preferredStartCwd ?? undefined,
                 model: activeModelId ?? undefined,
                 effort: activeEffort ?? undefined,
@@ -4620,6 +4665,13 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 approvalPolicy: activeApprovalPolicy,
               });
               createdChatId = created.id;
+              onLastUsedThreadSettingsChange?.(
+                activeChatEngine,
+                activeModelId,
+                activeEffort,
+                activeServiceTier,
+                'plan'
+              );
 
               queueOptimisticUserMessage(created.id, optimisticMessage, {
                 baseChat: created,
@@ -4971,6 +5023,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       },
       [
         activeChatEngine,
+        activeSlashCommands,
         activeEffort,
         activeModelId,
         activeEffortLabel,
@@ -4983,8 +5036,12 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         clearRunWatchdog,
         discardOptimisticUserMessage,
         fastModeEnabled,
+        supportsFastMode,
+        supportsReview,
+        activeChatEngineLabel,
         mergeChatWithPendingOptimisticMessages,
         modelOptions,
+        onLastUsedThreadSettingsChange,
         onOpenGit,
         openModelModal,
         openRenameModal,
@@ -5463,6 +5520,13 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           approvalPolicy: activeApprovalPolicy,
         });
         createdChatId = created.id;
+        onLastUsedThreadSettingsChange?.(
+          activeChatEngine,
+          activeModelId,
+          activeEffort,
+          activeServiceTier,
+          selectedCollaborationMode
+        );
 
         queueOptimisticUserMessage(created.id, optimisticMessage, {
           baseChat: created,
@@ -5565,6 +5629,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       api,
       draft,
       activeEffort,
+      activeChatEngine,
       activeModelId,
       activeApprovalPolicy,
       activeServiceTier,
@@ -5579,6 +5644,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       bumpRunWatchdog,
       clearRunWatchdog,
       mergeChatWithPendingOptimisticMessages,
+      onLastUsedThreadSettingsChange,
       queueOptimisticUserMessage,
       rememberChatModelPreference,
       scrollToBottomReliable,
@@ -10070,11 +10136,12 @@ function WorkflowCard({
     plan?.steps.filter((step) => step.status === 'inProgress').length ?? 0;
   const pendingStepCount =
     plan?.steps.filter((step) => step.status === 'pending').length ?? 0;
-  const activeStep =
-    plan?.steps.find((step) => step.status === 'inProgress') ??
-    plan?.steps.find((step) => step.status === 'pending') ??
-    (plan ? plan.steps[plan.steps.length - 1] ?? null : null) ??
-    null;
+  const activeStep = plan
+    ? (plan.steps.find((step) => step.status === 'inProgress') ??
+      plan.steps.find((step) => step.status === 'pending') ??
+      plan.steps[plan.steps.length - 1] ??
+      null)
+    : null;
   const collapsedSummaryRaw =
     mode === 'approval'
       ? activeStep?.step ??

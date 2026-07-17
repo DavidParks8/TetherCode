@@ -112,6 +112,54 @@ describe('parseAppSettings', () => {
     expect(parsed.darkUiPalette).toBe('grey');
   });
 
+  it('loads last-used thread settings for version 11', () => {
+    const parsed = parseAppSettings(
+      JSON.stringify({
+        version: 11,
+        lastUsedChatEngine: 'cursor',
+        lastUsedEngineSettings: {
+          cursor: {
+            modelId: 'cursor-small',
+            effort: 'high',
+            serviceTier: 'fast',
+            collaborationMode: 'ask',
+          },
+        },
+      })
+    );
+
+    expect(parsed.defaultChatEngine).toBe('cursor');
+    expect(parsed.defaultEngineSettings.cursor).toEqual({
+      modelId: 'cursor-small',
+      effort: 'high',
+      serviceTier: 'fast',
+      collaborationMode: 'ask',
+    });
+  });
+
+  it('migrates old defaults without treating them as used fast or collaboration settings', () => {
+    const parsed = parseAppSettings(
+      JSON.stringify({
+        version: 10,
+        defaultChatEngine: 'opencode',
+        defaultEngineSettings: {
+          opencode: {
+            modelId: 'anthropic/claude',
+            effort: 'medium',
+            serviceTier: 'fast',
+            collaborationMode: 'plan',
+          },
+        },
+      })
+    );
+
+    expect(parsed.defaultChatEngine).toBe('opencode');
+    expect(parsed.defaultEngineSettings.opencode).toEqual({
+      modelId: 'anthropic/claude',
+      effort: 'medium',
+    });
+  });
+
   it('normalizes the workspace chat limit for version 9 settings', () => {
     expect(
       parseAppSettings(

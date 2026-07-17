@@ -42,8 +42,10 @@ import type {
   ApprovalDecision,
   Chat,
   ChatEngine,
+  CollaborationMode,
   EngineDefaultSettingsMap,
   ReasoningEffort,
+  ServiceTier,
 } from './src/api/types';
 import { HostBridgeWsClient } from './src/api/ws';
 import { normalizeBridgeUrlInput } from './src/bridgeUrl';
@@ -734,8 +736,8 @@ export default function App() {
       const payload = JSON.stringify({
         version: APP_SETTINGS_VERSION,
         defaultStartCwd: nextDefaultStartCwd,
-        defaultChatEngine: nextDefaultChatEngine,
-        defaultEngineSettings: nextDefaultEngineSettings,
+        lastUsedChatEngine: nextDefaultChatEngine,
+        lastUsedEngineSettings: nextDefaultEngineSettings,
         approvalMode: nextApprovalMode,
         showToolCalls: nextShowToolCalls,
         workspaceChatLimit: nextWorkspaceChatLimit,
@@ -1249,39 +1251,14 @@ export default function App() {
     closeDrawer();
   }, [closeDrawer]);
 
-  const handleDefaultChatEngineChange = useCallback(
-    (engine: ChatEngine) => {
-      const normalizedEngine = normalizeChatEngine(engine) ?? 'codex';
-      setDefaultChatEngine(normalizedEngine);
-      void saveAppSettings(
-        defaultStartCwd,
-        normalizedEngine,
-        defaultEngineSettings,
-        approvalMode,
-        showToolCalls,
-        workspaceChatLimit,
-        appearancePreference,
-        darkUiPalette,
-        fontPreference,
-        recentBrowserTargetUrls
-      );
-    },
-    [
-      approvalMode,
-      defaultEngineSettings,
-      defaultStartCwd,
-      recentBrowserTargetUrls,
-      saveAppSettings,
-      showToolCalls,
-      workspaceChatLimit,
-      appearancePreference,
-      darkUiPalette,
-      fontPreference,
-    ]
-  );
-
-  const handleDefaultModelSettingsChange = useCallback(
-    (engine: ChatEngine, modelId: string | null, effort: ReasoningEffort | null) => {
+  const handleLastUsedThreadSettingsChange = useCallback(
+    (
+      engine: ChatEngine,
+      modelId: string | null,
+      effort: ReasoningEffort | null,
+      serviceTier: ServiceTier | null,
+      collaborationMode: CollaborationMode
+    ) => {
       const normalizedEngine = normalizeChatEngine(engine) ?? 'codex';
       const normalizedModelId = normalizeModelId(modelId);
       const normalizedEffort = normalizeReasoningEffort(effort);
@@ -1290,12 +1267,19 @@ export default function App() {
         [normalizedEngine]: {
           modelId: normalizedModelId,
           effort: normalizedEffort,
+          serviceTier: serviceTier === 'fast' ? 'fast' : null,
+          collaborationMode:
+            collaborationMode === 'plan' ||
+            (collaborationMode === 'ask' && normalizedEngine === 'cursor')
+              ? collaborationMode
+              : 'default',
         },
-      };
+      } satisfies EngineDefaultSettingsMap;
+      setDefaultChatEngine(normalizedEngine);
       setDefaultEngineSettings(nextDefaultEngineSettings);
       void saveAppSettings(
         defaultStartCwd,
-        defaultChatEngine,
+        normalizedEngine,
         nextDefaultEngineSettings,
         approvalMode,
         showToolCalls,
@@ -1308,7 +1292,6 @@ export default function App() {
     },
     [
       approvalMode,
-      defaultChatEngine,
       defaultEngineSettings,
       defaultStartCwd,
       recentBrowserTargetUrls,
@@ -1930,6 +1913,7 @@ export default function App() {
             defaultStartCwd={defaultStartCwd}
             defaultChatEngine={defaultChatEngine}
             defaultEngineSettings={defaultEngineSettings}
+            onLastUsedThreadSettingsChange={handleLastUsedThreadSettingsChange}
             approvalMode={approvalMode}
             showToolCalls={showToolCalls}
             onDefaultStartCwdChange={handleDefaultStartCwdChange}
@@ -1951,10 +1935,6 @@ export default function App() {
             activeBridgeProfileId={activeBridgeProfile?.id ?? null}
             bridgeProfileName={activeBridgeProfile?.name ?? 'Current bridge'}
             bridgeProfiles={bridgeProfiles}
-            defaultChatEngine={defaultChatEngine}
-            defaultEngineSettings={defaultEngineSettings}
-            onDefaultChatEngineChange={handleDefaultChatEngineChange}
-            onDefaultModelSettingsChange={handleDefaultModelSettingsChange}
             approvalMode={approvalMode}
             onApprovalModeChange={handleApprovalModeChange}
             showToolCalls={showToolCalls}
@@ -2021,6 +2001,7 @@ export default function App() {
             defaultStartCwd={defaultStartCwd}
             defaultChatEngine={defaultChatEngine}
             defaultEngineSettings={defaultEngineSettings}
+            onLastUsedThreadSettingsChange={handleLastUsedThreadSettingsChange}
             approvalMode={approvalMode}
             showToolCalls={showToolCalls}
             onDefaultStartCwdChange={handleDefaultStartCwdChange}

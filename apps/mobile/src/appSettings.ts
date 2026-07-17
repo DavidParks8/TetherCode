@@ -13,7 +13,7 @@ import {
 } from './fonts';
 import type { AppearancePreference, DarkUiPalette } from './theme';
 
-export const APP_SETTINGS_VERSION = 10;
+export const APP_SETTINGS_VERSION = 11;
 export const DEFAULT_WORKSPACE_CHAT_LIMIT = 5;
 export const WORKSPACE_CHAT_LIMIT_OPTIONS = [5, 10, 25, null] as const;
 export type WorkspaceChatLimit = (typeof WORKSPACE_CHAT_LIMIT_OPTIONS)[number];
@@ -62,9 +62,10 @@ export function parseAppSettings(raw: string): {
         parsedVersion !== 5 &&
         parsedVersion !== 6 &&
         parsedVersion !== 7 &&
-        parsedVersion !== 8 &&
-        parsedVersion !== 9 &&
-        parsedVersion !== APP_SETTINGS_VERSION)
+         parsedVersion !== 8 &&
+         parsedVersion !== 9 &&
+         parsedVersion !== 10 &&
+         parsedVersion !== APP_SETTINGS_VERSION)
     ) {
       return {
         bridgeUrl: null,
@@ -89,13 +90,16 @@ export function parseAppSettings(raw: string): {
       (parsed as { defaultReasoningEffort?: unknown }).defaultReasoningEffort
     );
     const defaultChatEngine =
+      normalizeChatEngine((parsed as { lastUsedChatEngine?: unknown }).lastUsedChatEngine) ??
       normalizeChatEngine((parsed as { defaultChatEngine?: unknown }).defaultChatEngine) ??
       inferChatEngineFromModelId(legacyDefaultModelId) ??
       'codex';
     const defaultEngineSettings = normalizeEngineDefaultSettingsMap(
-      (parsed as { defaultEngineSettings?: unknown }).defaultEngineSettings,
+      (parsed as { lastUsedEngineSettings?: unknown }).lastUsedEngineSettings ??
+        (parsed as { defaultEngineSettings?: unknown }).defaultEngineSettings,
       legacyDefaultModelId,
-      legacyDefaultReasoningEffort
+      legacyDefaultReasoningEffort,
+      parsedVersion === APP_SETTINGS_VERSION
     );
 
     return {
@@ -248,7 +252,8 @@ function createEmptyEngineDefaultSettingsMap(): EngineDefaultSettingsMap {
 function normalizeEngineDefaultSettingsMap(
   value: unknown,
   legacyDefaultModelId: string | null,
-  legacyDefaultEffort: ReasoningEffort | null
+  legacyDefaultEffort: ReasoningEffort | null,
+  includeRememberedThreadSettings: boolean
 ): EngineDefaultSettingsMap {
   const base = createEmptyEngineDefaultSettingsMap();
   const record = value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
@@ -265,6 +270,12 @@ function normalizeEngineDefaultSettingsMap(
     base[engine] = {
       modelId: normalizeModelId(entry.modelId),
       effort: normalizeReasoningEffort(entry.effort),
+      ...(includeRememberedThreadSettings
+        ? {
+            serviceTier: normalizeServiceTier(entry.serviceTier),
+            collaborationMode: normalizeCollaborationMode(entry.collaborationMode, engine),
+          }
+        : {}),
     };
   }
 
@@ -277,6 +288,24 @@ function normalizeEngineDefaultSettingsMap(
   }
 
   return base;
+}
+
+function normalizeServiceTier(value: unknown): 'fast' | null {
+  return typeof value === 'string' && value.trim().toLowerCase() === 'fast' ? 'fast' : null;
+}
+
+function normalizeCollaborationMode(
+  value: unknown,
+  engine: ChatEngine
+): 'default' | 'plan' | 'ask' {
+  if (typeof value !== 'string') {
+    return 'default';
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'plan' || (normalized === 'ask' && engine === 'cursor')) {
+    return normalized;
+  }
+  return 'default';
 }
 
 function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
