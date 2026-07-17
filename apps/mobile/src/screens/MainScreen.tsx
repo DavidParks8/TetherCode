@@ -774,10 +774,13 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         : null);
     const supportsFastMode = activeEngineSupports?.fastMode === true;
     const supportsReview = activeEngineSupports?.reviewStart === true;
+    const supportsCompact =
+      activeEngineSupports?.compactStart ?? activeChatEngine === 'codex';
     const activeSlashCommands = SLASH_COMMANDS.filter(
       (command) =>
         (activeChatEngine === 'codex' || command.mobileSupported) &&
-        (command.name !== 'review' || supportsReview)
+        (command.name !== 'review' || supportsReview) &&
+        (command.name !== 'compact' || supportsCompact)
     );
     const modelOptions = modelOptionsByEngine[activeChatEngine] ?? EMPTY_MODEL_OPTIONS;
     const pendingEngineDefaults = defaultEngineSettings?.[preferredNewChatEngine] ?? null;
@@ -4902,6 +4905,17 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             return true;
           }
 
+          if (!supportsCompact) {
+            const detail = `Compaction is not supported for ${activeChatEngineLabel} chats.`;
+            setError(detail);
+            setActivity({
+              tone: 'error',
+              title: 'Compact unavailable',
+              detail,
+            });
+            return true;
+          }
+
           try {
             setActivity({
               tone: 'running',
@@ -5037,6 +5051,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         discardOptimisticUserMessage,
         fastModeEnabled,
         supportsFastMode,
+        supportsCompact,
         supportsReview,
         activeChatEngineLabel,
         mergeChatWithPendingOptimisticMessages,

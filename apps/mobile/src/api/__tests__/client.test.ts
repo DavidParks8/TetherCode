@@ -1605,6 +1605,18 @@ describe('HostBridgeApiClient', () => {
     );
   });
 
+  it('compactChat() calls thread/compact/start with the thread id', async () => {
+    const ws = createWsMock();
+    ws.request.mockResolvedValue({});
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+    await client.compactChat('opencode:session-1');
+
+    expect(ws.request).toHaveBeenCalledWith('thread/compact/start', {
+      threadId: 'opencode:session-1',
+    });
+  });
+
   it('forkChat() requests danger-full-access sandbox by default', async () => {
     const ws = createWsMock();
     ws.request.mockResolvedValueOnce({

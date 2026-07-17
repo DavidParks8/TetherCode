@@ -294,7 +294,7 @@ Supported mobile slash commands:
 - `/plan [on|off|prompt]`
 - `/status`
 - `/rename <new-name>`
-- `/compact`
+- `/compact` (Codex and OpenCode)
 - `/review`
 - `/fork`
 - `/diff`

@@ -1249,6 +1249,7 @@ struct BridgeCapabilities {
 #[serde(rename_all = "camelCase")]
 struct BridgeCapabilitySupport {
     review_start: bool,
+    compact_start: bool,
     turn_steer: bool,
     command_output_delta: bool,
     fast_mode: bool,
@@ -1898,6 +1899,7 @@ impl RuntimeBackend {
         let supports_for_engine = |engine| match engine {
             BridgeRuntimeEngine::Codex => BridgeCapabilitySupport {
                 review_start: true,
+                compact_start: true,
                 turn_steer: true,
                 command_output_delta: true,
                 fast_mode: true,
@@ -1909,6 +1911,7 @@ impl RuntimeBackend {
             },
             BridgeRuntimeEngine::Opencode => BridgeCapabilitySupport {
                 review_start: false,
+                compact_start: true,
                 turn_steer: false,
                 command_output_delta: false,
                 fast_mode: false,
@@ -1920,6 +1923,7 @@ impl RuntimeBackend {
             },
             BridgeRuntimeEngine::Cursor => BridgeCapabilitySupport {
                 review_start: false,
+                compact_start: false,
                 turn_steer: false,
                 command_output_delta: false,
                 fast_mode: false,
@@ -5183,6 +5187,7 @@ impl OpencodeBackend {
             "thread/start" => self.start_thread(params).await,
             "thread/name/set" => self.set_thread_name(params).await,
             "thread/fork" => self.fork_thread(params).await,
+            "thread/compact/start" => self.compact_thread(params).await,
             "thread/resume" => Ok(json!({
                 "model": Value::Null,
                 "effort": Value::Null,
@@ -5485,6 +5490,53 @@ impl OpencodeBackend {
         self.cache_session_info(&session).await;
         let thread = self.project_session_to_thread(&session, None, None).await;
         Ok(json!({ "thread": thread }))
+    }
+
+    async fn compact_thread(&self, params: Option<Value>) -> Result<Value, String> {
+        let params_object = params
+            .as_ref()
+            .and_then(Value::as_object)
+            .ok_or_else(|| "thread/compact/start requires params".to_string())?;
+        let session_id = read_string(params_object.get("threadId"))
+            .ok_or_else(|| "thread/compact/start requires threadId".to_string())?;
+        let directory = self.current_directory_for_session(&session_id).await;
+        let configured_providers = self
+            .request_json(
+                HttpMethod::GET,
+                "config/providers",
+                Some(&directory),
+                None,
+                None,
+            )
+            .await?;
+        let provider_catalog = self
+            .request_json(HttpMethod::GET, "provider", Some(&directory), None, None)
+            .await
+            .ok();
+        let config = self
+            .request_json(HttpMethod::GET, "config", Some(&directory), None, None)
+            .await
+            .ok();
+        let (provider_id, model_id) = opencode_default_model_selector(
+            &configured_providers,
+            provider_catalog.as_ref(),
+            config.as_ref(),
+        )
+        .ok_or_else(|| "opencode compaction requires an available default model".to_string())?;
+
+        self.request_json(
+            HttpMethod::POST,
+            &format!("session/{session_id}/summarize"),
+            Some(&directory),
+            None,
+            Some(json!({
+                "providerID": provider_id,
+                "modelID": model_id,
+            })),
+        )
+        .await?;
+
+        Ok(json!({}))
     }
 
     async fn start_turn(&self, params: Option<Value>) -> Result<Value, String> {
@@ -14590,6 +14642,17 @@ mod tests {
     }
 
     async fn build_test_opencode_backend(hub: Arc<ClientHub>) -> Arc<OpencodeBackend> {
+        build_test_opencode_backend_for_url(
+            hub,
+            Url::parse("http://127.0.0.1:4090/").expect("valid opencode base url"),
+        )
+        .await
+    }
+
+    async fn build_test_opencode_backend_for_url(
+        hub: Arc<ClientHub>,
+        base_url: Url,
+    ) -> Arc<OpencodeBackend> {
         let child = Command::new("cat")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -14602,7 +14665,7 @@ mod tests {
             child_pid: 0,
             hub,
             http: HttpClient::builder().build().expect("build reqwest client"),
-            base_url: Url::parse("http://127.0.0.1:4090/").expect("valid opencode base url"),
+            base_url,
             username: "opencode".to_string(),
             password: Some("secret-token".to_string()),
             fallback_directory: "/tmp/workdir".to_string(),
@@ -15719,9 +15782,12 @@ mod tests {
         );
         assert!(capabilities.unified_chat_list);
         assert!(capabilities.supports.review_start);
+        assert!(capabilities.supports.compact_start);
         assert!(capabilities.supports.fast_mode);
         assert!(capabilities.supports.generic_ui_surface);
         assert!(!capabilities.supports_by_engine[&BridgeRuntimeEngine::Opencode].fast_mode);
+        assert!(capabilities.supports_by_engine[&BridgeRuntimeEngine::Opencode].compact_start);
+        assert!(!capabilities.supports_by_engine[&BridgeRuntimeEngine::Cursor].compact_start);
 
         shutdown_test_backend(&state.backend).await;
     }
@@ -15788,6 +15854,7 @@ mod tests {
         );
         assert!(!capabilities.unified_chat_list);
         assert!(capabilities.supports.review_start);
+        assert!(capabilities.supports.compact_start);
         assert!(capabilities.supports.fast_mode);
         assert!(capabilities.supports.generic_ui_surface);
 
@@ -15825,6 +15892,88 @@ mod tests {
         assert_eq!(error, "review/start is not supported for opencode threads");
 
         shutdown_test_opencode_backend(&backend).await;
+    }
+
+    #[tokio::test]
+    async fn opencode_compact_start_validates_thread_id_before_requesting_server() {
+        let hub = Arc::new(ClientHub::new());
+        let backend = build_test_opencode_backend(hub).await;
+
+        let error = backend
+            .dispatch_request("thread/compact/start", Some(json!({})))
+            .await
+            .expect_err("compact should require a thread id");
+        assert_eq!(error, "thread/compact/start requires threadId");
+
+        shutdown_test_opencode_backend(&backend).await;
+    }
+
+    #[tokio::test]
+    async fn opencode_compact_start_calls_session_summarize_with_default_model() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock opencode server");
+        let address = listener.local_addr().expect("mock server address");
+        let app = Router::new()
+            .route(
+                "/config/providers",
+                get(|| async {
+                    Json(json!({
+                        "providers": [{
+                            "id": "anthropic",
+                            "models": { "claude-sonnet": {} }
+                        }],
+                        "default": { "anthropic": "claude-sonnet" }
+                    }))
+                }),
+            )
+            .route(
+                "/provider",
+                get(|| async { Json(json!({ "connected": ["anthropic"] })) }),
+            )
+            .route("/config", get(|| async { Json(json!({})) }))
+            .route(
+                "/session/session-1/summarize",
+                axum::routing::post(|headers: HeaderMap, Json(body): Json<Value>| async move {
+                    assert_eq!(
+                        headers
+                            .get("x-opencode-directory")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("/tmp/workdir")
+                    );
+                    assert_eq!(
+                        body,
+                        json!({
+                            "providerID": "anthropic",
+                            "modelID": "claude-sonnet",
+                        })
+                    );
+                    Json(json!(true))
+                }),
+            );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve mock opencode");
+        });
+        let hub = Arc::new(ClientHub::new());
+        let backend = build_test_opencode_backend_for_url(
+            hub,
+            Url::parse(&format!("http://{address}/")).expect("mock base url"),
+        )
+        .await;
+
+        let result = backend
+            .dispatch_request(
+                "thread/compact/start",
+                Some(json!({ "threadId": "session-1" })),
+            )
+            .await
+            .expect("compact request should succeed");
+        assert_eq!(result, json!({}));
+
+        shutdown_test_opencode_backend(&backend).await;
+        server.abort();
     }
 
     async fn add_test_client(hub: &Arc<ClientHub>) -> (u64, mpsc::Receiver<Message>) {
@@ -15960,6 +16109,7 @@ mod tests {
     #[test]
     fn forwarded_method_allowlist_matches_expected() {
         assert!(is_forwarded_method("thread/start"));
+        assert!(is_forwarded_method("thread/compact/start"));
         assert!(is_forwarded_method("turn/start"));
         assert!(is_forwarded_method("account/read"));
         assert!(is_forwarded_method("mcpServer/oauth/login"));

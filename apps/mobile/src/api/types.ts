@@ -676,6 +676,7 @@ export interface BridgeCapabilities {
 
 export interface BridgeCapabilitySupport {
   reviewStart: boolean;
+  compactStart?: boolean;
   turnSteer: boolean;
   commandOutputDelta: boolean;
   fastMode?: boolean;
