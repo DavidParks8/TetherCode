@@ -39,7 +39,7 @@ interface ToolActivityGroupProps {
   engine?: ChatEngine | null;
   bridgeUrl?: string | null;
   bridgeToken?: string | null;
-  /** While the server reports an in-flight turn, surface live affordances (badge, border). */
+  /** While the server reports an in-flight turn, highlight the active tool group. */
   liveTurnActive?: boolean;
 }
 
@@ -802,12 +802,6 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
             <Ionicons name="hardware-chip-outline" size={12} color={theme.colors.textMuted} />
             <Text style={styles.toolGroupEyebrowText}>Tools</Text>
           </View>
-          {liveTurnActive ? (
-            <View style={styles.toolGroupLiveBadge}>
-              <View style={styles.toolGroupLiveDot} />
-              <Text style={styles.toolGroupLiveBadgeText}>Live</Text>
-            </View>
-          ) : null}
         </View>
         <Pressable
           onPress={toggleExpanded}
@@ -1748,31 +1742,6 @@ const createStyles = (theme: AppTheme) => {
     gap: 6,
     flex: 1,
     minWidth: 0,
-  },
-  toolGroupLiveBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 2,
-    borderRadius: theme.radius.full,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.borderHighlight,
-    backgroundColor: theme.colors.bgInput,
-  },
-  toolGroupLiveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: theme.colors.statusRunning,
-  },
-  toolGroupLiveBadgeText: {
-    ...theme.typography.caption,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0,
-    color: theme.colors.textSecondary,
-    textTransform: 'uppercase',
   },
   toolGroupEyebrowText: {
     ...theme.typography.caption,
