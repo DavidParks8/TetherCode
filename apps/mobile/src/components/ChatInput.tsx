@@ -25,7 +25,6 @@ interface ChatInputProps {
   onStop?: () => void;
   onAttachPress: () => void;
   attachDisabled?: boolean;
-  onPromptLibraryPress?: () => void;
   attachments?: Array<{ id: string; label: string }>;
   onRemoveAttachment?: (id: string) => void;
   isLoading: boolean;
@@ -46,7 +45,6 @@ export function ChatInput({
   onStop,
   onAttachPress,
   attachDisabled = false,
-  onPromptLibraryPress,
   attachments = [],
   onRemoveAttachment,
   isLoading,
@@ -151,20 +149,6 @@ export function ChatInput({
           >
             <Ionicons name="add" size={20} color={colors.textMuted} />
           </Pressable>
-
-          {onPromptLibraryPress ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Open prompt library"
-              onPress={onPromptLibraryPress}
-              style={({ pressed }) => [
-                styles.promptLibraryBtn,
-                pressed && styles.plusBtnPressed,
-              ]}
-            >
-              <Ionicons name="bookmark-outline" size={17} color={colors.textMuted} />
-            </Pressable>
-          ) : null}
 
           <View style={styles.inputWrapper}>
             <Text
@@ -346,16 +330,6 @@ const createStyles = (theme: AppTheme) =>
     },
     plusBtnDisabled: {
       opacity: 0.45,
-    },
-    promptLibraryBtn: {
-      width: 44,
-      height: 44,
-      borderRadius: 22,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      backgroundColor: theme.colors.bgElevated,
-      alignItems: 'center',
-      justifyContent: 'center',
     },
     inputWrapper: {
       flex: 1,

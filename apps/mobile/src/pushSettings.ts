@@ -8,9 +8,8 @@ import {
 /**
  * Persisted push-notification preferences for this device.
  *
- * Kept in its own file-backed store (like the prompt library and store-review
- * state) instead of the main appSettings blob, so the feature stays self
- * contained.
+ * Kept in its own file-backed store instead of the main appSettings blob, so
+ * the feature stays self contained.
  *
  * Notifications are auto-enabled: the app requests permission on first bridge
  * connect and registers automatically. `optedOut` records that the user has
