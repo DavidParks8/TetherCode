@@ -42,7 +42,7 @@ use tokio::{
     fs,
     io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
-    sync::{broadcast, mpsc, oneshot, watch, Mutex, RwLock},
+    sync::{broadcast, mpsc, oneshot, watch, Mutex, Notify, RwLock},
     time::{sleep, timeout},
 };
 use tokio_tungstenite::{
@@ -684,6 +684,9 @@ const EXPO_RECEIPT_BATCH_SIZE: usize = 1000;
 // Expo asks senders to wait at least ~15 minutes before fetching delivery receipts.
 const RECEIPT_CHECK_DELAY_SECS: u64 = 900;
 const PUSH_SEND_MAX_ATTEMPTS: u32 = 4;
+const QUEUE_COMPLETION_DISPOSITION_WAIT_MS: u64 = 2_000;
+const QUEUE_COMPLETION_DISPOSITION_LIMIT: usize = 1_024;
+const QUEUE_STATUS_DISPATCH_FALLBACK_MS: u64 = 250;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -760,15 +763,26 @@ impl PushService {
         })
     }
 
-    fn spawn_event_loop(self: &Arc<Self>, hub: &Arc<ClientHub>) {
+    fn spawn_event_loop_with_queue(
+        self: &Arc<Self>,
+        hub: &Arc<ClientHub>,
+        backend: Arc<RuntimeBackend>,
+        queue: Option<Arc<BridgeQueueService>>,
+    ) {
         let this = Arc::clone(self);
         let mut receiver = hub.subscribe_notifications();
         tokio::spawn(async move {
             loop {
                 match receiver.recv().await {
                     Ok(notification) => {
-                        this.handle_notification(&notification.method, &notification.params)
-                            .await;
+                        this.handle_notification(
+                            &notification.method,
+                            &notification.params,
+                            Some(&backend),
+                            queue.as_deref(),
+                            Some(notification.event_id),
+                        )
+                        .await;
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -916,7 +930,14 @@ impl PushService {
         Some(truncate_chars(&collapsed, PUSH_PREVIEW_MAX_CHARS))
     }
 
-    async fn handle_notification(self: &Arc<Self>, method: &str, params: &Value) {
+    async fn handle_notification(
+        self: &Arc<Self>,
+        method: &str,
+        params: &Value,
+        backend: Option<&RuntimeBackend>,
+        queue: Option<&BridgeQueueService>,
+        event_id: Option<u64>,
+    ) {
         if self.accumulate_reply(method, params).await {
             return;
         }
@@ -951,6 +972,16 @@ impl PushService {
             PushEvent::ApprovalRequested => None,
         };
 
+        if matches!(event, PushEvent::TurnCompleted) {
+            let (Some(queue), Some(event_id)) = (queue, event_id) else {
+                return;
+            };
+            match queue.wait_for_completion_disposition(event_id).await {
+                Some(QueueCompletionDisposition::Final) => {}
+                Some(QueueCompletionDisposition::Continued) | None => return,
+            }
+        }
+
         let targets: Vec<String> = {
             let registry = self.registry.read().await;
             registry
@@ -965,6 +996,35 @@ impl PushService {
         };
         if targets.is_empty() {
             return;
+        }
+        if matches!(event, PushEvent::TurnCompleted) {
+            let Some(thread_id) = thread_id.as_deref() else {
+                return;
+            };
+            let Some(backend) = backend else {
+                return;
+            };
+            let thread = match backend
+                .request_internal(
+                    "thread/read",
+                    Some(json!({
+                        "threadId": thread_id,
+                        "includeTurns": false,
+                    })),
+                )
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    eprintln!(
+                        "skipping turn-completed push because thread lineage could not be read for {thread_id}: {error}"
+                    );
+                    return;
+                }
+            };
+            if !push_thread_is_top_level(&thread) {
+                return;
+            }
         }
         let (title, body) = match event {
             PushEvent::TurnCompleted => (
@@ -1206,6 +1266,54 @@ fn parse_push_event_preferences(value: Option<&Value>) -> PushEventPreferences {
                 .unwrap_or(defaults.approval_requested),
         },
         None => defaults,
+    }
+}
+
+fn push_thread_is_top_level(thread_read_result: &Value) -> bool {
+    let thread = thread_read_result
+        .get("thread")
+        .unwrap_or(thread_read_result);
+    let Some(source) = thread.get("source") else {
+        return false;
+    };
+
+    if let Some(source) = source.as_str() {
+        return push_source_kind_is_top_level(source);
+    }
+
+    let Some(source) = source.as_object() else {
+        return false;
+    };
+    if source.contains_key("subAgent")
+        || source.contains_key("subagent")
+        || value_contains_thread_parent(&Value::Object(source.clone()))
+    {
+        return false;
+    }
+
+    read_string(source.get("kind"))
+        .or_else(|| read_string(source.get("type")))
+        .is_some_and(|kind| push_source_kind_is_top_level(&kind))
+}
+
+fn push_source_kind_is_top_level(source: &str) -> bool {
+    matches!(
+        source.trim().to_ascii_lowercase().as_str(),
+        "cli" | "vscode" | "exec" | "appserver" | "unknown" | "cursorsdk"
+    )
+}
+
+fn value_contains_thread_parent(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            (matches!(
+                key.as_str(),
+                "parentThreadId" | "parent_thread_id" | "parentID"
+            ) && read_string(Some(value)).is_some_and(|parent| !parent.trim().is_empty()))
+                || value_contains_thread_parent(value)
+        }),
+        Value::Array(values) => values.iter().any(value_contains_thread_parent),
+        _ => false,
     }
 }
 
@@ -2707,6 +2815,8 @@ impl BridgeQueueService {
             backend,
             hub,
             threads: Arc::new(RwLock::new(HashMap::new())),
+            completion_dispositions: Arc::new(Mutex::new(HashMap::new())),
+            completion_disposition_notify: Arc::new(Notify::new()),
             next_queue_item_id: AtomicU64::new(1),
         });
         service.spawn_notification_loop();
@@ -2747,6 +2857,46 @@ impl BridgeQueueService {
         let threads = self.threads.read().await;
         let runtime = threads.get(normalized_thread_id);
         Self::snapshot_for_thread(normalized_thread_id, runtime)
+    }
+
+    async fn record_completion_disposition(
+        &self,
+        event_id: u64,
+        disposition: QueueCompletionDisposition,
+    ) {
+        let mut dispositions = self.completion_dispositions.lock().await;
+        if dispositions.len() >= QUEUE_COMPLETION_DISPOSITION_LIMIT {
+            if let Some(oldest_event_id) = dispositions.keys().min().copied() {
+                dispositions.remove(&oldest_event_id);
+            }
+        }
+        dispositions.insert(event_id, disposition);
+        drop(dispositions);
+        self.completion_disposition_notify.notify_waiters();
+    }
+
+    async fn wait_for_completion_disposition(
+        &self,
+        event_id: u64,
+    ) -> Option<QueueCompletionDisposition> {
+        let deadline = Instant::now() + Duration::from_millis(QUEUE_COMPLETION_DISPOSITION_WAIT_MS);
+        loop {
+            let notified = self.completion_disposition_notify.notified();
+            if let Some(disposition) = self.completion_dispositions.lock().await.remove(&event_id) {
+                return Some(disposition);
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            if timeout(deadline.saturating_duration_since(now), notified)
+                .await
+                .is_err()
+            {
+                return None;
+            }
+        }
     }
 
     async fn send_message(
@@ -3132,8 +3282,7 @@ impl BridgeQueueService {
         Self::runtime_has_blockers(runtime) || !runtime.items.is_empty()
     }
 
-    async fn handle_notification(&self, notification: HubNotification) {
-        let _ = notification.event_id;
+    async fn handle_notification(self: &Arc<Self>, notification: HubNotification) {
         match notification.method.as_str() {
             "turn/started" => {
                 let Some(thread_id) = read_string(notification.params.get("threadId"))
@@ -3154,26 +3303,47 @@ impl BridgeQueueService {
                 runtime.last_error = None;
             }
             "turn/completed" => {
+                let completion_event_id = notification.event_id;
                 let Some(thread_id) = read_string(notification.params.get("threadId"))
                     .map(|value| value.trim().to_string())
                 else {
                     return;
                 };
-                let should_dispatch = {
+                let (should_dispatch, is_final) = {
                     let mut threads = self.threads.write().await;
-                    let Some(runtime) = threads.get_mut(&thread_id) else {
-                        return;
-                    };
-                    runtime.thread_running = false;
-                    runtime.turn_start_in_flight = false;
-                    runtime.active_turn_id = None;
-                    runtime.pending_approval_ids.clear();
-                    runtime.pending_user_input_ids.clear();
-                    runtime.action_in_flight_item_id = None;
-                    !runtime.items.is_empty()
+                    match threads.get_mut(&thread_id) {
+                        Some(runtime) => {
+                            let continuation_already_in_flight = runtime.turn_start_in_flight;
+                            runtime.thread_running = false;
+                            if !continuation_already_in_flight {
+                                runtime.active_turn_id = None;
+                            }
+                            runtime.pending_approval_ids.clear();
+                            runtime.pending_user_input_ids.clear();
+                            runtime.action_in_flight_item_id = None;
+                            let should_dispatch =
+                                !continuation_already_in_flight && !runtime.items.is_empty();
+                            let wait_for_continuation =
+                                continuation_already_in_flight || should_dispatch;
+                            if wait_for_continuation {
+                                runtime
+                                    .pending_completion_event_ids
+                                    .push(completion_event_id);
+                            }
+                            (should_dispatch, !wait_for_continuation)
+                        }
+                        None => (false, true),
+                    }
                 };
                 if should_dispatch {
                     self.spawn_auto_dispatch(thread_id);
+                }
+                if is_final {
+                    self.record_completion_disposition(
+                        completion_event_id,
+                        QueueCompletionDisposition::Final,
+                    )
+                    .await;
                 }
             }
             "thread/status/changed" => {
@@ -3187,23 +3357,20 @@ impl BridgeQueueService {
                 else {
                     return;
                 };
-                let should_dispatch = {
+                {
                     let mut threads = self.threads.write().await;
                     let Some(runtime) = threads.get_mut(&thread_id) else {
                         return;
                     };
                     if matches!(status.as_str(), "running" | "pending" | "queued") {
                         runtime.thread_running = true;
-                        false
-                    } else {
+                    } else if !runtime.turn_start_in_flight {
                         runtime.thread_running = false;
-                        runtime.turn_start_in_flight = false;
                         runtime.active_turn_id = None;
-                        !runtime.items.is_empty()
                     }
-                };
-                if should_dispatch {
-                    self.spawn_auto_dispatch(thread_id);
+                }
+                if !matches!(status.as_str(), "running" | "pending" | "queued") {
+                    self.spawn_status_dispatch_fallback(thread_id);
                 }
             }
             "bridge/approval.requested" => {
@@ -3282,23 +3449,24 @@ impl BridgeQueueService {
         }
     }
 
-    fn spawn_auto_dispatch(&self, thread_id: String) {
-        let backend = Arc::clone(&self.backend);
-        let hub = Arc::clone(&self.hub);
-        let threads = Arc::clone(&self.threads);
+    fn spawn_auto_dispatch(self: &Arc<Self>, thread_id: String) {
+        let this = Arc::clone(self);
         tokio::spawn(async move {
-            BridgeQueueService::drain_thread_queue(backend, hub, threads, thread_id).await;
+            this.drain_thread_queue(thread_id).await;
         });
     }
 
-    async fn drain_thread_queue(
-        backend: Arc<RuntimeBackend>,
-        hub: Arc<ClientHub>,
-        threads: Arc<RwLock<HashMap<String, BridgeThreadQueueRuntime>>>,
-        thread_id: String,
-    ) {
+    fn spawn_status_dispatch_fallback(self: &Arc<Self>, thread_id: String) {
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(QUEUE_STATUS_DISPATCH_FALLBACK_MS)).await;
+            this.drain_thread_queue(thread_id).await;
+        });
+    }
+
+    async fn drain_thread_queue(&self, thread_id: String) {
         let (queued_item, snapshot) = {
-            let mut threads = threads.write().await;
+            let mut threads = self.threads.write().await;
             let Some(runtime) = threads.get_mut(&thread_id) else {
                 return;
             };
@@ -3311,6 +3479,13 @@ impl BridgeQueueService {
                 return;
             }
             let Some(queued_item) = runtime.items.pop_front() else {
+                let completion_event_ids =
+                    std::mem::take(&mut runtime.pending_completion_event_ids);
+                drop(threads);
+                for event_id in completion_event_ids {
+                    self.record_completion_disposition(event_id, QueueCompletionDisposition::Final)
+                        .await;
+                }
                 return;
             };
             runtime.turn_start_in_flight = true;
@@ -3320,30 +3495,41 @@ impl BridgeQueueService {
         };
 
         if let Ok(value) = serde_json::to_value(&snapshot) {
-            hub.broadcast_notification("bridge/thread/queue/updated", value)
+            self.hub
+                .broadcast_notification("bridge/thread/queue/updated", value)
                 .await;
         }
 
         match BridgeQueueService::dispatch_turn_start_with_backend(
-            &backend,
+            &self.backend,
             &thread_id,
             &queued_item.turn_start,
         )
         .await
         {
             Ok(turn_id) => {
-                let mut threads = threads.write().await;
-                let Some(runtime) = threads.get_mut(&thread_id) else {
-                    return;
+                let completion_event_ids = {
+                    let mut threads = self.threads.write().await;
+                    let Some(runtime) = threads.get_mut(&thread_id) else {
+                        return;
+                    };
+                    runtime.turn_start_in_flight = false;
+                    runtime.thread_running = true;
+                    runtime.active_turn_id = Some(turn_id);
+                    runtime.last_error = None;
+                    std::mem::take(&mut runtime.pending_completion_event_ids)
                 };
-                runtime.turn_start_in_flight = false;
-                runtime.thread_running = true;
-                runtime.active_turn_id = Some(turn_id);
-                runtime.last_error = None;
+                for event_id in completion_event_ids {
+                    self.record_completion_disposition(
+                        event_id,
+                        QueueCompletionDisposition::Continued,
+                    )
+                    .await;
+                }
             }
             Err(error) => {
-                let snapshot = {
-                    let mut threads = threads.write().await;
+                let (snapshot, completion_event_ids) = {
+                    let mut threads = self.threads.write().await;
                     let Some(runtime) = threads.get_mut(&thread_id) else {
                         return;
                     };
@@ -3355,10 +3541,18 @@ impl BridgeQueueService {
                         at: now_iso(),
                         item_id: runtime.items.front().map(|item| item.id.clone()),
                     });
-                    BridgeQueueService::snapshot_for_thread(&thread_id, Some(runtime))
+                    (
+                        BridgeQueueService::snapshot_for_thread(&thread_id, Some(runtime)),
+                        std::mem::take(&mut runtime.pending_completion_event_ids),
+                    )
                 };
                 if let Ok(value) = serde_json::to_value(&snapshot) {
-                    hub.broadcast_notification("bridge/thread/queue/updated", value)
+                    self.hub
+                        .broadcast_notification("bridge/thread/queue/updated", value)
+                        .await;
+                }
+                for event_id in completion_event_ids {
+                    self.record_completion_disposition(event_id, QueueCompletionDisposition::Final)
                         .await;
                 }
             }
@@ -7447,13 +7641,22 @@ struct BridgeThreadQueueRuntime {
     action_in_flight_item_id: Option<String>,
     pending_approval_ids: HashSet<String>,
     pending_user_input_ids: HashSet<String>,
+    pending_completion_event_ids: Vec<u64>,
     last_error: Option<BridgeThreadQueueError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueueCompletionDisposition {
+    Final,
+    Continued,
 }
 
 struct BridgeQueueService {
     backend: Arc<RuntimeBackend>,
     hub: Arc<ClientHub>,
     threads: Arc<RwLock<HashMap<String, BridgeThreadQueueRuntime>>>,
+    completion_dispositions: Arc<Mutex<HashMap<u64, QueueCompletionDisposition>>>,
+    completion_disposition_notify: Arc<Notify>,
     next_queue_item_id: AtomicU64,
 }
 
@@ -7526,7 +7729,7 @@ async fn main() {
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "Clawdex".to_string());
     let push = PushService::load(&config.workdir, project_label).await;
-    push.spawn_event_loop(&hub);
+    push.spawn_event_loop_with_queue(&hub, backend.clone(), Some(queue.clone()));
 
     let state = Arc::new(AppState {
         config: config.clone(),
@@ -14499,9 +14702,202 @@ mod tests {
             .await;
         // Completion with an empty registry must still drain the buffer, not leak it.
         service
-            .handle_notification("turn/completed", &json!({ "threadId": "t1" }))
+            .handle_notification(
+                "turn/completed",
+                &json!({ "threadId": "t1" }),
+                None,
+                None,
+                None,
+            )
             .await;
         assert!(service.take_reply_preview("t1").await.is_none());
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[test]
+    fn push_completion_only_allows_top_level_thread_sources() {
+        for source in ["cli", "vscode", "exec", "appServer", "unknown", "cursorSdk"] {
+            assert!(push_thread_is_top_level(&json!({
+                "thread": { "source": source }
+            })));
+        }
+
+        assert!(!push_thread_is_top_level(&json!({
+            "thread": {
+                "source": {
+                    "subAgent": {
+                        "thread_spawn": {
+                            "parent_thread_id": "thr-parent",
+                            "depth": 1
+                        }
+                    }
+                }
+            }
+        })));
+        assert!(!push_thread_is_top_level(&json!({
+            "thread": { "source": { "subAgent": "review" } }
+        })));
+        assert!(!push_thread_is_top_level(&json!({
+            "thread": { "source": { "subAgent": "compact" } }
+        })));
+        assert!(!push_thread_is_top_level(&json!({
+            "thread": { "source": { "subAgent": "memory_consolidation" } }
+        })));
+        assert!(!push_thread_is_top_level(&json!({
+            "thread": {
+                "source": {
+                    "kind": "subAgentThreadSpawn",
+                    "parentThreadId": "opencode:parent"
+                }
+            }
+        })));
+        assert!(!push_thread_is_top_level(&json!({
+            "thread": { "source": { "kind": "unexpected" } }
+        })));
+        assert!(!push_thread_is_top_level(&json!({ "thread": {} })));
+    }
+
+    #[tokio::test]
+    async fn queue_completion_disposition_tracks_continued_and_final_turns() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock opencode server");
+        let address = listener.local_addr().expect("mock server address");
+        let prompted = Arc::new(AtomicBool::new(false));
+        let prompted_for_messages = prompted.clone();
+        let prompted_for_request = prompted.clone();
+        let app = Router::new()
+            .route(
+                "/session/session-queue/message",
+                get(move || {
+                    let prompted = prompted_for_messages.clone();
+                    async move {
+                        Json(if prompted.load(Ordering::SeqCst) {
+                            json!([{ "info": { "id": "turn-2", "role": "user" } }])
+                        } else {
+                            json!([])
+                        })
+                    }
+                }),
+            )
+            .route(
+                "/session/session-queue/prompt_async",
+                axum::routing::post(move || {
+                    let prompted = prompted_for_request.clone();
+                    async move {
+                        prompted.store(true, Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve mock opencode");
+        });
+        let hub = Arc::new(ClientHub::new());
+        let opencode = build_test_opencode_backend_for_url(
+            hub.clone(),
+            Url::parse(&format!("http://{address}/")).expect("mock base url"),
+        )
+        .await;
+        let backend = Arc::new(RuntimeBackend {
+            preferred_engine: BridgeRuntimeEngine::Opencode,
+            codex: Arc::new(StdRwLock::new(None)),
+            opencode: Some(opencode),
+            cursor: Arc::new(StdRwLock::new(None)),
+        });
+        let queue = BridgeQueueService::new(backend.clone(), hub);
+        {
+            let mut threads = queue.threads.write().await;
+            threads.insert(
+                "opencode:session-queue".to_string(),
+                BridgeThreadQueueRuntime {
+                    thread_running: true,
+                    active_turn_id: Some("turn-1".to_string()),
+                    items: VecDeque::from([BridgeQueuedMessageEntry {
+                        id: "queue-1".to_string(),
+                        created_at: now_iso(),
+                        content: "follow up".to_string(),
+                        turn_start: json!({
+                            "input": [{ "type": "text", "text": "follow up" }],
+                            "model": "anthropic/claude-sonnet",
+                        }),
+                    }]),
+                    ..BridgeThreadQueueRuntime::default()
+                },
+            );
+        }
+
+        queue
+            .handle_notification(HubNotification {
+                event_id: 101,
+                method: "turn/completed".to_string(),
+                params: json!({ "threadId": "opencode:session-queue" }),
+            })
+            .await;
+        assert_eq!(
+            queue.wait_for_completion_disposition(101).await,
+            Some(QueueCompletionDisposition::Continued)
+        );
+
+        queue
+            .handle_notification(HubNotification {
+                event_id: 102,
+                method: "turn/completed".to_string(),
+                params: json!({ "threadId": "opencode:session-queue" }),
+            })
+            .await;
+        assert_eq!(
+            queue.wait_for_completion_disposition(102).await,
+            Some(QueueCompletionDisposition::Final)
+        );
+
+        shutdown_test_backend(&backend).await;
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn queued_continuation_suppresses_push_and_drains_predecessor_preview() {
+        let dir = std::env::temp_dir().join(format!("clawdex-queued-push-{}", std::process::id()));
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let service = PushService::load(&dir, "demo".to_string()).await;
+        service
+            .register(
+                "ExponentPushToken[queued]".to_string(),
+                "ios".to_string(),
+                "Phone".to_string(),
+                PushEventPreferences::default(),
+            )
+            .await;
+        service
+            .accumulate_reply(
+                "item/agentMessage/delta",
+                &json!({ "threadId": "codex:root", "delta": "intermediate reply" }),
+            )
+            .await;
+
+        let hub = Arc::new(ClientHub::new());
+        let backend =
+            build_test_runtime_backend(hub.clone(), BridgeRuntimeEngine::Codex, false).await;
+        let queue = BridgeQueueService::new(backend.clone(), hub);
+        queue
+            .record_completion_disposition(201, QueueCompletionDisposition::Continued)
+            .await;
+
+        service
+            .handle_notification(
+                "turn/completed",
+                &json!({ "threadId": "codex:root" }),
+                None,
+                Some(&queue),
+                Some(201),
+            )
+            .await;
+
+        assert!(service.take_reply_preview("codex:root").await.is_none());
+
+        shutdown_test_backend(&backend).await;
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 

@@ -1,7 +1,8 @@
 # Push Notifications
 
-Clawdex can notify you on your phone when an agent turn finishes or when it needs
-an approval — even when the app is backgrounded or closed.
+Clawdex can notify you on your phone when a top-level agent turn finishes or when
+it needs an approval — even when the app is backgrounded or closed. Subagent
+turn completions remain visible in the live UI but do not send push notifications.
 
 ## Why the bridge sends them
 
@@ -51,6 +52,12 @@ reply content.
   `turn/completed` / `bridge/approval.requested`, POSTs to
   `https://exp.host/--/api/v2/push/send`. Tokens that Expo reports as
   `DeviceNotRegistered` are pruned automatically.
+- Before sending a completion push, the bridge reads the completed thread and
+  verifies that its source is a top-level agent rather than a subagent. If
+  lineage cannot be verified, the completion push is suppressed.
+- A top-level completion is also suppressed when the bridge queue immediately
+  starts the next queued message. The completion push is sent only when that
+  top-level thread reaches a final completion with no queued continuation.
 - Optional: set `EXPO_ACCESS_TOKEN` in the bridge environment to send with an
   Expo access token (enhanced security / receipts).
 
