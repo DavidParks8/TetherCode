@@ -87,6 +87,7 @@ const THREAD_LIST_STREAM_MAX_LIMIT: usize = 100;
 const THREAD_LIST_STREAM_DEFAULT_DELAY_MS: u64 = 900;
 const THREAD_LIST_STREAM_MAX_DELAY_MS: u64 = 5_000;
 const APP_SERVER_TRANSIENT_THREAD_READ_RETRY_DELAYS_MS: [u64; 5] = [50, 100, 200, 400, 800];
+const APP_SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const ROLLOUT_LIVE_SYNC_POLL_INTERVAL_MS: u64 = 900;
 const ROLLOUT_LIVE_SYNC_DISCOVERY_INTERVAL_TICKS: u64 = 1;
 const ROLLOUT_LIVE_SYNC_MAX_TRACKED_FILES: usize = 64;
@@ -2053,6 +2054,15 @@ impl RuntimeBackend {
         }
     }
 
+    async fn cancel_client_requests(&self, client_id: u64) {
+        if let Some(bridge) = self.codex_backend() {
+            bridge.cancel_client_requests(client_id).await;
+        }
+        if let Some(bridge) = self.cursor_backend() {
+            bridge.cancel_client_requests(client_id).await;
+        }
+    }
+
     fn engine(&self) -> BridgeRuntimeEngine {
         self.preferred_engine
     }
@@ -2188,7 +2198,7 @@ impl RuntimeBackend {
 
     #[allow(dead_code)]
     async fn forward_request(
-        &self,
+        self: &Arc<Self>,
         client_id: u64,
         client_request_id: Value,
         method: &str,
@@ -3852,13 +3862,18 @@ impl AppServerBridge {
             }
         });
 
-        self.write_json(initialize_request)
-            .await
-            .map_err(|error| format!("initialize write failed: {error}"))?;
+        if let Err(error) = self.write_json(initialize_request).await {
+            self.internal_waiters.lock().await.remove(&init_id);
+            return Err(format!("initialize write failed: {error}"));
+        }
 
         let init_result = timeout(Duration::from_secs(15), rx)
             .await
-            .map_err(|_| "app-server initialize timed out".to_string())?;
+            .map_err(|_| "app-server initialize timed out".to_string());
+        if init_result.is_err() {
+            self.internal_waiters.lock().await.remove(&init_id);
+        }
+        let init_result = init_result?;
 
         match init_result {
             Ok(Ok(_)) => {}
@@ -3940,6 +3955,7 @@ impl AppServerBridge {
             }
 
             this.fail_all_pending("app-server closed").await;
+            this.fail_all_internal("app-server closed").await;
             this.pending_approvals.lock().await.clear();
             this.pending_user_inputs.lock().await.clear();
             this.lifecycle
@@ -3973,9 +3989,29 @@ impl AppServerBridge {
         }
     }
 
+    async fn fail_all_internal(&self, message: &str) {
+        let waiters = self
+            .internal_waiters
+            .lock()
+            .await
+            .drain()
+            .map(|(_, waiter)| waiter)
+            .collect::<Vec<_>>();
+        for waiter in waiters {
+            let _ = waiter.send(Err(message.to_string()));
+        }
+    }
+
+    async fn cancel_client_requests(&self, client_id: u64) {
+        self.pending_requests
+            .lock()
+            .await
+            .retain(|_, pending| pending.client_id != client_id);
+    }
+
     #[allow(dead_code)]
     async fn forward_request(
-        &self,
+        self: &Arc<Self>,
         client_id: u64,
         client_request_id: Value,
         method: &str,
@@ -3986,7 +4022,7 @@ impl AppServerBridge {
     }
 
     async fn forward_request_with_permits(
-        &self,
+        self: &Arc<Self>,
         client_id: u64,
         client_request_id: Value,
         method: &str,
@@ -4025,6 +4061,27 @@ impl AppServerBridge {
             self.pending_requests.lock().await.remove(&internal_id);
             return Err(format!("failed forwarding request to app-server: {error}"));
         }
+
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            sleep(APP_SERVER_REQUEST_TIMEOUT).await;
+            let pending = this.pending_requests.lock().await.remove(&internal_id);
+            if let Some(pending) = pending {
+                this.hub
+                    .send_json(
+                        pending.client_id,
+                        json!({
+                            "id": pending.client_request_id,
+                            "error": {
+                                "code": -32000,
+                                "message": format!("app-server request timed out: {}", pending.method),
+                                "data": { "error": "timeout", "retryable": true }
+                            }
+                        }),
+                    )
+                    .await;
+            }
+        });
 
         Ok(())
     }
@@ -8813,6 +8870,7 @@ async fn handle_socket(
     }
 
     state.hub.remove_client(client_id).await;
+    state.backend.cancel_client_requests(client_id).await;
     if !writer_task.is_finished() {
         writer_task.abort();
     }
@@ -18245,6 +18303,48 @@ mod tests {
         assert_eq!(payload_b["id"], "req-b");
         assert_eq!(payload_b["error"]["code"], -32000);
 
+        shutdown_test_bridge(&bridge).await;
+    }
+
+    #[tokio::test]
+    async fn app_server_disconnect_cancels_only_that_clients_requests() {
+        let hub = Arc::new(ClientHub::new());
+        let bridge = build_test_bridge(hub.clone()).await;
+        bridge
+            .forward_request(10, json!("a"), "thread/start", None)
+            .await
+            .expect("first request");
+        bridge
+            .forward_request(20, json!("b"), "thread/start", None)
+            .await
+            .expect("second request");
+
+        bridge.cancel_client_requests(10).await;
+        let pending = bridge.pending_requests.lock().await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending.values().next().map(|entry| entry.client_id),
+            Some(20)
+        );
+        drop(pending);
+
+        shutdown_test_bridge(&bridge).await;
+    }
+
+    #[tokio::test]
+    async fn app_server_exit_failure_drains_internal_waiters() {
+        let hub = Arc::new(ClientHub::new());
+        let bridge = build_test_bridge(hub).await;
+        let (sender, receiver) = oneshot::channel();
+        bridge.internal_waiters.lock().await.insert(99, sender);
+
+        bridge.fail_all_internal("backend exited").await;
+
+        assert_eq!(
+            receiver.await.expect("waiter result"),
+            Err("backend exited".to_string())
+        );
+        assert!(bridge.internal_waiters.lock().await.is_empty());
         shutdown_test_bridge(&bridge).await;
     }
 
