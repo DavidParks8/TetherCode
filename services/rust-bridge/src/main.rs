@@ -49,6 +49,7 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::{client::IntoClientRequest, Message as UpstreamWsMessage},
 };
+use uuid::Uuid;
 
 mod services;
 
@@ -63,6 +64,7 @@ const ACCOUNT_CHATGPT_TOKENS_REFRESH_METHOD: &str = "account/chatgptAuthTokens/r
 const BRIDGE_CHATGPT_AUTH_CACHE_FILE_NAME: &str = "chatgpt-auth.json";
 const MOBILE_ATTACHMENTS_DIR: &str = ".clawdex-mobile-attachments";
 const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+const BRIDGE_PROTOCOL_VERSION: u32 = 1;
 const NOTIFICATION_REPLAY_BUFFER_SIZE: usize = 2_000;
 const NOTIFICATION_REPLAY_MAX_LIMIT: usize = 1_000;
 const INTERNAL_NOTIFICATION_CHANNEL_CAPACITY: usize = 1_024;
@@ -1344,6 +1346,8 @@ enum BridgeRuntimeEngine {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BridgeCapabilities {
+    protocol_version: u32,
+    stream_id: String,
     active_engine: BridgeRuntimeEngine,
     preferred_engine: BridgeRuntimeEngine,
     configured_engines: Vec<BridgeRuntimeEngine>,
@@ -1373,7 +1377,7 @@ struct BridgeCapabilitySupport {
 
 impl AppState {
     fn bridge_capabilities(&self) -> BridgeCapabilities {
-        let mut capabilities = self.backend.capabilities();
+        let mut capabilities = self.backend.capabilities(self.hub.stream_id());
         capabilities.configured_engines = self.config.enabled_engines.clone();
         capabilities.supports.self_update = self.updater.is_self_update_supported();
         capabilities.supports.browser_preview = self.preview.is_available();
@@ -2005,7 +2009,7 @@ impl RuntimeBackend {
         engines
     }
 
-    fn capabilities(&self) -> BridgeCapabilities {
+    fn capabilities(&self, stream_id: &str) -> BridgeCapabilities {
         let preferred_engine = self.engine();
         let supports_for_engine = |engine| match engine {
             BridgeRuntimeEngine::Codex => BridgeCapabilitySupport {
@@ -2075,6 +2079,8 @@ impl RuntimeBackend {
         .collect();
 
         BridgeCapabilities {
+            protocol_version: BRIDGE_PROTOCOL_VERSION,
+            stream_id: stream_id.to_string(),
             active_engine,
             preferred_engine,
             configured_engines: available_engines.clone(),
@@ -2521,6 +2527,7 @@ enum RuntimeBackendRef<'a> {
 struct ClientHub {
     next_client_id: AtomicU64,
     next_event_id: AtomicU64,
+    stream_id: String,
     replay_capacity: usize,
     clients: RwLock<HashMap<u64, mpsc::Sender<Message>>>,
     client_infos: RwLock<HashMap<u64, BridgeDeviceConnection>>,
@@ -2600,6 +2607,7 @@ impl ClientHub {
         Self {
             next_client_id: AtomicU64::new(1),
             next_event_id: AtomicU64::new(1),
+            stream_id: Uuid::new_v4().to_string(),
             replay_capacity,
             clients: RwLock::new(HashMap::new()),
             client_infos: RwLock::new(HashMap::new()),
@@ -2610,6 +2618,22 @@ impl ClientHub {
 
     fn subscribe_notifications(&self) -> broadcast::Receiver<HubNotification> {
         self.notification_tx.subscribe()
+    }
+
+    fn stream_id(&self) -> &str {
+        &self.stream_id
+    }
+
+    fn connection_state_payload(&self) -> Value {
+        json!({
+            "method": "bridge/connection/state",
+            "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+            "streamId": self.stream_id,
+            "params": {
+                "status": "connected",
+                "at": now_iso(),
+            }
+        })
     }
 
     #[cfg(test)]
@@ -2742,6 +2766,8 @@ impl ClientHub {
         let event_id = self.next_event_id.fetch_add(1, Ordering::Relaxed);
         let payload = json!({
             "method": method,
+            "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+            "streamId": self.stream_id,
             "eventId": event_id,
             "params": params
         });
@@ -8515,16 +8541,7 @@ async fn handle_socket(
 
     state
         .hub
-        .send_json(
-            client_id,
-            json!({
-                "method": "bridge/connection/state",
-                "params": {
-                    "status": "connected",
-                    "at": now_iso(),
-                }
-            }),
-        )
+        .send_json(client_id, state.hub.connection_state_payload())
         .await;
 
     loop {
@@ -8809,6 +8826,8 @@ async fn handle_bridge_method(
             let (events, has_more) = state.hub.replay_since(request.after_event_id, limit).await;
 
             Ok(json!({
+                "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+                "streamId": state.hub.stream_id(),
                 "events": events,
                 "hasMore": has_more,
                 "earliestEventId": state.hub.earliest_event_id().await,
@@ -16265,6 +16284,9 @@ mod tests {
         let state = build_test_state().await;
 
         let capabilities = state.bridge_capabilities();
+        assert_eq!(capabilities.protocol_version, BRIDGE_PROTOCOL_VERSION);
+        assert_eq!(capabilities.stream_id, state.hub.stream_id());
+        Uuid::parse_str(&capabilities.stream_id).expect("valid stream UUID");
         assert_eq!(capabilities.active_engine, BridgeRuntimeEngine::Codex);
         assert_eq!(capabilities.preferred_engine, BridgeRuntimeEngine::Codex);
         assert_eq!(
@@ -16365,7 +16387,7 @@ mod tests {
         let hub = Arc::new(ClientHub::new());
         let backend = build_test_runtime_backend(hub, BridgeRuntimeEngine::Codex, false).await;
 
-        let capabilities = backend.capabilities();
+        let capabilities = backend.capabilities("test-stream");
         assert_eq!(capabilities.active_engine, BridgeRuntimeEngine::Codex);
         assert_eq!(
             capabilities.available_engines,
@@ -16385,7 +16407,7 @@ mod tests {
         let hub = Arc::new(ClientHub::new());
         let backend = build_test_runtime_backend(hub, BridgeRuntimeEngine::Cursor, false).await;
 
-        let capabilities = backend.capabilities();
+        let capabilities = backend.capabilities("test-stream");
         assert_eq!(capabilities.active_engine, BridgeRuntimeEngine::Codex);
         assert_eq!(capabilities.preferred_engine, BridgeRuntimeEngine::Cursor);
         assert_eq!(
@@ -16709,8 +16731,49 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(!has_more);
         assert_eq!(events[0]["method"], "turn/completed");
+        assert_eq!(events[0]["protocolVersion"], BRIDGE_PROTOCOL_VERSION);
+        assert_eq!(events[0]["streamId"], hub.stream_id());
         assert_eq!(events[0]["eventId"], 2);
         assert_eq!(hub.latest_event_id(), 2);
+    }
+
+    #[test]
+    fn client_hubs_have_distinct_stream_identities() {
+        let first = ClientHub::with_replay_capacity(1);
+        let second = ClientHub::with_replay_capacity(1);
+
+        assert_ne!(first.stream_id(), second.stream_id());
+        Uuid::parse_str(first.stream_id()).expect("first valid stream UUID");
+        Uuid::parse_str(second.stream_id()).expect("second valid stream UUID");
+
+        let connection = first.connection_state_payload();
+        assert_eq!(connection["protocolVersion"], BRIDGE_PROTOCOL_VERSION);
+        assert_eq!(connection["streamId"], first.stream_id());
+        assert_eq!(connection["params"]["status"], "connected");
+    }
+
+    #[tokio::test]
+    async fn replay_response_publishes_protocol_identity() {
+        let state = build_test_state().await;
+        state
+            .hub
+            .broadcast_notification("turn/started", json!({ "threadId": "thr_identity" }))
+            .await;
+
+        let response = handle_bridge_method(
+            "bridge/events/replay",
+            Some(json!({ "afterEventId": 0 })),
+            &state,
+            0,
+        )
+        .await
+        .expect("replay response");
+
+        assert_eq!(response["protocolVersion"], BRIDGE_PROTOCOL_VERSION);
+        assert_eq!(response["streamId"], state.hub.stream_id());
+        assert_eq!(response["events"][0]["streamId"], state.hub.stream_id());
+
+        shutdown_test_backend(&state.backend).await;
     }
 
     #[tokio::test]

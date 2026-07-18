@@ -676,6 +676,8 @@ export interface RunEvent {
 }
 
 export interface BridgeCapabilities {
+  protocolVersion: number;
+  streamId: string;
   activeEngine: ChatEngine;
   preferredEngine?: ChatEngine;
   configuredEngines?: ChatEngine[];
@@ -796,5 +798,7 @@ export interface CodexAppServerRestartResponse {
 export interface RpcNotification {
   method: string;
   params: Record<string, unknown> | null;
+  protocolVersion?: number;
+  streamId?: string;
   eventId?: number;
 }

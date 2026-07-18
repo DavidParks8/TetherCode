@@ -1,6 +1,10 @@
 import { Platform } from 'react-native';
 
-import { HostBridgeWsClient, RpcRequestError } from '../ws';
+import {
+  BridgeProtocolVersionError,
+  HostBridgeWsClient,
+  RpcRequestError,
+} from '../ws';
 
 class MockWebSocket {
   onopen: (() => void) | null = null;
@@ -406,6 +410,7 @@ describe('HostBridgeWsClient', () => {
 
     const firstSocket = latestMockSocket();
     firstSocket.simulateOpen();
+    simulateConnectionIdentity(firstSocket, 'stream-a');
     firstSocket.simulateMessage(
       JSON.stringify({
         method: 'turn/started',
@@ -421,6 +426,7 @@ describe('HostBridgeWsClient', () => {
     client.connect();
     const secondSocket = latestMockSocket();
     secondSocket.simulateOpen();
+    simulateConnectionIdentity(secondSocket, 'stream-a');
     await Promise.resolve();
 
     const replayRequest = secondSocket.send.mock.calls
@@ -442,6 +448,8 @@ describe('HostBridgeWsClient', () => {
       JSON.stringify({
         id: replayRequest?.id,
         result: {
+          protocolVersion: 1,
+          streamId: 'stream-a',
           events: [
             {
               method: 'turn/completed',
@@ -484,6 +492,7 @@ describe('HostBridgeWsClient', () => {
 
     const firstSocket = latestMockSocket();
     firstSocket.simulateOpen();
+    simulateConnectionIdentity(firstSocket, 'stream-a');
     firstSocket.simulateMessage(
       JSON.stringify({
         method: 'turn/started',
@@ -500,6 +509,7 @@ describe('HostBridgeWsClient', () => {
     client.connect();
     const secondSocket = latestMockSocket();
     secondSocket.simulateOpen();
+    simulateConnectionIdentity(secondSocket, 'stream-a');
     await Promise.resolve();
 
     const replayRequest = secondSocket.send.mock.calls
@@ -544,6 +554,8 @@ describe('HostBridgeWsClient', () => {
       JSON.stringify({
         id: replayRequest?.id,
         result: {
+          protocolVersion: 1,
+          streamId: 'stream-a',
           events: [
             {
               method: 'turn/started',
@@ -614,7 +626,7 @@ describe('HostBridgeWsClient', () => {
     expect(eventIds.filter((id) => id === 106)).toHaveLength(1);
   });
 
-  it('accepts new events after bridge event counter reset', async () => {
+  it('accepts a non-one counter reset after the bridge stream changes', async () => {
     const client = new HostBridgeWsClient('http://localhost:8787');
     const listener = jest.fn();
     client.onEvent(listener);
@@ -622,6 +634,7 @@ describe('HostBridgeWsClient', () => {
 
     const firstSocket = latestMockSocket();
     firstSocket.simulateOpen();
+    simulateConnectionIdentity(firstSocket, 'stream-a');
     firstSocket.simulateMessage(
       JSON.stringify({
         method: 'turn/started',
@@ -637,6 +650,7 @@ describe('HostBridgeWsClient', () => {
     client.connect();
     const secondSocket = latestMockSocket();
     secondSocket.simulateOpen();
+    simulateConnectionIdentity(secondSocket, 'stream-b');
     await Promise.resolve();
 
     const replayRequest = secondSocket.send.mock.calls
@@ -647,25 +661,14 @@ describe('HostBridgeWsClient', () => {
         }
       )
       .find((payload) => payload.method === 'bridge/events/replay');
-    expect(replayRequest).toBeDefined();
-
-    secondSocket.simulateMessage(
-      JSON.stringify({
-        id: replayRequest?.id,
-        result: {
-          events: [],
-          hasMore: false,
-          latestEventId: 2,
-        },
-      })
-    );
-    await Promise.resolve();
-    await Promise.resolve();
+    expect(replayRequest).toBeUndefined();
 
     secondSocket.simulateMessage(
       JSON.stringify({
         method: 'turn/completed',
-        eventId: 2,
+        protocolVersion: 1,
+        streamId: 'stream-b',
+        eventId: 5,
         params: {
           threadId: 'thr_reset',
           turn: {
@@ -678,7 +681,9 @@ describe('HostBridgeWsClient', () => {
 
     expect(listener).toHaveBeenLastCalledWith({
       method: 'turn/completed',
-      eventId: 2,
+      protocolVersion: 1,
+      streamId: 'stream-b',
+      eventId: 5,
       params: {
         threadId: 'thr_reset',
         turn: {
@@ -688,4 +693,35 @@ describe('HostBridgeWsClient', () => {
       },
     });
   });
+
+  it('fails closed when the bridge protocol version is unsupported', () => {
+    const client = new HostBridgeWsClient('http://localhost:8787');
+    client.connect();
+
+    const socket = latestMockSocket();
+    socket.simulateOpen();
+    simulateConnectionIdentity(socket, 'stream-future', 2);
+
+    expect(client.bridgeProtocolError).toBeInstanceOf(BridgeProtocolVersionError);
+    expect(client.bridgeProtocolError?.receivedVersion).toBe(2);
+    expect(socket.close).toHaveBeenCalledTimes(1);
+  });
 });
+
+function simulateConnectionIdentity(
+  socket: MockWebSocket,
+  streamId: string,
+  protocolVersion = 1
+): void {
+  socket.simulateMessage(
+    JSON.stringify({
+      method: 'bridge/connection/state',
+      protocolVersion,
+      streamId,
+      params: {
+        status: 'connected',
+        at: '2026-07-17T00:00:00.000Z',
+      },
+    })
+  );
+}

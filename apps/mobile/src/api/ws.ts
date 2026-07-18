@@ -54,7 +54,20 @@ export function isRpcRequestError(error: unknown): error is RpcRequestError {
   return error instanceof RpcRequestError;
 }
 
+export class BridgeProtocolVersionError extends Error {
+  readonly name = 'BridgeProtocolVersionError';
+
+  constructor(readonly receivedVersion: number) {
+    super(
+      `Unsupported bridge protocol version ${String(receivedVersion)}; expected ${String(HostBridgeWsClient.PROTOCOL_VERSION)}`
+    );
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 interface ReplayEventsResponse {
+  protocolVersion?: number;
+  streamId?: string;
   events?: unknown[];
   hasMore?: boolean;
   earliestEventId?: number;
@@ -62,6 +75,7 @@ interface ReplayEventsResponse {
 }
 
 export class HostBridgeWsClient {
+  static readonly PROTOCOL_VERSION = 1;
   private static readonly TURN_COMPLETION_TTL_MS = 5 * 60 * 1000;
   private static readonly RECENT_EVENT_ID_CACHE_SIZE = 4096;
   private socket: WebSocket | null = null;
@@ -87,6 +101,8 @@ export class HostBridgeWsClient {
   private replaySupported = true;
   private replayInFlight: Promise<void> | null = null;
   private requestCounter = 0;
+  private streamId: string | null = null;
+  private protocolError: BridgeProtocolVersionError | null = null;
 
   constructor(baseUrl: string, options: HostBridgeWsClientOptions = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -97,6 +113,10 @@ export class HostBridgeWsClient {
 
   public get isConnected(): boolean {
     return this.connected;
+  }
+
+  public get bridgeProtocolError(): BridgeProtocolVersionError | null {
+    return this.protocolError;
   }
 
   connect(): void {
@@ -373,9 +393,6 @@ export class HostBridgeWsClient {
           this.socket = socket;
           this.reconnectAttempts = 0;
           this.emitStatus(true);
-          if (this.lastSeenEventId > 0) {
-            this.scheduleReplay();
-          }
           resolve();
         };
 
@@ -498,6 +515,12 @@ export class HostBridgeWsClient {
     }
 
     const params = toRecord(record.params);
+    const protocolVersion = readNumber(record.protocolVersion);
+    const streamId = readString(record.streamId);
+    const identityResult = this.applyStreamIdentity(protocolVersion, streamId);
+    if (identityResult === 'unsupported') {
+      return;
+    }
     const eventId = readEventId(record);
     if (eventId !== null) {
       // Bridge restarts reset event IDs; treat that as a new stream.
@@ -536,10 +559,24 @@ export class HostBridgeWsClient {
       method,
       params,
     };
+    if (protocolVersion !== null) {
+      event.protocolVersion = protocolVersion;
+    }
+    if (streamId) {
+      event.streamId = streamId;
+    }
     if (eventId !== null) {
       event.eventId = eventId;
     }
     this.emitEvent(event);
+
+    if (
+      method === 'bridge/connection/state' &&
+      (identityResult === 'same' || identityResult === 'missing') &&
+      this.lastSeenEventId > 0
+    ) {
+      this.scheduleReplay();
+    }
   }
 
   private scheduleReplay(): void {
@@ -582,6 +619,14 @@ export class HostBridgeWsClient {
           return;
         }
         throw error;
+      }
+
+      const identityResult = this.applyStreamIdentity(
+        readNumber(response.protocolVersion),
+        readString(response.streamId)
+      );
+      if (identityResult === 'unsupported' || identityResult === 'changed') {
+        return;
       }
 
       const latestEventId = readNumber(response.latestEventId);
@@ -630,6 +675,38 @@ export class HostBridgeWsClient {
   private clearRecentEventIdCache(): void {
     this.recentEventIds.clear();
     this.recentEventIdQueue.length = 0;
+  }
+
+  private applyStreamIdentity(
+    protocolVersion: number | null,
+    streamId: string | null
+  ): 'missing' | 'initial' | 'same' | 'changed' | 'unsupported' {
+    if (protocolVersion === null || !streamId) {
+      return 'missing';
+    }
+    if (protocolVersion !== HostBridgeWsClient.PROTOCOL_VERSION) {
+      const error = new BridgeProtocolVersionError(protocolVersion);
+      this.protocolError = error;
+      this.shouldReconnect = false;
+      this.connectGeneration += 1;
+      this.rejectAllPending(error);
+      this.socket?.close();
+      return 'unsupported';
+    }
+
+    this.protocolError = null;
+    if (this.streamId === null) {
+      this.streamId = streamId;
+      return 'initial';
+    }
+    if (this.streamId === streamId) {
+      return 'same';
+    }
+
+    this.streamId = streamId;
+    this.lastSeenEventId = 0;
+    this.clearRecentEventIdCache();
+    return 'changed';
   }
 
   private rejectAllPending(error: Error): void {

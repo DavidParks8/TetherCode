@@ -50,6 +50,7 @@ Current mitigation strategy is hybrid: live events when available + snapshot syn
    - Bridge forwards app-server notifications to all WebSocket clients.
 2. Event replay
    - Bridge stores replayable notifications with `eventId`.
+   - Protocol version and per-process `streamId` identify the replay stream, so mobile can detect bridge restarts without relying on the event counter resetting to `1`.
    - Mobile can request missed events (`bridge/events/replay`) after reconnect.
 3. Running-state hints
    - `thread/status/changed` is used as a lightweight signal for externally-observed activity.
