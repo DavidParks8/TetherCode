@@ -712,11 +712,21 @@ export interface BridgeDeviceConnection {
 }
 
 export interface BridgeStatus {
-  status: 'ok';
+  status: 'ok' | 'degraded' | 'unhealthy';
   at: string;
   uptimeSec: number;
   connectedClients: number;
   devices: BridgeDeviceConnection[];
+  engines: Partial<Record<ChatEngine, BridgeEngineStatus>>;
+}
+
+export interface BridgeEngineStatus {
+  configured: boolean;
+  lifecycle: 'starting' | 'ready' | 'degraded' | 'restarting' | 'dead';
+  available: boolean;
+  restartCount: number;
+  pendingRequests: number;
+  lastError: string | null;
 }
 
 export interface BrowserPreviewSession {

@@ -82,7 +82,7 @@ import {
 } from './ws';
 
 interface HealthResponse {
-  status: 'ok';
+  status: 'ok' | 'degraded' | 'unhealthy';
   at: string;
   uptimeSec: number;
 }

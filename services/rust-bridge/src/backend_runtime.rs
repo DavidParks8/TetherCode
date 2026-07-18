@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU8, Ordering},
+    time::Duration,
+};
 
 use serde::Serialize;
 use tokio::sync::RwLock;
@@ -23,6 +26,7 @@ pub(crate) struct BackendRuntimeSnapshot {
 
 pub(crate) struct BackendRuntimeStatus {
     snapshot: RwLock<BackendRuntimeSnapshot>,
+    state: AtomicU8,
 }
 
 impl BackendRuntimeStatus {
@@ -33,6 +37,7 @@ impl BackendRuntimeStatus {
                 restart_count: 0,
                 last_error: None,
             }),
+            state: AtomicU8::new(state_code(BackendLifecycleState::Starting)),
         }
     }
 
@@ -42,12 +47,27 @@ impl BackendRuntimeStatus {
             snapshot.restart_count = snapshot.restart_count.saturating_add(1);
         }
         snapshot.state = state;
+        self.state.store(state_code(state), Ordering::Release);
         snapshot.last_error = error;
     }
 
     #[allow(dead_code)]
     pub(crate) async fn snapshot(&self) -> BackendRuntimeSnapshot {
         self.snapshot.read().await.clone()
+    }
+
+    pub(crate) fn is_ready(&self) -> bool {
+        self.state.load(Ordering::Acquire) == state_code(BackendLifecycleState::Ready)
+    }
+}
+
+fn state_code(state: BackendLifecycleState) -> u8 {
+    match state {
+        BackendLifecycleState::Starting => 0,
+        BackendLifecycleState::Ready => 1,
+        BackendLifecycleState::Degraded => 2,
+        BackendLifecycleState::Restarting => 3,
+        BackendLifecycleState::Dead => 4,
     }
 }
 

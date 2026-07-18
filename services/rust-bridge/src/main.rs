@@ -56,7 +56,7 @@ use uuid::Uuid;
 mod backend_runtime;
 mod services;
 
-use backend_runtime::{BackendLifecycleState, BackendRuntimeStatus};
+use backend_runtime::{BackendLifecycleState, BackendRuntimeSnapshot, BackendRuntimeStatus};
 
 const APPROVAL_COMMAND_METHOD: &str = "item/commandExecution/requestApproval";
 const APPROVAL_FILE_METHOD: &str = "item/fileChange/requestApproval";
@@ -1455,12 +1455,25 @@ impl AppState {
 
     async fn bridge_status(&self) -> BridgeStatus {
         let devices = self.hub.client_connections().await;
+        let engines = self
+            .backend
+            .engine_statuses(&self.config.enabled_engines)
+            .await;
+        let available = engines.values().filter(|engine| engine.available).count();
+        let status = if available == 0 {
+            "unhealthy"
+        } else if engines.values().all(|engine| engine.available) {
+            "ok"
+        } else {
+            "degraded"
+        };
         BridgeStatus {
-            status: "ok".to_string(),
+            status: status.to_string(),
             at: now_iso(),
             uptime_sec: self.started_at.elapsed().as_secs(),
             connected_clients: devices.len(),
             devices,
+            engines,
         }
     }
 
@@ -1883,6 +1896,52 @@ struct RuntimeBackend {
 }
 
 impl RuntimeBackend {
+    async fn engine_statuses(
+        &self,
+        configured_engines: &[BridgeRuntimeEngine],
+    ) -> HashMap<BridgeRuntimeEngine, BridgeEngineStatus> {
+        let mut statuses = HashMap::new();
+        for engine in [
+            BridgeRuntimeEngine::Codex,
+            BridgeRuntimeEngine::Opencode,
+            BridgeRuntimeEngine::Cursor,
+        ] {
+            let configured = configured_engines.contains(&engine);
+            let (runtime, pending_requests) = match engine {
+                BridgeRuntimeEngine::Codex => match self.codex_backend() {
+                    Some(backend) => (
+                        backend.lifecycle.snapshot().await,
+                        backend.pending_requests.lock().await.len(),
+                    ),
+                    None => (dead_backend_snapshot("backend not started"), 0),
+                },
+                BridgeRuntimeEngine::Opencode => match self.opencode.as_ref() {
+                    Some(backend) => (backend.lifecycle.snapshot().await, 0),
+                    None => (dead_backend_snapshot("backend not started"), 0),
+                },
+                BridgeRuntimeEngine::Cursor => match self.cursor_backend() {
+                    Some(backend) => (
+                        backend.lifecycle.snapshot().await,
+                        backend.pending_requests.lock().await.len(),
+                    ),
+                    None => (dead_backend_snapshot("backend not started"), 0),
+                },
+            };
+            statuses.insert(
+                engine,
+                BridgeEngineStatus {
+                    configured,
+                    lifecycle: runtime.state,
+                    available: configured && runtime.state == BackendLifecycleState::Ready,
+                    restart_count: runtime.restart_count,
+                    pending_requests,
+                    last_error: runtime.last_error,
+                },
+            );
+        }
+        statuses
+    }
+
     async fn start(config: &Arc<BridgeConfig>, hub: Arc<ClientHub>) -> Result<Arc<Self>, String> {
         let preferred_engine = config.active_engine;
         let codex_enabled = config.enabled_engines.contains(&BridgeRuntimeEngine::Codex);
@@ -2069,13 +2128,23 @@ impl RuntimeBackend {
 
     fn available_engines(&self) -> Vec<BridgeRuntimeEngine> {
         let mut engines = Vec::new();
-        if self.codex_backend().is_some() {
+        if self
+            .codex_backend()
+            .is_some_and(|backend| backend.lifecycle.is_ready())
+        {
             engines.push(BridgeRuntimeEngine::Codex);
         }
-        if self.opencode.is_some() {
+        if self
+            .opencode
+            .as_ref()
+            .is_some_and(|backend| backend.lifecycle.is_ready())
+        {
             engines.push(BridgeRuntimeEngine::Opencode);
         }
-        if self.cursor_backend().is_some() {
+        if self
+            .cursor_backend()
+            .is_some_and(|backend| backend.lifecycle.is_ready())
+        {
             engines.push(BridgeRuntimeEngine::Cursor);
         }
         engines
@@ -2514,6 +2583,14 @@ impl RuntimeBackend {
     }
 }
 
+fn dead_backend_snapshot(error: &str) -> BackendRuntimeSnapshot {
+    BackendRuntimeSnapshot {
+        state: BackendLifecycleState::Dead,
+        restart_count: 0,
+        last_error: Some(error.to_string()),
+    }
+}
+
 fn configure_managed_child_command(command: &mut Command) {
     command.kill_on_drop(true);
     #[cfg(unix)]
@@ -2666,6 +2743,18 @@ struct BridgeStatus {
     uptime_sec: u64,
     connected_clients: usize,
     devices: Vec<BridgeDeviceConnection>,
+    engines: HashMap<BridgeRuntimeEngine, BridgeEngineStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeEngineStatus {
+    configured: bool,
+    lifecycle: BackendLifecycleState,
+    available: bool,
+    restart_count: u32,
+    pending_requests: usize,
+    last_error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -8149,12 +8238,14 @@ async fn main() {
     }
 }
 
-async fn health_handler(State(state): State<Arc<AppState>>) -> Json<Value> {
-    Json(json!({
-        "status": "ok",
-        "at": now_iso(),
-        "uptimeSec": state.started_at.elapsed().as_secs(),
-    }))
+async fn health_handler(State(state): State<Arc<AppState>>) -> Response {
+    let status = state.bridge_status().await;
+    let http_status = if status.status == "unhealthy" {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    (http_status, Json(status)).into_response()
 }
 
 async fn status_handler(
@@ -8977,11 +9068,8 @@ async fn handle_bridge_method(
     client_id: u64,
 ) -> Result<Value, BridgeError> {
     match method {
-        "bridge/health/read" => Ok(json!({
-            "status": "ok",
-            "at": now_iso(),
-            "uptimeSec": state.started_at.elapsed().as_secs(),
-        })),
+        "bridge/health/read" => serde_json::to_value(state.bridge_status().await)
+            .map_err(|error| BridgeError::server(&error.to_string())),
         "bridge/status/read" => serde_json::to_value(state.bridge_status().await)
             .map_err(|error| BridgeError::server(&error.to_string())),
         "bridge/capabilities/read" => serde_json::to_value(state.bridge_capabilities())
@@ -15448,7 +15536,7 @@ mod tests {
             .expect("spawn cat process");
         let writer = child.stdin.take().expect("child stdin available");
 
-        Arc::new(AppServerBridge {
+        let bridge = Arc::new(AppServerBridge {
             engine: BridgeRuntimeEngine::Codex,
             child: Mutex::new(child),
             child_pid: 0,
@@ -15462,7 +15550,12 @@ mod tests {
             user_input_counter: AtomicU64::new(1),
             hub,
             lifecycle: Arc::new(BackendRuntimeStatus::starting()),
-        })
+        });
+        bridge
+            .lifecycle
+            .transition(BackendLifecycleState::Ready, None)
+            .await;
+        bridge
     }
 
     async fn shutdown_test_bridge(bridge: &Arc<AppServerBridge>) {
@@ -15490,7 +15583,7 @@ mod tests {
             .spawn()
             .expect("spawn cat process");
 
-        Arc::new(OpencodeBackend {
+        let backend = Arc::new(OpencodeBackend {
             child: Mutex::new(child),
             child_pid: 0,
             hub,
@@ -15507,7 +15600,12 @@ mod tests {
             pending_approvals: Mutex::new(HashMap::new()),
             pending_user_inputs: Mutex::new(HashMap::new()),
             lifecycle: Arc::new(BackendRuntimeStatus::starting()),
-        })
+        });
+        backend
+            .lifecycle
+            .transition(BackendLifecycleState::Ready, None)
+            .await;
+        backend
     }
 
     async fn shutdown_test_opencode_backend(backend: &Arc<OpencodeBackend>) {
@@ -16708,6 +16806,34 @@ mod tests {
         assert!(!capabilities.supports_by_engine[&BridgeRuntimeEngine::Opencode].goal_slash);
         assert!(capabilities.supports_by_engine[&BridgeRuntimeEngine::Opencode].plan_mode);
         assert!(!capabilities.supports_by_engine[&BridgeRuntimeEngine::Cursor].compact_start);
+
+        shutdown_test_backend(&state.backend).await;
+    }
+
+    #[tokio::test]
+    async fn bridge_status_reports_optional_engine_degradation() {
+        let state = build_test_state().await;
+        let opencode = state.backend.opencode.as_ref().expect("opencode backend");
+        opencode
+            .lifecycle
+            .transition(BackendLifecycleState::Dead, Some("test exit".to_string()))
+            .await;
+
+        let status = state.bridge_status().await;
+        assert_eq!(status.status, "degraded");
+        assert!(status.engines[&BridgeRuntimeEngine::Codex].available);
+        assert!(!status.engines[&BridgeRuntimeEngine::Opencode].available);
+        assert_eq!(
+            status.engines[&BridgeRuntimeEngine::Opencode]
+                .last_error
+                .as_deref(),
+            Some("test exit")
+        );
+        let capabilities = state.bridge_capabilities();
+        assert_eq!(
+            capabilities.available_engines,
+            vec![BridgeRuntimeEngine::Codex]
+        );
 
         shutdown_test_backend(&state.backend).await;
     }
