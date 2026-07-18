@@ -750,6 +750,7 @@ const RECEIPT_CHECK_DELAY_SECS: u64 = 900;
 const PUSH_SEND_MAX_ATTEMPTS: u32 = 4;
 const QUEUE_COMPLETION_DISPOSITION_WAIT_MS: u64 = 2_000;
 const QUEUE_COMPLETION_DISPOSITION_LIMIT: usize = 1_024;
+const QUEUE_MAX_ITEMS_PER_THREAD: usize = 100;
 const QUEUE_STATUS_DISPATCH_FALLBACK_MS: u64 = 250;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3053,7 +3054,9 @@ impl BridgeQueueService {
             loop {
                 match receiver.recv().await {
                     Ok(notification) => this.handle_notification(notification).await,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        this.reconcile_all_threads().await;
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -3152,6 +3155,11 @@ impl BridgeQueueService {
                 let runtime = threads
                     .entry(normalized_thread_id.clone())
                     .or_insert_with(BridgeThreadQueueRuntime::default);
+                if runtime.items.len() >= QUEUE_MAX_ITEMS_PER_THREAD {
+                    return Err(format!(
+                        "queue limit reached for thread (max {QUEUE_MAX_ITEMS_PER_THREAD})"
+                    ));
+                }
                 runtime.items.push_back(queued_item);
                 runtime.last_error = None;
                 Self::snapshot_for_thread(&normalized_thread_id, Some(runtime))
@@ -3408,6 +3416,41 @@ impl BridgeQueueService {
         Ok(runtime)
     }
 
+    async fn reconcile_all_threads(&self) {
+        let thread_ids = self
+            .threads
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for thread_id in thread_ids {
+            let actor = self.thread_actor(&thread_id).await;
+            let _actor_guard = actor.lock().await;
+            match self.hydrate_thread_runtime(&thread_id).await {
+                Ok(hydrated) => {
+                    if let Some(runtime) = self.threads.write().await.get_mut(&thread_id) {
+                        runtime.active_turn_id = hydrated.active_turn_id;
+                        runtime.thread_running = hydrated.thread_running;
+                        runtime.pending_approval_ids = hydrated.pending_approval_ids;
+                        runtime.pending_user_input_ids = hydrated.pending_user_input_ids;
+                    }
+                }
+                Err(error) => {
+                    if let Some(runtime) = self.threads.write().await.get_mut(&thread_id) {
+                        runtime.thread_running = true;
+                        runtime.last_error = Some(BridgeThreadQueueError {
+                            message: error,
+                            operation: "reconcile".to_string(),
+                            at: now_iso(),
+                            item_id: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     async fn dispatch_turn_start(
         &self,
         thread_id: &str,
@@ -3538,6 +3581,12 @@ impl BridgeQueueService {
                     let mut threads = self.threads.write().await;
                     match threads.get_mut(&thread_id) {
                         Some(runtime) => {
+                            let completed_turn_id = read_notification_turn_id(&notification.params);
+                            if runtime.active_turn_id.is_some()
+                                && completed_turn_id.as_deref() != runtime.active_turn_id.as_deref()
+                            {
+                                return;
+                            }
                             let continuation_already_in_flight = runtime.turn_start_in_flight;
                             runtime.thread_running = false;
                             if !continuation_already_in_flight {
@@ -14504,6 +14553,18 @@ fn read_active_turn_id_from_thread(thread: &Value) -> Option<String> {
     None
 }
 
+fn read_notification_turn_id(params: &Value) -> Option<String> {
+    read_string(params.get("turnId"))
+        .or_else(|| read_string(params.get("turn_id")))
+        .or_else(|| {
+            params
+                .get("turn")
+                .and_then(|turn| read_string(turn.get("id")))
+        })
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn thread_has_running_turn(thread: &Value) -> bool {
     let thread_object = match thread.as_object() {
         Some(object) => object,
@@ -18832,6 +18893,57 @@ mod tests {
         assert!(second.try_lock().is_ok());
 
         shutdown_test_backend(&state.backend).await;
+    }
+
+    #[tokio::test]
+    async fn bridge_queue_ignores_stale_completion_turn_id() {
+        let state = build_test_state().await;
+        let queue = state.queue.clone();
+        queue.threads.write().await.insert(
+            "thread-stale".to_string(),
+            BridgeThreadQueueRuntime {
+                thread_running: true,
+                active_turn_id: Some("turn-current".to_string()),
+                items: VecDeque::from([BridgeQueuedMessageEntry {
+                    id: "queue-stale".to_string(),
+                    created_at: now_iso(),
+                    content: "next".to_string(),
+                    turn_start: json!({ "input": [{ "type": "text", "text": "next" }] }),
+                }]),
+                ..BridgeThreadQueueRuntime::default()
+            },
+        );
+
+        queue
+            .handle_notification(HubNotification {
+                event_id: 999,
+                method: "turn/completed".to_string(),
+                params: json!({
+                    "threadId": "thread-stale",
+                    "turn": { "id": "turn-old" }
+                }),
+            })
+            .await;
+
+        let threads = queue.threads.read().await;
+        let runtime = threads.get("thread-stale").expect("runtime");
+        assert!(runtime.thread_running);
+        assert_eq!(runtime.active_turn_id.as_deref(), Some("turn-current"));
+        assert_eq!(runtime.items.len(), 1);
+        drop(threads);
+        shutdown_test_backend(&state.backend).await;
+    }
+
+    #[test]
+    fn notification_turn_id_supports_nested_and_flat_shapes() {
+        assert_eq!(
+            read_notification_turn_id(&json!({ "turn": { "id": "turn-nested" } })).as_deref(),
+            Some("turn-nested")
+        );
+        assert_eq!(
+            read_notification_turn_id(&json!({ "turnId": "turn-flat" })).as_deref(),
+            Some("turn-flat")
+        );
     }
 
     #[tokio::test]

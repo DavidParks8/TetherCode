@@ -69,6 +69,7 @@ Current mitigation strategy is hybrid: live events when available + snapshot syn
 2. For standalone CLI-originated turns, expect eventual consistency in mobile (main output first-class, detailed live telemetry best-effort).
 3. Keep all clients on the same user + same `CODEX_HOME` to preserve shared persisted history continuity.
 4. Use `bridge/events/replay` for reconnect gaps.
+5. Bridge-managed queued messages are process-local: they survive app-server replacement within the running bridge, but a full bridge process restart discards them.
 
 ## Future Improvement Direction
 
