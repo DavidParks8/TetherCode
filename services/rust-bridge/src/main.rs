@@ -53,7 +53,10 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
+mod backend_runtime;
 mod services;
+
+use backend_runtime::{BackendLifecycleState, BackendRuntimeStatus};
 
 const APPROVAL_COMMAND_METHOD: &str = "item/commandExecution/requestApproval";
 const APPROVAL_FILE_METHOD: &str = "item/fileChange/requestApproval";
@@ -3675,6 +3678,7 @@ struct AppServerBridge {
     approval_counter: AtomicU64,
     user_input_counter: AtomicU64,
     hub: Arc<ClientHub>,
+    lifecycle: Arc<BackendRuntimeStatus>,
 }
 
 struct PendingRequest {
@@ -3786,18 +3790,45 @@ impl AppServerBridge {
             approval_counter: AtomicU64::new(1),
             user_input_counter: AtomicU64::new(1),
             hub,
+            lifecycle: Arc::new(BackendRuntimeStatus::starting()),
         });
 
         bridge.spawn_stdout_loop(stdout);
         bridge.spawn_stderr_loop(stderr);
         bridge.spawn_wait_loop();
 
-        bridge.initialize().await?;
+        if let Err(error) = bridge.initialize().await {
+            bridge
+                .lifecycle
+                .transition(BackendLifecycleState::Degraded, Some(error.clone()))
+                .await;
+            bridge.request_shutdown().await;
+            let _ = timeout(Duration::from_secs(5), async {
+                let mut child = bridge.child.lock().await;
+                child.wait().await
+            })
+            .await;
+            bridge
+                .lifecycle
+                .transition(BackendLifecycleState::Dead, Some(error.clone()))
+                .await;
+            return Err(error);
+        }
+        bridge
+            .lifecycle
+            .transition(BackendLifecycleState::Ready, None)
+            .await;
 
         Ok(bridge)
     }
 
     async fn request_shutdown(&self) {
+        self.lifecycle
+            .transition(
+                BackendLifecycleState::Degraded,
+                Some("shutdown requested".to_string()),
+            )
+            .await;
         terminate_managed_child(self.child_pid, "app-server").await;
     }
 
@@ -3911,6 +3942,12 @@ impl AppServerBridge {
             this.fail_all_pending("app-server closed").await;
             this.pending_approvals.lock().await.clear();
             this.pending_user_inputs.lock().await.clear();
+            this.lifecycle
+                .transition(
+                    BackendLifecycleState::Dead,
+                    Some("app-server exited".to_string()),
+                )
+                .await;
         });
     }
 
@@ -4534,6 +4571,7 @@ struct OpencodeBackend {
     interrupted_sessions: RwLock<HashSet<String>>,
     pending_approvals: Mutex<HashMap<String, OpencodePendingApprovalEntry>>,
     pending_user_inputs: Mutex<HashMap<String, OpencodePendingUserInputEntry>>,
+    lifecycle: Arc<BackendRuntimeStatus>,
 }
 
 impl OpencodeBackend {
@@ -4596,18 +4634,45 @@ impl OpencodeBackend {
             interrupted_sessions: RwLock::new(HashSet::new()),
             pending_approvals: Mutex::new(HashMap::new()),
             pending_user_inputs: Mutex::new(HashMap::new()),
+            lifecycle: Arc::new(BackendRuntimeStatus::starting()),
         });
 
         backend.spawn_stdout_loop(stdout);
         backend.spawn_stderr_loop(stderr);
         backend.spawn_wait_loop();
-        backend.wait_until_healthy().await?;
+        if let Err(error) = backend.wait_until_healthy().await {
+            backend
+                .lifecycle
+                .transition(BackendLifecycleState::Degraded, Some(error.clone()))
+                .await;
+            backend.request_shutdown().await;
+            let _ = timeout(Duration::from_secs(5), async {
+                let mut child = backend.child.lock().await;
+                child.wait().await
+            })
+            .await;
+            backend
+                .lifecycle
+                .transition(BackendLifecycleState::Dead, Some(error.clone()))
+                .await;
+            return Err(error);
+        }
+        backend
+            .lifecycle
+            .transition(BackendLifecycleState::Ready, None)
+            .await;
         backend.spawn_global_event_loop();
 
         Ok(backend)
     }
 
     async fn request_shutdown(&self) {
+        self.lifecycle
+            .transition(
+                BackendLifecycleState::Degraded,
+                Some("shutdown requested".to_string()),
+            )
+            .await;
         terminate_managed_child(self.child_pid, "opencode").await;
     }
 
@@ -4662,6 +4727,12 @@ impl OpencodeBackend {
             this.active_turns.write().await.clear();
             this.part_kinds.write().await.clear();
             this.interrupted_sessions.write().await.clear();
+            this.lifecycle
+                .transition(
+                    BackendLifecycleState::Dead,
+                    Some("opencode exited".to_string()),
+                )
+                .await;
         });
     }
 
@@ -15332,6 +15403,7 @@ mod tests {
             approval_counter: AtomicU64::new(1),
             user_input_counter: AtomicU64::new(1),
             hub,
+            lifecycle: Arc::new(BackendRuntimeStatus::starting()),
         })
     }
 
@@ -15376,6 +15448,7 @@ mod tests {
             interrupted_sessions: RwLock::new(HashSet::new()),
             pending_approvals: Mutex::new(HashMap::new()),
             pending_user_inputs: Mutex::new(HashMap::new()),
+            lifecycle: Arc::new(BackendRuntimeStatus::starting()),
         })
     }
 
@@ -18208,6 +18281,7 @@ mod tests {
             approval_counter: AtomicU64::new(1),
             user_input_counter: AtomicU64::new(1),
             hub: hub.clone(),
+            lifecycle: Arc::new(BackendRuntimeStatus::starting()),
         });
 
         let (_client_id, mut rx) = add_test_client(&hub).await;
