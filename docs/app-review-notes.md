@@ -65,7 +65,7 @@ Then:
 - Bridge auth token is required by default.
 - The app is intended for trusted private networking such as LAN, VPN, or Tailscale.
 - Any remote execution happens only on infrastructure controlled by the user or review account owner.
-- Terminal commands are constrained by server-side allowlist controls and can be disabled entirely.
+- Generic terminal execution is disabled by default and can only be enabled through argument-aware server policies; Git uses separate hardened bridge operations.
 - In-app Privacy and Terms screens remain accessible from Settings.
 
 ## Push Notifications (new in 5.2.3)

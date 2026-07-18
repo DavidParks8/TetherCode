@@ -386,6 +386,13 @@ Automation verifies tag/version consistency and publishes to npm.
 - `bridge/ui/dismiss`
 - `bridge/ui/resolve`
 
+### Host execution policy
+
+- `bridge/terminal/exec` is deny-all by default. Opt in with `BRIDGE_TERMINAL_EXEC_POLICIES=pwd,ls,cat`; an unset or empty value enables nothing.
+- Each terminal policy validates arguments: `pwd` takes none, `ls` accepts only `-a`, `-A`, `-l`, `-h`, and `-1` plus canonicalized paths, and `cat` accepts only canonicalized files.
+- Generic `git` terminal commands are always forbidden. `bridge/git/*` uses a separate hardened runner that ignores system/global Git configuration, disables hooks, external diff/filter helpers and unsafe transports, and rejects non-HTTPS or credential-bearing remotes before network operations.
+- The bridge-owned GitHub credential store is passed directly to hardened Git commands; installation no longer changes the user's global Git configuration.
+
 ### Notifications (examples)
 
 - `turn/*`, `item/*`

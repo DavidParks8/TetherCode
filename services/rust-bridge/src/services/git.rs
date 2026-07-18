@@ -4,6 +4,8 @@ use std::{
     sync::Arc,
 };
 
+use reqwest::Url;
+
 use crate::{
     normalize_path, path_policy::PathPolicy, BridgeError, GitBranchSummary, GitBranchesResponse,
     GitCloneResponse, GitCommitResponse, GitDiffResponse, GitHistoryCommit, GitHistoryResponse,
@@ -46,7 +48,7 @@ impl GitService {
         ];
         let result = self
             .terminal
-            .execute_binary("git", &args, repo_path.clone(), None)
+            .execute_git(&args, repo_path.clone(), None)
             .await?;
 
         if result.code != Some(0) {
@@ -97,6 +99,7 @@ impl GitService {
         raw_cwd: Option<&str>,
     ) -> Result<GitDiffResponse, BridgeError> {
         let repo_path = self.resolve_repo_path(raw_cwd)?;
+        self.validate_repository_helpers(&repo_path).await?;
         let entries = self.get_porcelain_status_entries(&repo_path).await?;
         let mut sections = Vec::new();
 
@@ -213,7 +216,7 @@ impl GitService {
 
         let result = self
             .terminal
-            .execute_binary("git", &args, repo_path.clone(), None)
+            .execute_git(&args, repo_path.clone(), None)
             .await?;
 
         if result.code != Some(0) {
@@ -269,6 +272,7 @@ impl GitService {
         raw_cwd: Option<&str>,
     ) -> Result<GitSwitchResponse, BridgeError> {
         let repo_path = self.resolve_repo_path(raw_cwd)?;
+        self.validate_repository_helpers(&repo_path).await?;
         let target = normalize_git_branch_target(&branch)?;
         let known_branches = self.get_branches(raw_cwd).await?.branches;
         let switch_target = resolve_switch_target(&target, &known_branches);
@@ -284,7 +288,7 @@ impl GitService {
 
         let result = self
             .terminal
-            .execute_binary("git", &args, repo_path.clone(), None)
+            .execute_git(&args, repo_path.clone(), None)
             .await?;
 
         Ok(GitSwitchResponse {
@@ -304,6 +308,7 @@ impl GitService {
         directory_name: &str,
     ) -> Result<GitCloneResponse, BridgeError> {
         let parent_path = self.resolve_repo_path(raw_parent_path)?;
+        let repository_url = validate_remote_url(repository_url)?;
         if !parent_path.exists() {
             return Err(BridgeError::invalid_params(
                 "destination parent path must exist",
@@ -326,13 +331,13 @@ impl GitService {
         let args = vec![
             "clone".to_string(),
             "--".to_string(),
-            repository_url.trim().to_string(),
+            repository_url.clone(),
             normalized_directory_name,
         ];
 
         let result = self
             .terminal
-            .execute_binary("git", &args, parent_path.clone(), None)
+            .execute_git(&args, parent_path.clone(), None)
             .await?;
 
         Ok(GitCloneResponse {
@@ -341,7 +346,7 @@ impl GitService {
             stderr: result.stderr,
             cloned: result.code == Some(0),
             cwd: destination_path.to_string_lossy().to_string(),
-            url: repository_url.trim().to_string(),
+            url: repository_url,
         })
     }
 
@@ -351,6 +356,7 @@ impl GitService {
         raw_cwd: Option<&str>,
     ) -> Result<GitStageResponse, BridgeError> {
         let repo_path = self.resolve_repo_path(raw_cwd)?;
+        self.validate_repository_helpers(&repo_path).await?;
         let relative_path = resolve_repo_relative_path(path, &repo_path)?;
         let args = vec![
             "-C".to_string(),
@@ -362,7 +368,7 @@ impl GitService {
 
         let result = self
             .terminal
-            .execute_binary("git", &args, repo_path.clone(), None)
+            .execute_git(&args, repo_path.clone(), None)
             .await?;
 
         Ok(GitStageResponse {
@@ -380,6 +386,7 @@ impl GitService {
         raw_cwd: Option<&str>,
     ) -> Result<GitStageAllResponse, BridgeError> {
         let repo_path = self.resolve_repo_path(raw_cwd)?;
+        self.validate_repository_helpers(&repo_path).await?;
         let args = vec![
             "-C".to_string(),
             repo_path.to_string_lossy().to_string(),
@@ -389,7 +396,7 @@ impl GitService {
 
         let result = self
             .terminal
-            .execute_binary("git", &args, repo_path.clone(), None)
+            .execute_git(&args, repo_path.clone(), None)
             .await?;
 
         Ok(GitStageAllResponse {
@@ -419,7 +426,7 @@ impl GitService {
 
         let result = self
             .terminal
-            .execute_binary("git", &args, repo_path.clone(), None)
+            .execute_git(&args, repo_path.clone(), None)
             .await?;
 
         Ok(GitUnstageResponse {
@@ -448,7 +455,7 @@ impl GitService {
 
         let result = self
             .terminal
-            .execute_binary("git", &args, repo_path.clone(), None)
+            .execute_git(&args, repo_path.clone(), None)
             .await?;
 
         Ok(GitUnstageAllResponse {
@@ -466,6 +473,7 @@ impl GitService {
         raw_cwd: Option<&str>,
     ) -> Result<GitCommitResponse, BridgeError> {
         let repo_path = self.resolve_repo_path(raw_cwd)?;
+        self.validate_repository_helpers(&repo_path).await?;
         let args = vec![
             "-C".to_string(),
             repo_path.to_string_lossy().to_string(),
@@ -476,7 +484,7 @@ impl GitService {
 
         let result = self
             .terminal
-            .execute_binary("git", &args, repo_path.clone(), None)
+            .execute_git(&args, repo_path.clone(), None)
             .await?;
 
         Ok(GitCommitResponse {
@@ -490,6 +498,8 @@ impl GitService {
 
     pub(crate) async fn push(&self, raw_cwd: Option<&str>) -> Result<GitPushResponse, BridgeError> {
         let repo_path = self.resolve_repo_path(raw_cwd)?;
+        self.validate_repository_helpers(&repo_path).await?;
+        self.validate_repository_remotes(&repo_path).await?;
         let status_output = self
             .run_git_stdout(
                 &repo_path,
@@ -514,14 +524,16 @@ impl GitService {
                     cwd: repo_path.to_string_lossy().to_string(),
                 });
             };
-            args.push("-u".to_string());
+            validate_remote_name(&remote_name)?;
+            args.push("--set-upstream".to_string());
+            args.push("--".to_string());
             args.push(remote_name);
             args.push("HEAD".to_string());
         }
 
         let result = self
             .terminal
-            .execute_binary("git", &args, repo_path.clone(), None)
+            .execute_git(&args, repo_path.clone(), None)
             .await?;
 
         Ok(GitPushResponse {
@@ -549,7 +561,7 @@ impl GitService {
 
         let result = self
             .terminal
-            .execute_binary("git", &args, repo_path.to_path_buf(), None)
+            .execute_git(&args, repo_path.to_path_buf(), None)
             .await?;
 
         if result.code != Some(0) {
@@ -579,7 +591,7 @@ impl GitService {
 
         let result = self
             .terminal
-            .execute_binary("git", &args, repo_path.to_path_buf(), None)
+            .execute_git(&args, repo_path.to_path_buf(), None)
             .await?;
 
         let code = result.code.unwrap_or(-1);
@@ -610,7 +622,7 @@ impl GitService {
 
         let result = self
             .terminal
-            .execute_binary("git", &args, repo_path.to_path_buf(), None)
+            .execute_git(&args, repo_path.to_path_buf(), None)
             .await?;
 
         if result.code != Some(0) {
@@ -637,6 +649,96 @@ impl GitService {
             .await?;
         Ok(select_default_remote_name(&output))
     }
+
+    async fn validate_repository_remotes(&self, repo_path: &Path) -> Result<(), BridgeError> {
+        let remote_names = self
+            .run_git_stdout(repo_path, &["remote"], "git remote inspection failed")
+            .await?;
+        for name in remote_names
+            .lines()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            validate_remote_name(name)?;
+            let remotes = self
+                .run_git_stdout(
+                    repo_path,
+                    &["remote", "get-url", "--all", "--push", name],
+                    "git remote inspection failed",
+                )
+                .await?;
+            for remote in remotes
+                .lines()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                validate_remote_url(remote)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn validate_repository_helpers(&self, repo_path: &Path) -> Result<(), BridgeError> {
+        let args = vec![
+            "-C".to_string(),
+            repo_path.to_string_lossy().to_string(),
+            "config".to_string(),
+            "--local".to_string(),
+            "--get-regexp".to_string(),
+            "^(core\\.(hooksPath|fsmonitor)|credential\\..*helper|diff\\..*\\.(command|textconv)|filter\\..*\\.(clean|smudge|process)|remote\\..*\\.(proxy|vcs))$".to_string(),
+        ];
+        let result = self
+            .terminal
+            .execute_git(&args, repo_path.to_path_buf(), None)
+            .await?;
+        match result.code {
+            Some(0) if !result.stdout.trim().is_empty() => Err(BridgeError::forbidden(
+                "unsafe_git_configuration",
+                "Repository Git configuration contains executable helpers or remote overrides.",
+            )),
+            Some(1) => Ok(()),
+            Some(0) => Ok(()),
+            _ => Err(BridgeError::server(if result.stderr.is_empty() {
+                "git repository configuration inspection failed"
+            } else {
+                &result.stderr
+            })),
+        }
+    }
+}
+
+fn validate_remote_url(raw: &str) -> Result<String, BridgeError> {
+    let trimmed = raw.trim();
+    let parsed = Url::parse(trimmed)
+        .map_err(|_| BridgeError::invalid_params("Git remotes must use an explicit HTTPS URL"))?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(BridgeError::forbidden(
+            "unsafe_git_remote",
+            "Git remotes must use HTTPS without embedded credentials or fragments.",
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_remote_name(raw: &str) -> Result<(), BridgeError> {
+    if raw.is_empty()
+        || raw.starts_with('-')
+        || !raw
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '.' | '_' | '-' | '/'))
+    {
+        return Err(BridgeError::forbidden(
+            "unsafe_git_remote",
+            "Git remote names must not contain option or control syntax.",
+        ));
+    }
+    Ok(())
 }
 
 fn parse_porcelain_status_entries(raw: &str) -> Result<Vec<GitStatusEntry>, BridgeError> {
@@ -948,7 +1050,7 @@ mod tests {
         normalize_git_branch_target, parse_git_branches, parse_git_history,
         parse_porcelain_status_entries, parse_status_has_upstream, resolve_clone_directory_name,
         resolve_repo_relative_path, resolve_switch_target, select_default_remote_name,
-        GitSwitchTarget,
+        validate_remote_name, validate_remote_url, GitSwitchTarget,
     };
     use crate::{path_policy::PathPolicy, GitBranchSummary};
     use std::{collections::HashSet, fs, path::Path, sync::Arc};
@@ -966,11 +1068,7 @@ mod tests {
         fs::create_dir_all(&outside).expect("create outside");
         symlink(&outside, root.join("escape")).expect("create escape symlink");
         let policy = Arc::new(PathPolicy::new(root, false).expect("create policy"));
-        let terminal = Arc::new(super::TerminalService::new(
-            policy.clone(),
-            HashSet::new(),
-            true,
-        ));
+        let terminal = Arc::new(super::TerminalService::new(policy.clone(), HashSet::new()));
         let git = super::GitService::new(terminal, policy);
 
         let error = git
@@ -1049,6 +1147,32 @@ mod tests {
             Some("backup".to_string())
         );
         assert_eq!(select_default_remote_name(""), None);
+    }
+
+    #[test]
+    fn accepts_only_https_remotes_without_credentials() {
+        assert_eq!(
+            validate_remote_url("https://github.com/example/repo.git").unwrap(),
+            "https://github.com/example/repo.git"
+        );
+        for remote in [
+            "git@github.com:example/repo.git",
+            "ssh://git@github.com/example/repo.git",
+            "file:///tmp/repo",
+            "ext::sh -c id",
+            "https://token@github.com/example/repo.git",
+        ] {
+            assert!(validate_remote_url(remote).is_err(), "accepted {remote}");
+        }
+    }
+
+    #[test]
+    fn rejects_option_like_or_control_remote_names() {
+        assert!(validate_remote_name("origin").is_ok());
+        assert!(validate_remote_name("team/upstream-1").is_ok());
+        for name in ["--exec", "bad remote", "bad\nremote", ""] {
+            assert!(validate_remote_name(name).is_err(), "accepted {name:?}");
+        }
     }
 
     #[test]

@@ -79,7 +79,8 @@ Status: In progress (first implementation pass completed)
 
 ### Gap 7: Security Hardening
 - Bridge remains trusted-network oriented with optional no-auth local mode.
-- High-risk endpoints (`bridge/terminal/exec`, `bridge/git/*`) need stronger authz controls for wider deployment.
+- Generic terminal execution is deny-all by default and opt-in policies validate arguments. Generic Git and forwarded `command/exec` are forbidden; `bridge/git/*` uses hardened execution and validates remotes/helpers.
+- Per-method authorization beyond the bridge token is still needed before wider deployment.
 
 ### Gap 8: Contract/Regression Testing
 - No automated contract sync against generated app-server schema.

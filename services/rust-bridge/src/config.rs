@@ -3,7 +3,7 @@ use std::{collections::HashSet, env, net::IpAddr, path::PathBuf};
 use axum::http::{header::ORIGIN, HeaderMap};
 use reqwest::Url;
 
-use crate::{path_policy::PathPolicy, BridgeRuntimeEngine};
+use crate::{path_policy::PathPolicy, services::TerminalExecPolicy, BridgeRuntimeEngine};
 
 pub(crate) const DEFAULT_WS_MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const DEFAULT_WS_MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
@@ -33,8 +33,7 @@ pub(crate) struct BridgeConfig {
     pub(crate) no_auth_allowed_origins: HashSet<String>,
     pub(crate) allow_query_token_auth: bool,
     pub(crate) allow_outside_root_cwd: bool,
-    pub(crate) disable_terminal_exec: bool,
-    pub(crate) terminal_allowed_commands: HashSet<String>,
+    pub(crate) terminal_exec_policies: HashSet<TerminalExecPolicy>,
     pub(crate) show_pairing_qr: bool,
     pub(crate) ws_limits: WebSocketResourceLimits,
 }
@@ -124,14 +123,10 @@ impl BridgeConfig {
         let allow_query_token_auth = parse_bool_env("BRIDGE_ALLOW_QUERY_TOKEN_AUTH");
         let allow_outside_root_cwd =
             parse_bool_env_with_default("BRIDGE_ALLOW_OUTSIDE_ROOT_CWD", true);
-        let disable_terminal_exec = parse_bool_env("BRIDGE_DISABLE_TERMINAL_EXEC");
         let show_pairing_qr = parse_bool_env_with_default("BRIDGE_SHOW_PAIRING_QR", true);
         let ws_limits = WebSocketResourceLimits::from_env()?;
 
-        let terminal_allowed_commands = parse_csv_env(
-            "BRIDGE_TERMINAL_ALLOWED_COMMANDS",
-            &["pwd", "ls", "cat", "git"],
-        );
+        let terminal_exec_policies = parse_terminal_exec_policies_env()?;
 
         Ok(Self {
             host,
@@ -155,8 +150,7 @@ impl BridgeConfig {
             no_auth_allowed_origins,
             allow_query_token_auth,
             allow_outside_root_cwd,
-            disable_terminal_exec,
-            terminal_allowed_commands,
+            terminal_exec_policies,
             show_pairing_qr,
             ws_limits,
         })
@@ -372,16 +366,26 @@ fn parse_connect_url_env(name: &str) -> Result<Option<String>, String> {
         .map(Some)
 }
 
-fn parse_csv_env(name: &str, fallback: &[&str]) -> HashSet<String> {
-    match env::var(name) {
-        Ok(raw) => raw
-            .split(',')
-            .map(|entry| entry.trim())
-            .filter(|entry| !entry.is_empty())
-            .map(str::to_string)
-            .collect(),
-        Err(_) => fallback.iter().map(|entry| entry.to_string()).collect(),
+fn parse_terminal_exec_policies_env() -> Result<HashSet<TerminalExecPolicy>, String> {
+    let raw = env::var("BRIDGE_TERMINAL_EXEC_POLICIES").unwrap_or_default();
+    parse_terminal_exec_policies(&raw)
+}
+
+fn parse_terminal_exec_policies(raw: &str) -> Result<HashSet<TerminalExecPolicy>, String> {
+    let mut policies = HashSet::new();
+    for entry in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        let policy = TerminalExecPolicy::parse(entry).ok_or_else(|| {
+            format!(
+                "unsupported BRIDGE_TERMINAL_EXEC_POLICIES entry: {entry}; supported policies: pwd, ls, cat"
+            )
+        })?;
+        policies.insert(policy);
     }
+    Ok(policies)
 }
 
 fn parse_origin_csv_env(name: &str) -> Result<HashSet<String>, String> {
@@ -530,8 +534,7 @@ mod tests {
             no_auth_allowed_origins: HashSet::new(),
             allow_query_token_auth: false,
             allow_outside_root_cwd: false,
-            disable_terminal_exec: true,
-            terminal_allowed_commands: HashSet::new(),
+            terminal_exec_policies: HashSet::new(),
             show_pairing_qr: false,
             ws_limits: WebSocketResourceLimits {
                 max_frame_bytes: DEFAULT_WS_MAX_FRAME_BYTES,
@@ -633,5 +636,15 @@ mod tests {
         config.auth_enabled = true;
         config.auth_token = Some("secret".to_string());
         assert!(config.is_browser_origin_allowed(&headers_with_origin("https://evil.example")));
+    }
+
+    #[test]
+    fn terminal_policy_parser_is_explicit_and_deny_by_default() {
+        assert!(parse_terminal_exec_policies("").unwrap().is_empty());
+        assert_eq!(
+            parse_terminal_exec_policies(" pwd, cat ").unwrap(),
+            HashSet::from([TerminalExecPolicy::Pwd, TerminalExecPolicy::Read])
+        );
+        assert!(parse_terminal_exec_policies("git").is_err());
     }
 }

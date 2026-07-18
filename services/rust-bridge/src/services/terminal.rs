@@ -22,25 +22,74 @@ use crate::{
 const DEFAULT_TERMINAL_MAX_CONCURRENT: usize = 4;
 const DEFAULT_TERMINAL_MAX_OUTPUT_BYTES: usize = 256 * 1024;
 const OUTPUT_READ_CHUNK_SIZE: usize = 8 * 1024;
+const TRUSTED_GITHUB_CREDENTIALS_PATH: &str = ".clawdex/github-credentials";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum TerminalExecPolicy {
+    Pwd,
+    List,
+    Read,
+}
+
+impl TerminalExecPolicy {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pwd" => Some(Self::Pwd),
+            "ls" => Some(Self::List),
+            "cat" => Some(Self::Read),
+            _ => None,
+        }
+    }
+
+    fn binary(self) -> &'static str {
+        match self {
+            Self::Pwd => "pwd",
+            Self::List => "ls",
+            Self::Read => "cat",
+        }
+    }
+}
+
+fn hardened_git_args(args: &[String]) -> Vec<String> {
+    let mut hardened_args = vec![
+        "--no-pager".to_string(),
+        "-c".to_string(),
+        "core.hooksPath=/dev/null".to_string(),
+        "-c".to_string(),
+        "core.fsmonitor=false".to_string(),
+        "-c".to_string(),
+        "commit.gpgSign=false".to_string(),
+        "-c".to_string(),
+        "diff.external=".to_string(),
+        "-c".to_string(),
+        "protocol.ext.allow=never".to_string(),
+        "-c".to_string(),
+        "protocol.file.allow=never".to_string(),
+        "-c".to_string(),
+        "credential.helper=".to_string(),
+        "-c".to_string(),
+        "credential.useHttpPath=true".to_string(),
+    ];
+    if let Some(helper) = trusted_credential_helper() {
+        hardened_args.push("-c".to_string());
+        hardened_args.push(format!("credential.helper={helper}"));
+    }
+    hardened_args.extend_from_slice(args);
+    hardened_args
+}
 
 #[derive(Clone)]
 pub(crate) struct TerminalService {
     path_policy: Arc<PathPolicy>,
-    allowed_commands: HashSet<String>,
-    disabled: bool,
+    policies: HashSet<TerminalExecPolicy>,
     concurrency_limiter: Arc<Semaphore>,
 }
 
 impl TerminalService {
-    pub(crate) fn new(
-        path_policy: Arc<PathPolicy>,
-        allowed_commands: HashSet<String>,
-        disabled: bool,
-    ) -> Self {
+    pub(crate) fn new(path_policy: Arc<PathPolicy>, policies: HashSet<TerminalExecPolicy>) -> Self {
         Self {
             path_policy,
-            allowed_commands,
-            disabled,
+            policies,
             concurrency_limiter: Arc::new(Semaphore::new(DEFAULT_TERMINAL_MAX_CONCURRENT)),
         }
     }
@@ -49,13 +98,6 @@ impl TerminalService {
         &self,
         request: TerminalExecRequest,
     ) -> Result<TerminalExecResponse, BridgeError> {
-        if self.disabled {
-            return Err(BridgeError::forbidden(
-                "terminal_exec_disabled",
-                "Terminal execution is disabled on this bridge.",
-            ));
-        }
-
         let command = request.command.trim();
         if command.is_empty() {
             return Err(BridgeError::invalid_params("command must not be empty"));
@@ -74,17 +116,41 @@ impl TerminalService {
         }
 
         let binary = tokens[0].clone();
-        if !self.allowed_commands.is_empty() && !self.allowed_commands.contains(&binary) {
-            let mut allowed = self.allowed_commands.iter().cloned().collect::<Vec<_>>();
-            allowed.sort();
-            return Err(BridgeError::invalid_params(&format!(
-                "Command \"{binary}\" is not allowed. Allowed commands: {}",
-                allowed.join(", ")
-            )));
+        if binary == "git" {
+            return Err(BridgeError::forbidden(
+                "generic_git_forbidden",
+                "Git is only available through bridge/git RPC methods.",
+            ));
+        }
+        if self.policies.is_empty() {
+            return Err(BridgeError::forbidden(
+                "terminal_exec_disabled",
+                "Terminal execution has no enabled policies on this bridge.",
+            ));
         }
 
-        let args = tokens[1..].to_vec();
         let cwd = self.path_policy.resolve_cwd(request.cwd.as_deref())?;
+        let policy = self
+            .policies
+            .iter()
+            .copied()
+            .find(|policy| policy.binary() == binary)
+            .ok_or_else(|| {
+                let mut allowed = self
+                    .policies
+                    .iter()
+                    .map(|policy| policy.binary())
+                    .collect::<Vec<_>>();
+                allowed.sort_unstable();
+                BridgeError::forbidden(
+                    "terminal_policy_denied",
+                    &format!(
+                        "Command \"{binary}\" has no enabled execution policy. Enabled policies: {}",
+                        allowed.join(", ")
+                    ),
+                )
+            })?;
+        let args = self.validate_policy_args(policy, &tokens[1..], &cwd)?;
 
         self.execute_binary_internal(
             binary.as_str(),
@@ -96,9 +162,8 @@ impl TerminalService {
         .await
     }
 
-    pub(crate) async fn execute_binary(
+    pub(crate) async fn execute_git(
         &self,
-        binary: &str,
         args: &[String],
         cwd: PathBuf,
         timeout_ms: Option<u64>,
@@ -107,13 +172,88 @@ impl TerminalService {
             .path_policy
             .resolve_existing(cwd.to_string_lossy().as_ref(), PathKind::Directory)?;
 
-        let display = std::iter::once(binary.to_string())
+        let display = std::iter::once("git".to_string())
             .chain(args.iter().cloned())
             .collect::<Vec<_>>()
             .join(" ");
 
-        self.execute_binary_internal(binary, args, display, cwd, timeout_ms)
+        let hardened_args = hardened_git_args(args);
+
+        self.execute_binary_internal("git", &hardened_args, display, cwd, timeout_ms)
             .await
+    }
+
+    fn validate_policy_args(
+        &self,
+        policy: TerminalExecPolicy,
+        args: &[String],
+        cwd: &std::path::Path,
+    ) -> Result<Vec<String>, BridgeError> {
+        match policy {
+            TerminalExecPolicy::Pwd => {
+                if !args.is_empty() {
+                    return Err(BridgeError::invalid_params("pwd does not accept arguments"));
+                }
+                Ok(Vec::new())
+            }
+            TerminalExecPolicy::List => {
+                let mut options = Vec::new();
+                let mut paths = Vec::new();
+                let mut options_ended = false;
+                for arg in args {
+                    if !options_ended && arg == "--" {
+                        options_ended = true;
+                    } else if !options_ended && arg.starts_with('-') {
+                        if arg.len() == 1
+                            || !arg[1..]
+                                .chars()
+                                .all(|value| matches!(value, 'a' | 'A' | 'l' | 'h' | '1'))
+                        {
+                            return Err(BridgeError::invalid_params(
+                                "ls only permits the short options -a, -A, -l, -h, and -1",
+                            ));
+                        }
+                        options.push(arg.clone());
+                    } else {
+                        paths.push(
+                            self.path_policy
+                                .resolve_existing_from(cwd, arg, PathKind::Any)?
+                                .to_string_lossy()
+                                .to_string(),
+                        );
+                    }
+                }
+                if !paths.is_empty() {
+                    options.push("--".to_string());
+                    options.extend(paths);
+                }
+                Ok(options)
+            }
+            TerminalExecPolicy::Read => {
+                let options_ended = args.first().map(String::as_str) == Some("--");
+                let args = if options_ended { &args[1..] } else { args };
+                if args.is_empty() {
+                    return Err(BridgeError::invalid_params(
+                        "cat requires one or more file paths",
+                    ));
+                }
+                let mut validated = vec!["--".to_string()];
+                for arg in args {
+                    if !options_ended && arg.starts_with('-') {
+                        return Err(BridgeError::invalid_params(
+                            "cat options are not permitted; use -- before paths beginning with a dash",
+                        ));
+                    }
+                    validated.push(
+                        self.path_policy
+                            .resolve_existing_from(cwd, arg, PathKind::File)?
+                            .to_string_lossy()
+                            .to_string(),
+                    );
+                }
+                Ok(validated)
+            }
+        }
     }
 
     async fn execute_binary_internal(
@@ -133,12 +273,23 @@ impl TerminalService {
         let timeout_ms = timeout_ms.unwrap_or(30_000).clamp(100, 120_000);
         let started_at = Instant::now();
 
-        let mut child = Command::new(binary)
+        let mut command = Command::new(binary);
+        command
             .args(args)
             .current_dir(&cwd)
+            .env_clear()
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        for name in ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SystemRoot"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        let mut child = command
             .spawn()
             .map_err(|error| BridgeError::server(&format!("failed to spawn command: {error}")))?;
 
@@ -202,6 +353,15 @@ impl TerminalService {
     }
 }
 
+fn trusted_credential_helper() -> Option<String> {
+    let path = PathBuf::from(std::env::var_os("HOME")?).join(TRUSTED_GITHUB_CREDENTIALS_PATH);
+    if !path.is_file() {
+        return None;
+    }
+    let escaped = path.to_string_lossy().replace('\'', "'\\''");
+    Some(format!("store --file='{escaped}'"))
+}
+
 async fn read_stream_limited<R>(mut reader: R, max_bytes: usize) -> (Vec<u8>, bool)
 where
     R: AsyncRead + Unpin,
@@ -245,7 +405,7 @@ fn finalize_output(bytes: Vec<u8>, truncated: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{finalize_output, TerminalService};
+    use super::{finalize_output, hardened_git_args, TerminalExecPolicy, TerminalService};
     use crate::{path_policy::PathPolicy, TerminalExecRequest};
     use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
     use uuid::Uuid;
@@ -278,7 +438,7 @@ mod tests {
         fs::create_dir(&outside).expect("create outside");
         symlink(&outside, root.join("escape")).expect("create escape symlink");
         let policy = Arc::new(PathPolicy::new(root, false).expect("create policy"));
-        let service = TerminalService::new(policy, HashSet::from(["pwd".to_string()]), false);
+        let service = TerminalService::new(policy, HashSet::from([TerminalExecPolicy::Pwd]));
 
         let error = service
             .execute_shell(TerminalExecRequest {
@@ -289,6 +449,80 @@ mod tests {
             .await
             .expect_err("reject terminal symlink escape");
         assert_eq!(error.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn empty_policy_denies_every_generic_command() {
+        let temp = TestDir::new();
+        let policy = Arc::new(PathPolicy::new(temp.0.clone(), false).expect("create policy"));
+        let service = TerminalService::new(policy, HashSet::new());
+        let error = service
+            .execute_shell(TerminalExecRequest {
+                command: "pwd".to_string(),
+                cwd: None,
+                timeout_ms: None,
+            })
+            .await
+            .expect_err("deny empty policy");
+        assert_eq!(error.code, -32003);
+    }
+
+    #[tokio::test]
+    async fn generic_git_is_forbidden_even_with_enabled_policies() {
+        let temp = TestDir::new();
+        let policy = Arc::new(PathPolicy::new(temp.0.clone(), false).expect("create policy"));
+        let service = TerminalService::new(policy, HashSet::from([TerminalExecPolicy::Pwd]));
+        let error = service
+            .execute_shell(TerminalExecRequest {
+                command: "git status".to_string(),
+                cwd: None,
+                timeout_ms: None,
+            })
+            .await
+            .expect_err("forbid generic git");
+        assert_eq!(error.code, -32003);
+        assert_eq!(error.data.unwrap()["error"], "generic_git_forbidden");
+    }
+
+    #[test]
+    fn bridge_git_arguments_apply_fixed_hardening_before_operation() {
+        let args = hardened_git_args(&["status".to_string()]);
+        assert_eq!(args.last().map(String::as_str), Some("status"));
+        for setting in [
+            "core.hooksPath=/dev/null",
+            "core.fsmonitor=false",
+            "commit.gpgSign=false",
+            "diff.external=",
+            "protocol.ext.allow=never",
+            "protocol.file.allow=never",
+            "credential.helper=",
+            "credential.useHttpPath=true",
+        ] {
+            assert!(args.iter().any(|arg| arg == setting), "missing {setting}");
+        }
+    }
+
+    #[test]
+    fn read_policy_resolves_files_and_rejects_options() {
+        let temp = TestDir::new();
+        let file = temp.0.join("safe.txt");
+        fs::write(&file, "safe").expect("write fixture");
+        let policy = Arc::new(PathPolicy::new(temp.0.clone(), false).expect("create policy"));
+        let canonical_file = fs::canonicalize(&file).expect("canonical fixture");
+        let service = TerminalService::new(policy, HashSet::from([TerminalExecPolicy::Read]));
+
+        assert_eq!(
+            service
+                .validate_policy_args(TerminalExecPolicy::Read, &["safe.txt".to_string()], &temp.0)
+                .expect("validate file"),
+            vec![
+                "--".to_string(),
+                canonical_file.to_string_lossy().to_string()
+            ]
+        );
+        assert!(service
+            .validate_policy_args(TerminalExecPolicy::Read, &["-n".to_string()], &temp.0)
+            .is_err());
     }
 
     #[test]

@@ -143,7 +143,6 @@ const GITHUB_API_URL: &str = "https://api.github.com";
 const GITHUB_HOST: &str = "github.com";
 const GITHUB_CREDENTIALS_DIR_NAME: &str = ".clawdex";
 const GITHUB_CREDENTIALS_FILE_NAME: &str = "github-credentials";
-const GITHUB_GIT_CONFIG_FILE_NAME: &str = "github-git-auth.gitconfig";
 const CURSOR_API_BASE_URL: &str = "https://api.cursor.com";
 
 #[derive(Debug, Clone)]
@@ -159,7 +158,7 @@ struct ResolvedGitHubAuthGrant {
 }
 
 async fn install_github_git_auth(
-    state: &Arc<AppState>,
+    _state: &Arc<AppState>,
     request: GitHubAuthInstallRequest,
 ) -> Result<GitHubAuthInstallResponse, BridgeError> {
     let resolved_grants = resolve_github_auth_grants(request)?;
@@ -185,11 +184,8 @@ async fn install_github_git_auth(
     }
 
     let credentials_file = resolve_github_credentials_file_path()?;
-    let git_config_file = resolve_github_git_config_file_path()?;
     ensure_private_parent_dir(&credentials_file).await?;
     write_github_credentials_file(&credentials_file, &resolved_grants).await?;
-    write_github_git_config_file(&git_config_file, &credentials_file, &resolved_grants).await?;
-    configure_git_credential_store(state, &credentials_file, &git_config_file).await?;
 
     Ok(GitHubAuthInstallResponse {
         installed: true,
@@ -341,10 +337,6 @@ fn resolve_github_credentials_file_path() -> Result<PathBuf, BridgeError> {
     Ok(resolve_github_credentials_dir_path()?.join(GITHUB_CREDENTIALS_FILE_NAME))
 }
 
-fn resolve_github_git_config_file_path() -> Result<PathBuf, BridgeError> {
-    Ok(resolve_github_credentials_dir_path()?.join(GITHUB_GIT_CONFIG_FILE_NAME))
-}
-
 async fn ensure_private_parent_dir(path: &Path) -> Result<(), BridgeError> {
     let Some(parent) = path.parent() else {
         return Err(BridgeError::server(
@@ -400,132 +392,6 @@ async fn write_github_credentials_file(
                 ))
             })?;
     }
-    Ok(())
-}
-
-async fn write_github_git_config_file(
-    git_config_file: &Path,
-    credentials_file: &Path,
-    grants: &[ResolvedGitHubAuthGrant],
-) -> Result<(), BridgeError> {
-    let helper_value = format!("store --file {}", credentials_file.to_string_lossy());
-    let mut content = String::from(
-        "[credential \"https://github.com\"]\n\tuseHttpPath = true\n[url \"https://github.com/\"]\n\tinsteadOf = git@github.com:\n\tinsteadOf = ssh://git@github.com/\n",
-    );
-
-    for grant in grants {
-        for repository in &grant.repositories {
-            for context in [
-                format!("https://{GITHUB_HOST}/{repository}"),
-                format!("https://{GITHUB_HOST}/{repository}.git"),
-            ] {
-                content.push_str(&format!(
-                    "[credential \"{context}\"]\n\thelper =\n\thelper = {helper_value}\n\tusername = x-access-token\n"
-                ));
-            }
-        }
-    }
-
-    fs::write(git_config_file, content).await.map_err(|error| {
-        BridgeError::server(&format!("failed to write GitHub git config: {error}"))
-    })?;
-    #[cfg(unix)]
-    {
-        fs::set_permissions(git_config_file, std::fs::Permissions::from_mode(0o600))
-            .await
-            .map_err(|error| {
-                BridgeError::server(&format!(
-                    "failed to secure GitHub git config permissions: {error}"
-                ))
-            })?;
-    }
-    Ok(())
-}
-
-async fn configure_git_credential_store(
-    state: &Arc<AppState>,
-    credentials_file: &Path,
-    git_config_file: &Path,
-) -> Result<(), BridgeError> {
-    let helper_value = format!("store --file {}", credentials_file.to_string_lossy());
-    let include_path = git_config_file.to_string_lossy().to_string();
-    let commands = vec![
-        (
-            vec![
-                "config".to_string(),
-                "--global".to_string(),
-                "--fixed-value".to_string(),
-                "--unset-all".to_string(),
-                "credential.helper".to_string(),
-                helper_value.clone(),
-            ],
-            true,
-        ),
-        (
-            vec![
-                "config".to_string(),
-                "--global".to_string(),
-                "--fixed-value".to_string(),
-                "--unset-all".to_string(),
-                "credential.https://github.com.helper".to_string(),
-                helper_value.clone(),
-            ],
-            true,
-        ),
-        (
-            vec![
-                "config".to_string(),
-                "--global".to_string(),
-                "--fixed-value".to_string(),
-                "--unset-all".to_string(),
-                "credential.https://github.com.username".to_string(),
-                "x-access-token".to_string(),
-            ],
-            true,
-        ),
-        (
-            vec![
-                "config".to_string(),
-                "--global".to_string(),
-                "--fixed-value".to_string(),
-                "--unset-all".to_string(),
-                "include.path".to_string(),
-                include_path.clone(),
-            ],
-            true,
-        ),
-        (
-            vec![
-                "config".to_string(),
-                "--global".to_string(),
-                "--add".to_string(),
-                "include.path".to_string(),
-                include_path,
-            ],
-            false,
-        ),
-    ];
-
-    for (args, allow_missing) in commands {
-        let result = state
-            .terminal
-            .execute_binary("git", &args, state.config.workdir.clone(), None)
-            .await?;
-
-        let code = result.code.unwrap_or(-1);
-        if code != 0 && !(allow_missing && code == 5) {
-            return Err(BridgeError::server(
-                &(if !result.stderr.is_empty() {
-                    result.stderr
-                } else if !result.stdout.is_empty() {
-                    result.stdout
-                } else {
-                    "failed to configure git credentials".to_string()
-                }),
-            ));
-        }
-    }
-
     Ok(())
 }
 
@@ -7398,8 +7264,7 @@ async fn main() {
 
     let terminal = Arc::new(TerminalService::new(
         path_policy.clone(),
-        config.terminal_allowed_commands.clone(),
-        config.disable_terminal_exec,
+        config.terminal_exec_policies.clone(),
     ));
     let git = Arc::new(GitService::new(terminal.clone(), path_policy.clone()));
     let updater = Arc::new(UpdateService::discover());
@@ -14244,8 +14109,7 @@ mod tests {
             no_auth_allowed_origins: HashSet::new(),
             allow_query_token_auth: false,
             allow_outside_root_cwd: false,
-            disable_terminal_exec: true,
-            terminal_allowed_commands: HashSet::new(),
+            terminal_exec_policies: HashSet::new(),
             show_pairing_qr: false,
             ws_limits: test_ws_limits(),
         });
@@ -14259,8 +14123,7 @@ mod tests {
         );
         let terminal = Arc::new(TerminalService::new(
             path_policy.clone(),
-            config.terminal_allowed_commands.clone(),
-            config.disable_terminal_exec,
+            config.terminal_exec_policies.clone(),
         ));
         let git = Arc::new(GitService::new(terminal.clone(), path_policy.clone()));
         let updater = Arc::new(UpdateService::discover());
@@ -16103,6 +15966,7 @@ mod tests {
         assert!(is_forwarded_method("mcpServer/oauth/login"));
         assert!(is_forwarded_method("thread/backgroundTerminals/clean"));
         assert!(is_forwarded_method("thread/loaded/list"));
+        assert!(!is_forwarded_method("command/exec"));
         assert!(!is_forwarded_method("bridge/terminal/exec"));
         assert!(!is_forwarded_method("thread/delete"));
     }
@@ -16860,8 +16724,7 @@ mod tests {
             no_auth_allowed_origins: HashSet::new(),
             allow_query_token_auth: false,
             allow_outside_root_cwd: false,
-            disable_terminal_exec: false,
-            terminal_allowed_commands: HashSet::new(),
+            terminal_exec_policies: HashSet::new(),
             show_pairing_qr: true,
             ws_limits: test_ws_limits(),
         };
@@ -16898,8 +16761,7 @@ mod tests {
             no_auth_allowed_origins: HashSet::new(),
             allow_query_token_auth: false,
             allow_outside_root_cwd: false,
-            disable_terminal_exec: false,
-            terminal_allowed_commands: HashSet::new(),
+            terminal_exec_policies: HashSet::new(),
             show_pairing_qr: true,
             ws_limits: test_ws_limits(),
         };
@@ -16937,8 +16799,7 @@ mod tests {
             no_auth_allowed_origins: HashSet::new(),
             allow_query_token_auth: false,
             allow_outside_root_cwd: false,
-            disable_terminal_exec: false,
-            terminal_allowed_commands: HashSet::new(),
+            terminal_exec_policies: HashSet::new(),
             show_pairing_qr: true,
             ws_limits: test_ws_limits(),
         };
@@ -16975,8 +16836,7 @@ mod tests {
             no_auth_allowed_origins: HashSet::new(),
             allow_query_token_auth: false,
             allow_outside_root_cwd: false,
-            disable_terminal_exec: false,
-            terminal_allowed_commands: HashSet::new(),
+            terminal_exec_policies: HashSet::new(),
             show_pairing_qr: false,
             ws_limits: test_ws_limits(),
         };

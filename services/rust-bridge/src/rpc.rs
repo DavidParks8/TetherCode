@@ -55,7 +55,6 @@ pub(crate) fn is_forwarded_method(method: &str) -> bool {
             | "agent/list"
             | "app/list"
             | "collaborationMode/list"
-            | "command/exec"
             | "config/batchWrite"
             | "config/mcpServer/reload"
             | "config/read"
