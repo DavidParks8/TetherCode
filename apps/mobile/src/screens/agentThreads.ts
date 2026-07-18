@@ -11,6 +11,14 @@ export interface LiveAgentPanelThreadLike {
   isActive: boolean;
 }
 
+export interface AgentActivitySummaryLike {
+  runtimeDetail?: string | null;
+  latestCommandDetail?: string | null;
+  role?: string | null;
+  preview?: string | null;
+  sourceDescription: string;
+}
+
 export function collectRelatedAgentThreads(
   chats: ChatSummary[],
   focusChat: ChatSummary | null
@@ -110,6 +118,16 @@ export function collectLiveAgentPanelThreadIds(
   return threads
     .filter((thread) => thread.isRootThread || thread.isActive)
     .map((thread) => thread.id);
+}
+
+export function resolveAgentActivitySummary(input: AgentActivitySummaryLike): string {
+  return (
+    input.runtimeDetail?.trim() ||
+    input.latestCommandDetail?.trim() ||
+    input.role?.trim() ||
+    input.preview?.trim() ||
+    input.sourceDescription
+  );
 }
 
 function resolveRootThreadId(

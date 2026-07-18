@@ -1,6 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useMemo } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { ChatEngine } from '../api/types';
 import { ChatEngineIcon } from './ChatEngineIcon';
@@ -43,17 +52,13 @@ export function ChatHeader({
               hitSlop={8}
               style={({ pressed }) => [styles.titleButton, pressed && styles.titleButtonPressed]}
             >
-              <Text numberOfLines={1} style={styles.modelName}>
-                {titleDisplay}
-              </Text>
+              <ScrollableTitle title={titleDisplay} />
               {engineLabel ? <ChatEngineIcon engine={engine} size={18} /> : null}
               <Ionicons name="chevron-down" size={12} color={colors.textMuted} />
             </Pressable>
           ) : (
             <View style={styles.modelNameRow}>
-              <Text numberOfLines={1} style={styles.modelName}>
-                {titleDisplay}
-              </Text>
+              <ScrollableTitle title={titleDisplay} />
               {engineLabel ? <ChatEngineIcon engine={engine} size={18} /> : null}
             </View>
           )}
@@ -69,6 +74,66 @@ export function ChatHeader({
           ) : null}
         </View>
       </SafeAreaView>
+    </View>
+  );
+}
+
+function ScrollableTitle({ title }: { title: string }) {
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const scrollRef = useRef<ScrollView>(null);
+  const viewportWidthRef = useRef(0);
+  const contentWidthRef = useRef(0);
+  const [showLeftFade, setShowLeftFade] = useState(false);
+  const [showRightFade, setShowRightFade] = useState(false);
+
+  const updateFades = (offsetX: number) => {
+    const maxOffset = Math.max(0, contentWidthRef.current - viewportWidthRef.current);
+    setShowLeftFade(offsetX > 1);
+    setShowRightFade(offsetX < maxOffset - 1);
+  };
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ x: 0, animated: false });
+    updateFades(0);
+  }, [title]);
+
+  return (
+    <View style={styles.titleViewport}>
+      <ScrollView
+        ref={scrollRef}
+        horizontal
+        bounces={false}
+        showsHorizontalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onLayout={(event) => {
+          viewportWidthRef.current = event.nativeEvent.layout.width;
+          updateFades(0);
+        }}
+        onContentSizeChange={(width) => {
+          contentWidthRef.current = width;
+          updateFades(0);
+        }}
+        onScroll={(event: NativeSyntheticEvent<NativeScrollEvent>) => {
+          updateFades(event.nativeEvent.contentOffset.x);
+        }}
+      >
+        <Text style={styles.modelName}>{title}</Text>
+      </ScrollView>
+      {showLeftFade ? (
+        <LinearGradient
+          pointerEvents="none"
+          colors={[theme.colors.bgMain, theme.colors.transparent]}
+          style={[styles.titleFade, styles.titleFadeLeft]}
+        />
+      ) : null}
+      {showRightFade ? (
+        <LinearGradient
+          pointerEvents="none"
+          colors={[theme.colors.transparent, theme.colors.bgMain]}
+          style={[styles.titleFade, styles.titleFadeRight]}
+        />
+      ) : null}
     </View>
   );
 }
@@ -96,6 +161,7 @@ const createStyles = (theme: AppTheme) =>
       alignItems: 'center',
       gap: theme.spacing.xs,
       flexShrink: 1,
+      minWidth: 0,
     },
     titleButton: {
       flexDirection: 'row',
@@ -105,6 +171,7 @@ const createStyles = (theme: AppTheme) =>
       paddingHorizontal: 2,
       paddingVertical: 1,
       flexShrink: 1,
+      minWidth: 0,
     },
     titleButtonPressed: {
       backgroundColor: theme.colors.bgItem,
@@ -113,6 +180,23 @@ const createStyles = (theme: AppTheme) =>
       ...theme.typography.headline,
       fontSize: 17,
       color: theme.colors.textPrimary,
+    },
+    titleViewport: {
+      position: 'relative',
       flexShrink: 1,
+      minWidth: 0,
+      overflow: 'hidden',
+    },
+    titleFade: {
+      position: 'absolute',
+      top: 0,
+      bottom: 0,
+      width: 22,
+    },
+    titleFadeLeft: {
+      left: 0,
+    },
+    titleFadeRight: {
+      right: 0,
     },
   });

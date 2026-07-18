@@ -32,6 +32,7 @@ interface ChatMessageProps {
   bridgeUrl?: string | null;
   bridgeToken?: string | null;
   onOpenLocalPreview?: (targetUrl: string) => void;
+  onOpenSubAgentThread?: (threadId: string) => void;
 }
 
 interface ToolActivityGroupProps {
@@ -81,6 +82,7 @@ function ChatMessageComponent({
   bridgeUrl = null,
   bridgeToken = null,
   onOpenLocalPreview,
+  onOpenSubAgentThread,
 }: ChatMessageProps) {
   const theme = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -352,6 +354,7 @@ function ChatMessageComponent({
       timelineEntries && timelineEntries.length > 0
         ? timelineEntries
         : [{ title: message.content, details: [] }];
+    const targetThreadId = message.subAgentMeta?.receiverThreadIds?.[0]?.trim() ?? '';
 
     return (
       <View style={[styles.messageWrapper, styles.messageWrapperAssistant]}>
@@ -359,8 +362,10 @@ function ChatMessageComponent({
           {subAgentEntries.map((entry, index) => {
             const visual = toSubAgentVisual(entry.title);
             return (
-              <View
+              <Pressable
                 key={`${message.id}-subagent-${String(index)}`}
+                onPress={targetThreadId ? () => onOpenSubAgentThread?.(targetThreadId) : undefined}
+                disabled={!targetThreadId || !onOpenSubAgentThread}
                 style={[
                   styles.subAgentCard,
                   visual.isError && styles.subAgentCardError,
@@ -386,7 +391,13 @@ function ChatMessageComponent({
                     ))}
                   </View>
                 ) : null}
-              </View>
+                {targetThreadId && onOpenSubAgentThread ? (
+                  <View style={styles.subAgentOpenHint}>
+                    <Text style={styles.subAgentOpenHintText}>Open agent chat</Text>
+                    <Ionicons name="chevron-forward" size={12} color={theme.colors.textMuted} />
+                  </View>
+                ) : null}
+              </Pressable>
             );
           })}
         </View>
@@ -556,7 +567,8 @@ function areChatMessagePropsEqual(
     prevProps.engine === nextProps.engine &&
     prevProps.bridgeUrl === nextProps.bridgeUrl &&
     prevProps.bridgeToken === nextProps.bridgeToken &&
-    prevProps.onOpenLocalPreview === nextProps.onOpenLocalPreview
+    prevProps.onOpenLocalPreview === nextProps.onOpenLocalPreview &&
+    prevProps.onOpenSubAgentThread === nextProps.onOpenSubAgentThread
   );
 }
 
@@ -1958,6 +1970,18 @@ const createStyles = (theme: AppTheme) => {
     ...theme.typography.caption,
     color: theme.colors.textMuted,
     lineHeight: 16,
+  },
+  subAgentOpenHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 3,
+    marginTop: 4,
+  },
+  subAgentOpenHintText: {
+    ...theme.typography.caption,
+    color: theme.colors.textMuted,
+    fontWeight: '600',
   },
   timelineCard: {
     borderRadius: theme.radius.md,

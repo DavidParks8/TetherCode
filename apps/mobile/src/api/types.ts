@@ -81,6 +81,16 @@ export interface CreateChatRequest {
 
 export type CollaborationMode = 'default' | 'plan' | 'ask';
 
+export interface HarnessAgentOption {
+  id: string;
+  name: string;
+  description?: string;
+  mode: 'primary' | 'subagent' | 'all';
+  custom: boolean;
+  color?: string;
+  model?: string;
+}
+
 export interface SendChatMessageRequest {
   content: string;
   role?: ChatMessageRole;
@@ -90,6 +100,7 @@ export interface SendChatMessageRequest {
   serviceTier?: ServiceTier;
   approvalPolicy?: ApprovalPolicy;
   collaborationMode?: CollaborationMode;
+  agent?: string | null;
   mentions?: MentionInput[];
   localImages?: LocalImageInput[];
 }
@@ -679,6 +690,7 @@ export interface BridgeCapabilitySupport {
   compactStart?: boolean;
   goalSlash?: boolean;
   planMode?: boolean;
+  agentList?: boolean;
   turnSteer: boolean;
   commandOutputDelta: boolean;
   fastMode?: boolean;

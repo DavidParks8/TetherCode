@@ -1,5 +1,5 @@
 import { HostBridgeApiClient } from '../client';
-import type { HostBridgeWsClient } from '../ws';
+import { RpcRequestError, type HostBridgeWsClient } from '../ws';
 
 function createWsMock() {
   type WsLike = Pick<HostBridgeWsClient, 'request' | 'waitForTurnCompletion' | 'onEvent'>;
@@ -13,6 +13,38 @@ function createWsMock() {
 }
 
 describe('HostBridgeApiClient', () => {
+  it('listHarnessAgents() maps sanitized agent metadata', async () => {
+    const ws = createWsMock();
+    ws.request.mockResolvedValue({
+      data: [
+        {
+          id: 'security-auditor',
+          name: 'security-auditor',
+          description: 'Reviews security-sensitive changes',
+          mode: 'primary',
+          custom: true,
+          model: 'anthropic/claude-sonnet',
+        },
+      ],
+    });
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+
+    await expect(
+      client.listHarnessAgents({ engine: 'opencode', cwd: '/repo' })
+    ).resolves.toEqual([
+      expect.objectContaining({
+        name: 'security-auditor',
+        mode: 'primary',
+        custom: true,
+      }),
+    ]);
+    expect(ws.request).toHaveBeenCalledWith('agent/list', {
+      engine: 'opencode',
+      threadId: null,
+      cwd: '/repo',
+    });
+  });
+
   it('health() calls bridge/health/read', async () => {
     const ws = createWsMock();
     ws.request.mockResolvedValue({ status: 'ok', at: '2026-01-01T00:00:00Z', uptimeSec: 10 });
@@ -867,8 +899,10 @@ describe('HostBridgeApiClient', () => {
       const ws = createWsMock();
       ws.request
         .mockRejectedValueOnce(
-          new Error(
-            'RPC -32603: failed to read thread: thread-store internal error: failed to read thread /Users/mohitpatil/.codex/sessions/2026/05/06/rollout-2026-05-06T22-21-30-019dfe33-a320-7ae2-b86b-dd86d35f665b.jsonl: rollout at /Users/mohitpatil/.codex/sessions/2026/05/06/rollout-2026-05-06T22-21-30-019dfe33-a320-7ae2-b86b-dd86d35f665b.jsonl is empty'
+          new RpcRequestError(
+            'thread/read',
+            -32603,
+            'failed to read thread: thread-store internal error: failed to read thread /Users/mohitpatil/.codex/sessions/2026/05/06/rollout-2026-05-06T22-21-30-019dfe33-a320-7ae2-b86b-dd86d35f665b.jsonl: rollout at /Users/mohitpatil/.codex/sessions/2026/05/06/rollout-2026-05-06T22-21-30-019dfe33-a320-7ae2-b86b-dd86d35f665b.jsonl is empty'
           )
         )
         .mockResolvedValueOnce({
@@ -1645,7 +1679,9 @@ describe('HostBridgeApiClient', () => {
   it('renameChat() retries with threadName when name payload is rejected', async () => {
     const ws = createWsMock();
     ws.request
-      .mockRejectedValueOnce(new Error('missing field `threadName`'))
+      .mockRejectedValueOnce(
+        new RpcRequestError('thread/name/set', -32602, 'missing field `threadName`')
+      )
       .mockResolvedValueOnce({}) // thread/name/set retry with threadName
       .mockResolvedValueOnce({
         thread: {
@@ -2100,7 +2136,13 @@ describe('HostBridgeApiClient', () => {
   it('resumeThread() retries with compatibility payload when modern resume params are rejected', async () => {
     const ws = createWsMock();
     ws.request
-      .mockRejectedValueOnce(new Error('unknown field `experimentalRawEvents`'))
+      .mockRejectedValueOnce(
+        new RpcRequestError(
+          'thread/resume',
+          -32602,
+          'unknown field `experimentalRawEvents`'
+        )
+      )
       .mockResolvedValueOnce({});
 
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
@@ -2124,19 +2166,27 @@ describe('HostBridgeApiClient', () => {
       'thread/resume',
       expect.objectContaining({
         threadId: 'thr_resume',
-        approvalPolicy: 'on-request',
+        approvalPolicy: 'untrusted',
         developerInstructions: expect.any(String),
-        experimentalRawEvents: true,
         sandbox: 'danger-full-access',
       })
     );
+    expect(ws.request.mock.calls[1]?.[1]).not.toHaveProperty('experimentalRawEvents');
   });
 
   it('resumeThread() falls back to legacy payload when compatibility retry is rejected', async () => {
     const ws = createWsMock();
     ws.request
-      .mockRejectedValueOnce(new Error('unknown field `experimentalRawEvents`'))
-      .mockRejectedValueOnce(new Error('invalid params for resume options'))
+      .mockRejectedValueOnce(
+        new RpcRequestError(
+          'thread/resume',
+          -32602,
+          'unknown field `experimentalRawEvents`'
+        )
+      )
+      .mockRejectedValueOnce(
+        new RpcRequestError('thread/resume', -32602, 'invalid params for resume options')
+      )
       .mockResolvedValueOnce({});
 
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
@@ -2160,9 +2210,8 @@ describe('HostBridgeApiClient', () => {
       'thread/resume',
       expect.objectContaining({
         threadId: 'thr_resume_legacy',
-        approvalPolicy: 'on-request',
+        approvalPolicy: 'untrusted',
         developerInstructions: expect.any(String),
-        experimentalRawEvents: true,
         sandbox: 'danger-full-access',
       })
     );
@@ -2171,7 +2220,7 @@ describe('HostBridgeApiClient', () => {
       'thread/resume',
       expect.objectContaining({
         threadId: 'thr_resume_legacy',
-        approvalPolicy: 'on-request',
+        approvalPolicy: 'untrusted',
         developerInstructions: null,
         sandbox: 'danger-full-access',
       })
@@ -2184,7 +2233,13 @@ describe('HostBridgeApiClient', () => {
   it('resumeThread() keeps never approval policy in legacy retry when explicitly requested', async () => {
     const ws = createWsMock();
     ws.request
-      .mockRejectedValueOnce(new Error('unknown field `experimentalRawEvents`'))
+      .mockRejectedValueOnce(
+        new RpcRequestError(
+          'thread/resume',
+          -32602,
+          'unknown field `experimentalRawEvents`'
+        )
+      )
       .mockResolvedValueOnce({});
 
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
@@ -2213,6 +2268,22 @@ describe('HostBridgeApiClient', () => {
         sandbox: 'danger-full-access',
       })
     );
+  });
+
+  it('resumeThread() does not retry backend failures as compatibility errors', async () => {
+    const ws = createWsMock();
+    const backendError = new RpcRequestError(
+      'thread/resume',
+      -32603,
+      'app-server unavailable',
+      { backend: 'codex' }
+    );
+    ws.request.mockRejectedValueOnce(backendError);
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+
+    await expect(client.resumeThread('thr_backend_failure')).rejects.toBe(backendError);
+    expect(ws.request).toHaveBeenCalledTimes(1);
   });
 
   it('sendChatMessage() forwards mention and local-image attachments to turn/start input', async () => {

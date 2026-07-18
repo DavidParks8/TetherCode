@@ -19,7 +19,7 @@ import {
   View,
 } from 'react-native';
 
-import type { Chat } from '../api/types';
+import type { Chat, ChatMessage as ApiChatMessage } from '../api/types';
 import { ChatMessage, ToolActivityGroup } from '../components/ChatMessage';
 import { useAppTheme } from '../theme';
 import {
@@ -56,6 +56,8 @@ export interface ChatTranscriptViewProps {
   onScrollInteractionStart: () => void;
   autoScrollStateRef: React.MutableRefObject<AutoScrollState>;
   bottomInset: number;
+  liveAssistantText?: string | null;
+  onOpenSubAgentThread?: (threadId: string) => void;
 }
 
 export const ChatTranscriptView = memo(function ChatTranscriptView({
@@ -74,6 +76,8 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
   onScrollInteractionStart,
   autoScrollStateRef,
   bottomInset,
+  liveAssistantText = null,
+  onOpenSubAgentThread,
 }: ChatTranscriptViewProps) {
   const theme = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -105,10 +109,24 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
     );
     return trimInheritedParentMessages(parentVisibleMessages, childVisibleMessages, chat.id);
   }, [chat.messages, chat.parentThreadId, parentChat, showToolCalls]);
-  const visibleMessages = useMemo(
-    () => syncVisibleSubAgentStatuses(transcriptView.messages, agentThreadStatusById),
-    [agentThreadStatusById, transcriptView.messages]
-  );
+  const visibleMessages = useMemo(() => {
+    const synced = syncVisibleSubAgentStatuses(transcriptView.messages, agentThreadStatusById);
+    const liveText = liveAssistantText?.trim();
+    if (!liveText) {
+      return synced;
+    }
+    const latestAssistant = [...synced].reverse().find((message) => message.role === 'assistant');
+    if (latestAssistant?.content.trim().endsWith(liveText)) {
+      return synced;
+    }
+    const liveMessage: ApiChatMessage = {
+      id: `live-assistant-${chat.id}`,
+      role: 'assistant',
+      content: liveText,
+      createdAt: new Date().toISOString(),
+    };
+    return [...synced, liveMessage];
+  }, [agentThreadStatusById, chat.id, liveAssistantText, transcriptView.messages]);
   const [visibleStartIndex, setVisibleStartIndex] = useState(() =>
     getInitialVisibleMessageStartIndex(visibleMessages.length)
   );
@@ -261,6 +279,7 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
             bridgeUrl={bridgeUrl}
             bridgeToken={bridgeToken}
             onOpenLocalPreview={onOpenLocalPreview}
+            onOpenSubAgentThread={onOpenSubAgentThread}
           />
           {showInlineChoices ? (
             <View style={styles.inlineChoiceOptions}>
@@ -301,6 +320,7 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
       liveTurnActive,
       onInlineOptionSelect,
       onOpenLocalPreview,
+      onOpenSubAgentThread,
     ]
   );
 
@@ -399,7 +419,9 @@ function areChatTranscriptViewPropsEqual(previous: ChatTranscriptViewProps, next
     previous.onJumpToLatest === next.onJumpToLatest &&
     previous.onScrollInteractionStart === next.onScrollInteractionStart &&
     previous.autoScrollStateRef === next.autoScrollStateRef &&
-    previous.bottomInset === next.bottomInset
+    previous.bottomInset === next.bottomInset &&
+    previous.liveAssistantText === next.liveAssistantText
+    && previous.onOpenSubAgentThread === next.onOpenSubAgentThread
   );
 }
 

@@ -30,6 +30,7 @@ import type {
   CodexAppServerRestartResponse,
   CursorCredentialStatus,
   CollaborationMode,
+  HarnessAgentOption,
   CreateChatRequest,
   Chat,
   ChatSummary,
@@ -74,7 +75,11 @@ import type {
   FileSystemListRequest,
   FileSystemListResponse,
 } from './types';
-import type { HostBridgeWsClient } from './ws';
+import {
+  isRpcRequestError,
+  type HostBridgeWsClient,
+  type RpcRequestError,
+} from './ws';
 
 interface HealthResponse {
   status: 'ok';
@@ -124,6 +129,10 @@ interface AppServerForkResponse {
 }
 
 interface AppServerModelListResponse {
+  data?: unknown[];
+}
+
+interface HarnessAgentListResponse {
   data?: unknown[];
 }
 
@@ -1173,9 +1182,6 @@ export class HostBridgeApiClient {
     }
     const requestedApprovalPolicy =
       normalizeApprovalPolicy(options?.approvalPolicy) ?? 'untrusted';
-    const fallbackApprovalPolicy =
-      requestedApprovalPolicy === 'never' ? 'never' : 'on-request';
-
     const primaryRequest = {
       threadId,
       history: null,
@@ -1200,11 +1206,15 @@ export class HostBridgeApiClient {
       );
       return readThreadRuntimeSettings(response);
     } catch (primaryError) {
-      // First fallback: keep raw-event streaming enabled, but relax approval policy.
+      if (!isRpcInvalidParamsError(primaryError)) {
+        throw primaryError;
+      }
+
+      // Older app-server builds may reject raw-event streaming on resume.
       const compatibilityRequest = {
         ...primaryRequest,
-        approvalPolicy: fallbackApprovalPolicy,
       };
+      delete (compatibilityRequest as { experimentalRawEvents?: boolean }).experimentalRawEvents;
       try {
         const response = await this.ws.request<Record<string, unknown>>(
           'thread/resume',
@@ -1212,24 +1222,21 @@ export class HostBridgeApiClient {
         );
         return readThreadRuntimeSettings(response);
       } catch (compatibilityError) {
+        if (!isRpcInvalidParamsError(compatibilityError)) {
+          throw compatibilityError;
+        }
+
         // Final compatibility fallback for older app-server builds that reject
-        // experimentalRawEvents/developerInstructions on resume.
+        // developerInstructions on resume.
         const legacyRequest = {
           ...compatibilityRequest,
           developerInstructions: null,
         };
-        delete (legacyRequest as { experimentalRawEvents?: boolean }).experimentalRawEvents;
-        try {
-          const response = await this.ws.request<Record<string, unknown>>(
-            'thread/resume',
-            legacyRequest
-          );
-          return readThreadRuntimeSettings(response);
-        } catch (legacyError) {
-          throw new Error(
-            `thread/resume failed: ${(primaryError as Error).message}; compatibility failed: ${(compatibilityError as Error).message}; legacy fallback failed: ${(legacyError as Error).message}`
-          );
-        }
+        const response = await this.ws.request<Record<string, unknown>>(
+          'thread/resume',
+          legacyRequest
+        );
+        return readThreadRuntimeSettings(response);
       }
     }
   }
@@ -1490,6 +1497,39 @@ export class HostBridgeApiClient {
     }
 
     return models;
+  }
+
+  async listHarnessAgents(options?: {
+    engine?: ChatEngine;
+    threadId?: string | null;
+    cwd?: string | null;
+  }): Promise<HarnessAgentOption[]> {
+    const response = await this.ws.request<HarnessAgentListResponse>('agent/list', {
+      engine: options?.engine,
+      threadId: options?.threadId ?? null,
+      cwd: normalizeCwd(options?.cwd) ?? null,
+    });
+    return (Array.isArray(response.data) ? response.data : []).flatMap((value) => {
+        const record = toRecord(value);
+        const name = readString(record?.name)?.trim();
+        const mode = readString(record?.mode)?.trim().toLowerCase();
+        if (!name || (mode !== 'primary' && mode !== 'subagent' && mode !== 'all')) {
+          return [];
+        }
+        const agent: HarnessAgentOption = {
+          id: readString(record?.id)?.trim() || name,
+          name,
+          mode,
+          custom: record?.custom === true,
+        };
+        const description = readString(record?.description)?.trim();
+        const color = readString(record?.color)?.trim();
+        const model = readString(record?.model)?.trim();
+        if (description) agent.description = description;
+        if (color) agent.color = color;
+        if (model) agent.model = model;
+        return [agent];
+      });
   }
 
   async compactChat(id: string): Promise<void> {
@@ -1780,6 +1820,7 @@ export class HostBridgeApiClient {
     const normalizedMentions = normalizeMentions(body.mentions);
     const normalizedLocalImages = normalizeLocalImages(body.localImages);
     const requestedCollaborationMode = normalizeCollaborationMode(body.collaborationMode);
+    const requestedAgent = normalizeAgentName(body.agent);
     let resumedThreadSettings: AppServerThreadRuntimeSettings | null = null;
 
     if (!options?.skipResume) {
@@ -1836,6 +1877,7 @@ export class HostBridgeApiClient {
         personality: null,
         outputSchema: null,
         collaborationMode: normalizedCollaborationMode,
+        agent: requestedAgent,
       },
     };
   }
@@ -1899,14 +1941,7 @@ export class HostBridgeApiClient {
     try {
       await this.ws.request<AppServerThreadSetNameResponse>('thread/name/set', payload);
     } catch (error) {
-      const message = String((error as Error).message ?? error);
-      const expectedFieldMismatch =
-        message.includes('threadName') ||
-        message.includes('name') ||
-        message.includes('missing field') ||
-        message.includes('unknown field');
-
-      if (!expectedFieldMismatch) {
+      if (!isRpcInvalidParamsError(error)) {
         throw error;
       }
 
@@ -2541,6 +2576,14 @@ function normalizeCollaborationMode(
   return null;
 }
 
+function normalizeAgentName(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function normalizeChatEngine(value: string | null | undefined): ChatEngine | null {
   if (typeof value !== 'string') {
     return null;
@@ -2875,7 +2918,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 function isMaterializationGapError(error: unknown): boolean {
-  const message = String((error as Error).message ?? error);
+  if (!isRpcInvalidParamsError(error)) {
+    return false;
+  }
+  const message = error.message;
   return (
     message.includes('includeTurns') &&
     (message.includes('material') || message.includes('materialis'))
@@ -2883,11 +2929,18 @@ function isMaterializationGapError(error: unknown): boolean {
 }
 
 function isTransientThreadReadError(error: unknown): boolean {
-  const message = String((error as Error).message ?? error).toLowerCase();
+  if (!isRpcRequestError(error) || error.code !== -32603) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
   return (
     message.includes('failed to read thread') &&
     message.includes('thread-store internal error') &&
     message.includes('rollout') &&
     message.includes('is empty')
   );
+}
+
+function isRpcInvalidParamsError(error: unknown): error is RpcRequestError {
+  return isRpcRequestError(error) && error.code === -32602;
 }

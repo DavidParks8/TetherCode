@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 
-import { HostBridgeWsClient } from '../ws';
+import { HostBridgeWsClient, RpcRequestError } from '../ws';
 
 class MockWebSocket {
   onopen: (() => void) | null = null;
@@ -132,6 +132,39 @@ describe('HostBridgeWsClient', () => {
     );
 
     await expect(requestPromise).resolves.toEqual({ ok: true });
+  });
+
+  it('request() preserves structured JSON-RPC errors', async () => {
+    const client = new HostBridgeWsClient('http://localhost:8787');
+    client.connect();
+
+    const socket = latestMockSocket();
+    socket.simulateOpen();
+
+    const requestPromise = client.request('thread/resume', { threadId: 'thr_1' });
+    await Promise.resolve();
+
+    const sentPayload = JSON.parse(String(socket.send.mock.calls[0][0])) as { id: string };
+    socket.simulateMessage(
+      JSON.stringify({
+        id: sentPayload.id,
+        error: {
+          code: -32602,
+          message: 'unknown field `experimentalRawEvents`',
+          data: { field: 'experimentalRawEvents' },
+        },
+      })
+    );
+
+    const error = await requestPromise.catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(RpcRequestError);
+    expect(error).toMatchObject({
+      name: 'RpcRequestError',
+      method: 'thread/resume',
+      code: -32602,
+      message: 'unknown field `experimentalRawEvents`',
+      data: { field: 'experimentalRawEvents' },
+    });
   });
 
   it('onStatus emits open/close state changes', () => {

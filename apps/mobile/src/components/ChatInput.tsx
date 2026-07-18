@@ -105,52 +105,54 @@ export function ChatInput({
           },
         ]}
       >
-        {attachments.length > 0 ? (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.attachmentListContent}
-            style={styles.attachmentList}
-          >
-            {attachments.map((attachment, index) => (
-              <Pressable
-                key={`${attachment.id}-${String(index)}`}
-                onPress={
-                  onRemoveAttachment
-                    ? () => onRemoveAttachment(attachment.id)
-                    : undefined
-                }
-                style={({ pressed }) => [
-                  styles.attachmentChip,
-                  pressed && styles.attachmentChipPressed,
-                ]}
-              >
-                <Ionicons name="attach-outline" size={12} color={colors.textMuted} />
-                <Text style={styles.attachmentChipText} numberOfLines={1}>
-                  {attachment.label}
-                </Text>
-                {onRemoveAttachment ? (
-                  <Ionicons name="close-outline" size={12} color={colors.textMuted} />
-                ) : null}
-              </Pressable>
-            ))}
-          </ScrollView>
-        ) : null}
+        <View style={styles.composerBar}>
+          {attachments.length > 0 ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.attachmentListContent}
+              style={styles.attachmentList}
+            >
+              {attachments.map((attachment, index) => (
+                <Pressable
+                  key={`${attachment.id}-${String(index)}`}
+                  onPress={
+                    onRemoveAttachment
+                      ? () => onRemoveAttachment(attachment.id)
+                      : undefined
+                  }
+                  style={({ pressed }) => [
+                    styles.attachmentChip,
+                    pressed && styles.attachmentChipPressed,
+                  ]}
+                >
+                  <Ionicons name="attach-outline" size={12} color={colors.textMuted} />
+                  <Text style={styles.attachmentChipText} numberOfLines={1}>
+                    {attachment.label}
+                  </Text>
+                  {onRemoveAttachment ? (
+                    <Ionicons name="close-outline" size={12} color={colors.textMuted} />
+                  ) : null}
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : null}
 
-        <View style={styles.row}>
-          <Pressable
-            disabled={attachDisabled}
-            onPress={onAttachPress}
-            style={({ pressed }) => [
-              styles.plusBtn,
-              attachDisabled && styles.plusBtnDisabled,
-              pressed && !attachDisabled && styles.plusBtnPressed,
-            ]}
-          >
-            <Ionicons name="add" size={20} color={colors.textMuted} />
-          </Pressable>
+          <View style={styles.row}>
+            <Pressable
+              disabled={attachDisabled}
+              onPress={onAttachPress}
+              hitSlop={ACTION_BUTTON_HIT_SLOP}
+              style={({ pressed }) => [
+                styles.plusBtn,
+                attachDisabled && styles.plusBtnDisabled,
+                pressed && !attachDisabled && styles.plusBtnPressed,
+              ]}
+            >
+              <Ionicons name="add" size={21} color={colors.textPrimary} />
+            </Pressable>
 
-          <View style={styles.inputWrapper}>
+            <View style={styles.inputWrapper}>
             <Text
               pointerEvents="none"
               accessibilityElementsHidden
@@ -249,6 +251,7 @@ export function ChatInput({
                 ) : null}
               </View>
             ) : null}
+            </View>
           </View>
         </View>
         {footer || reserveFooterSpace ? (
@@ -276,10 +279,20 @@ const createStyles = (theme: AppTheme) =>
       paddingHorizontal: theme.spacing.lg,
       paddingTop: theme.spacing.xs + 2,
     },
+    composerBar: {
+      borderRadius: 28,
+      borderCurve: 'continuous',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.colors.borderHighlight,
+      backgroundColor: theme.colors.bgInput,
+      paddingHorizontal: 6,
+      paddingVertical: 5,
+      gap: theme.spacing.xs,
+    },
     row: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: theme.spacing.sm,
+      gap: 4,
     },
     footer: {
       alignItems: 'flex-start',
@@ -290,6 +303,8 @@ const createStyles = (theme: AppTheme) =>
     },
     attachmentList: {
       maxHeight: 34,
+      marginHorizontal: 4,
+      marginTop: 2,
     },
     attachmentListContent: {
       gap: theme.spacing.xs,
@@ -300,7 +315,7 @@ const createStyles = (theme: AppTheme) =>
       borderRadius: 14,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: theme.colors.borderHighlight,
-      backgroundColor: theme.colors.bgInput,
+      backgroundColor: theme.colors.bgElevated,
       paddingHorizontal: theme.spacing.sm,
       alignItems: 'center',
       flexDirection: 'row',
@@ -316,12 +331,9 @@ const createStyles = (theme: AppTheme) =>
       flexShrink: 1,
     },
     plusBtn: {
-      width: 44,
-      height: 44,
-      borderRadius: 22,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      backgroundColor: theme.colors.bgElevated,
+      width: 36,
+      height: 36,
+      borderRadius: 18,
       alignItems: 'center',
       justifyContent: 'center',
     },
@@ -335,13 +347,10 @@ const createStyles = (theme: AppTheme) =>
       flex: 1,
       flexDirection: 'row',
       alignItems: 'center',
-      backgroundColor: theme.colors.bgInput,
-      borderWidth: 1,
-      borderColor: theme.colors.borderHighlight,
-      borderRadius: theme.radius.lg,
-      paddingHorizontal: theme.spacing.sm + 2,
+      paddingLeft: 2,
+      paddingRight: 1,
       paddingVertical: 3,
-      minHeight: 44,
+      minHeight: 38,
       maxHeight: 120,
     },
     input: {
@@ -357,19 +366,19 @@ const createStyles = (theme: AppTheme) =>
       opacity: 0,
       ...theme.typography.body,
       color: theme.colors.textPrimary,
-      left: theme.spacing.sm + 2,
+      left: 2,
       top: theme.spacing.xs,
     },
     actionButtons: {
       flexDirection: 'row',
       alignItems: 'center',
       marginLeft: theme.spacing.xs,
-      gap: theme.spacing.xs / 2,
+      gap: 2,
     },
     sendBtn: {
-      width: 44,
-      height: 44,
-      borderRadius: 22,
+      width: 36,
+      height: 36,
+      borderRadius: 18,
       backgroundColor: theme.colors.bgElevated,
       alignItems: 'center',
       justifyContent: 'center',

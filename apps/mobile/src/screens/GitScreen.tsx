@@ -2,6 +2,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -26,6 +29,12 @@ import {
   parseUnifiedGitDiff,
   type UnifiedDiffFile,
 } from './gitDiff';
+import {
+  buildGitReviewPrompt,
+  createGitReviewTarget,
+  type GitReviewComment,
+  type GitReviewTarget,
+} from './gitDiffReview';
 
 interface GitScreenProps {
   api: HostBridgeApiClient;
@@ -58,9 +67,14 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
   const [selectedDiffFileId, setSelectedDiffFileId] = useState<string | null>(null);
   const [pendingDiffFileId, setPendingDiffFileId] = useState<string | null>(null);
   const [switchingDiffFile, setSwitchingDiffFile] = useState(false);
+  const [reviewComments, setReviewComments] = useState<GitReviewComment[]>([]);
+  const [reviewTarget, setReviewTarget] = useState<GitReviewTarget | null>(null);
+  const [reviewCommentDraft, setReviewCommentDraft] = useState('');
+  const [submittingReview, setSubmittingReview] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const diffSelectionRequestRef = useRef(0);
   const diffSelectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reviewCommentIdRef = useRef(0);
   const { height: windowHeight } = useWindowDimensions();
   const styles = useMemo(() => createStyles(theme), [theme]);
 
@@ -447,6 +461,20 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
   }, [parsedDiff.files, pendingDiffFileId, selectedDiffFile]);
   const activeDiffTabId = pendingDiffFileId ?? diffFileForView?.id ?? null;
   const showDiffFileSwitching = switchingDiffFile && Boolean(pendingDiffFileId);
+  const validReviewAnchorKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const file of parsedDiff.files) {
+      for (const hunk of file.hunks) {
+        hunk.lines.forEach((line, lineIndex) => {
+          const target = createGitReviewTarget(file, hunk, line, lineIndex);
+          if (target) {
+            keys.add(target.anchorKey);
+          }
+        });
+      }
+    }
+    return keys;
+  }, [parsedDiff.files]);
   const filesListMaxHeight = useMemo(() => {
     const proposed = Math.floor(windowHeight * 0.4);
     return Math.max(200, Math.min(360, proposed));
@@ -512,6 +540,13 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
     }
   }, [parsedDiff.files, pendingDiffFileId, selectedDiffFileId, switchingDiffFile]);
 
+  useEffect(() => {
+    setReviewComments((current) => {
+      const next = current.filter((comment) => validReviewAnchorKeys.has(comment.anchorKey));
+      return next.length === current.length ? current : next;
+    });
+  }, [validReviewAnchorKeys]);
+
   const selectDiffFile = useCallback(
     (fileId: string) => {
       if (!fileId || fileId === activeDiffTabId) {
@@ -538,6 +573,75 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
     },
     [activeDiffTabId]
   );
+
+  const openReviewComment = useCallback(
+    (target: GitReviewTarget) => {
+      const existing = reviewComments.find((comment) => comment.anchorKey === target.anchorKey);
+      setReviewTarget(target);
+      setReviewCommentDraft(existing?.comment ?? '');
+    },
+    [reviewComments]
+  );
+
+  const closeReviewComment = useCallback(() => {
+    setReviewTarget(null);
+    setReviewCommentDraft('');
+  }, []);
+
+  const saveReviewComment = useCallback(() => {
+    if (!reviewTarget) {
+      return;
+    }
+    const comment = reviewCommentDraft.trim();
+    if (!comment) {
+      return;
+    }
+
+    setReviewComments((current) => {
+      const existing = current.find((entry) => entry.anchorKey === reviewTarget.anchorKey);
+      if (!existing) {
+        reviewCommentIdRef.current += 1;
+      }
+      const next: GitReviewComment = {
+        ...reviewTarget,
+        id: existing?.id ?? `C${String(reviewCommentIdRef.current)}`,
+        comment,
+      };
+      return existing
+        ? current.map((entry) => (entry.anchorKey === reviewTarget.anchorKey ? next : entry))
+        : [...current, next];
+    });
+    closeReviewComment();
+  }, [closeReviewComment, reviewCommentDraft, reviewTarget]);
+
+  const deleteReviewComment = useCallback((anchorKey: string) => {
+    setReviewComments((current) => current.filter((comment) => comment.anchorKey !== anchorKey));
+  }, []);
+
+  const submitReview = useCallback(async () => {
+    if (reviewComments.length === 0 || submittingReview) {
+      return;
+    }
+
+    try {
+      setSubmittingReview(true);
+      const result = await api.sendOrQueueChatMessage(activeChat.id, {
+        content: buildGitReviewPrompt(reviewComments, requestedCwd),
+        cwd: requestedCwd,
+      });
+      if (result.chat) {
+        setActiveChat(result.chat);
+        onChatUpdated?.(result.chat);
+      }
+      setReviewComments([]);
+      setError(null);
+      onBack();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSubmittingReview(false);
+    }
+  }, [activeChat.id, api, onBack, onChatUpdated, requestedCwd, reviewComments, submittingReview]);
 
   useEffect(() => {
     return () => {
@@ -1185,6 +1289,9 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
                       >
                         {parsedDiff.files.map((file) => {
                           const selected = file.id === activeDiffTabId;
+                          const commentCount = reviewComments.filter(
+                            (comment) => comment.fileId === file.id
+                          ).length;
                           return (
                             <Pressable
                               key={file.id}
@@ -1201,6 +1308,11 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
                               <View style={styles.diffTabStats}>
                                 <Text style={styles.fileAdded}>+{file.additions}</Text>
                                 <Text style={styles.fileRemoved}>-{file.deletions}</Text>
+                                {commentCount > 0 ? (
+                                  <Text style={styles.diffTabCommentCount}>
+                                    {String(commentCount)} comment{commentCount === 1 ? '' : 's'}
+                                  </Text>
+                                ) : null}
                               </View>
                             </Pressable>
                           );
@@ -1255,37 +1367,95 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
                                   style={styles.hunkBlock}
                                 >
                                   <Text style={styles.hunkHeader}>{hunk.header}</Text>
-                                  {hunk.lines.map((line, lineIndex) => (
-                                    <View
-                                      key={`${hunk.header}:${lineIndex}`}
-                                      style={[
-                                        styles.diffLineRow,
-                                        line.kind === 'add' && styles.diffLineRowAdd,
-                                        line.kind === 'remove' && styles.diffLineRowRemove,
-                                        line.kind === 'meta' && styles.diffLineRowMeta,
-                                      ]}
-                                    >
-                                      <Text style={styles.diffLineNumber}>
-                                        {formatDiffLineNumber(line.oldLineNumber)}
-                                      </Text>
-                                      <Text style={styles.diffLineNumber}>
-                                        {formatDiffLineNumber(line.newLineNumber)}
-                                      </Text>
-                                      <Text
-                                        style={[
-                                          styles.diffLinePrefix,
-                                          line.kind === 'add' && styles.diffLinePrefixAdd,
-                                          line.kind === 'remove' && styles.diffLinePrefixRemove,
-                                          line.kind === 'meta' && styles.diffLinePrefixMeta,
-                                        ]}
-                                      >
-                                        {line.prefix}
-                                      </Text>
-                                      <Text selectable style={styles.diffLineText}>
-                                        {line.content || ' '}
-                                      </Text>
-                                    </View>
-                                  ))}
+                                  {hunk.lines.map((line, lineIndex) => {
+                                    const target = createGitReviewTarget(
+                                      diffFileForView,
+                                      hunk,
+                                      line,
+                                      lineIndex
+                                    );
+                                    const comment = target
+                                      ? reviewComments.find(
+                                          (entry) => entry.anchorKey === target.anchorKey
+                                        )
+                                      : null;
+                                    return (
+                                      <View key={`${hunk.header}:${lineIndex}`}>
+                                        <View
+                                          style={[
+                                            styles.diffLineRow,
+                                            line.kind === 'add' && styles.diffLineRowAdd,
+                                            line.kind === 'remove' && styles.diffLineRowRemove,
+                                            line.kind === 'meta' && styles.diffLineRowMeta,
+                                          ]}
+                                        >
+                                          <Pressable
+                                            onPress={target ? () => openReviewComment(target) : undefined}
+                                            disabled={!target}
+                                            hitSlop={4}
+                                            style={({ pressed }) => [
+                                              styles.diffCommentButton,
+                                              comment && styles.diffCommentButtonActive,
+                                              pressed && target && styles.diffCommentButtonPressed,
+                                            ]}
+                                          >
+                                            {target ? (
+                                              <Ionicons
+                                                name={comment ? 'chatbubble' : 'add-circle-outline'}
+                                                size={13}
+                                                color={
+                                                  comment
+                                                    ? theme.colors.textPrimary
+                                                    : theme.colors.textMuted
+                                                }
+                                              />
+                                            ) : null}
+                                          </Pressable>
+                                          <Text style={styles.diffLineNumber}>
+                                            {formatDiffLineNumber(line.oldLineNumber)}
+                                          </Text>
+                                          <Text style={styles.diffLineNumber}>
+                                            {formatDiffLineNumber(line.newLineNumber)}
+                                          </Text>
+                                          <Text
+                                            style={[
+                                              styles.diffLinePrefix,
+                                              line.kind === 'add' && styles.diffLinePrefixAdd,
+                                              line.kind === 'remove' && styles.diffLinePrefixRemove,
+                                              line.kind === 'meta' && styles.diffLinePrefixMeta,
+                                            ]}
+                                          >
+                                            {line.prefix}
+                                          </Text>
+                                          <Text selectable style={styles.diffLineText}>
+                                            {line.content || ' '}
+                                          </Text>
+                                        </View>
+                                        {comment ? (
+                                          <View style={styles.inlineReviewComment}>
+                                            <View style={styles.inlineReviewCommentHeader}>
+                                              <Text style={styles.inlineReviewCommentAnchor}>
+                                                {comment.side} line {String(comment.line)}
+                                              </Text>
+                                              <View style={styles.inlineReviewCommentActions}>
+                                                <Pressable onPress={() => openReviewComment(comment)}>
+                                                  <Text style={styles.inlineReviewCommentAction}>Edit</Text>
+                                                </Pressable>
+                                                <Pressable
+                                                  onPress={() => deleteReviewComment(comment.anchorKey)}
+                                                >
+                                                  <Text style={styles.inlineReviewCommentDelete}>Delete</Text>
+                                                </Pressable>
+                                              </View>
+                                            </View>
+                                            <Text style={styles.inlineReviewCommentText}>
+                                              {comment.comment}
+                                            </Text>
+                                          </View>
+                                        ) : null}
+                                      </View>
+                                    );
+                                  })}
                                 </View>
                               ))}
                             </View>
@@ -1296,14 +1466,129 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
                   ) : null}
                 </>
               )}
-            </View>
-          </>
-        ) : null}
+                </View>
+
+                {reviewComments.length > 0 ? (
+                  <View style={styles.reviewTray}>
+                    <View style={styles.reviewTrayHeader}>
+                      <View>
+                        <Text style={styles.reviewTrayTitle}>Inline review</Text>
+                        <Text style={styles.reviewTraySubtitle}>
+                          {String(reviewComments.length)} comment
+                          {reviewComments.length === 1 ? '' : 's'} across{' '}
+                          {String(new Set(reviewComments.map((comment) => comment.fileId)).size)} file
+                          {new Set(reviewComments.map((comment) => comment.fileId)).size === 1
+                            ? ''
+                            : 's'}
+                        </Text>
+                      </View>
+                      <Pressable onPress={() => setReviewComments([])} hitSlop={6}>
+                        <Text style={styles.reviewTrayClear}>Clear</Text>
+                      </Pressable>
+                    </View>
+                    {reviewComments.map((comment) => (
+                      <Pressable
+                        key={comment.anchorKey}
+                        onPress={() => {
+                          selectDiffFile(comment.fileId);
+                          openReviewComment(comment);
+                        }}
+                        style={({ pressed }) => [
+                          styles.reviewTrayComment,
+                          pressed && styles.reviewTrayCommentPressed,
+                        ]}
+                      >
+                        <Text style={styles.reviewTrayCommentAnchor} numberOfLines={1}>
+                          {comment.path} · {comment.side} {String(comment.line)}
+                        </Text>
+                        <Text style={styles.reviewTrayCommentText} numberOfLines={2}>
+                          {comment.comment}
+                        </Text>
+                      </Pressable>
+                    ))}
+                    <Pressable
+                      onPress={() => void submitReview()}
+                      disabled={submittingReview}
+                      style={({ pressed }) => [
+                        styles.submitReviewButton,
+                        pressed && styles.actionBtnPressed,
+                        submittingReview && styles.actionBtnDisabled,
+                      ]}
+                    >
+                      {submittingReview ? (
+                        <ActivityIndicator size="small" color={theme.colors.accentText} />
+                      ) : (
+                        <Ionicons name="paper-plane-outline" size={16} color={theme.colors.accentText} />
+                      )}
+                      <Text style={styles.submitReviewButtonText}>
+                        {submittingReview ? 'Sending review...' : 'Send review to agent'}
+                      </Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+              </>
+            ) : null}
           </>
         )}
 
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
       </ScrollView>
+
+      <Modal
+        visible={reviewTarget !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeReviewComment}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.reviewModalBackdrop}
+        >
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeReviewComment} />
+          <View style={styles.reviewModalCard}>
+            <View style={styles.reviewModalHeader}>
+              <View style={styles.reviewModalTitleBlock}>
+                <Text style={styles.reviewModalEyebrow}>Inline comment</Text>
+                <Text style={styles.reviewModalTitle} numberOfLines={2}>
+                  {reviewTarget
+                    ? `${reviewTarget.path} · ${reviewTarget.side} ${String(reviewTarget.line)}`
+                    : ''}
+                </Text>
+              </View>
+              <Pressable onPress={closeReviewComment} hitSlop={8}>
+                <Ionicons name="close" size={20} color={theme.colors.textMuted} />
+              </Pressable>
+            </View>
+            <TextInput
+              value={reviewCommentDraft}
+              onChangeText={setReviewCommentDraft}
+              placeholder="What should the agent change here?"
+              placeholderTextColor={theme.colors.textMuted}
+              keyboardAppearance={theme.keyboardAppearance}
+              autoFocus
+              multiline
+              textAlignVertical="top"
+              style={styles.reviewCommentInput}
+            />
+            <View style={styles.reviewModalActions}>
+              <Pressable onPress={closeReviewComment} style={styles.reviewModalCancel}>
+                <Text style={styles.reviewModalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={saveReviewComment}
+                disabled={!reviewCommentDraft.trim()}
+                style={({ pressed }) => [
+                  styles.reviewModalSave,
+                  pressed && styles.actionBtnPressed,
+                  !reviewCommentDraft.trim() && styles.actionBtnDisabled,
+                ]}
+              >
+                <Text style={styles.reviewModalSaveText}>Save comment</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2005,6 +2290,12 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     alignItems: 'center',
     gap: theme.spacing.xs,
   },
+  diffTabCommentCount: {
+    ...theme.typography.caption,
+    color: theme.colors.textSecondary,
+    fontSize: 10,
+    lineHeight: 13,
+  },
   diffFileHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2069,6 +2360,20 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     alignItems: 'flex-start',
     minWidth: '100%',
   },
+  diffCommentButton: {
+    width: 28,
+    minHeight: 23,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightColor: theme.colors.borderLight,
+  },
+  diffCommentButtonActive: {
+    backgroundColor: theme.colors.bgInput,
+  },
+  diffCommentButtonPressed: {
+    backgroundColor: theme.colors.bgElevated,
+  },
   diffLineRowAdd: {
     backgroundColor: theme.colors.successBg,
   },
@@ -2112,6 +2417,189 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
     paddingVertical: 3,
     fontSize: 12,
     lineHeight: 17,
+  },
+  inlineReviewComment: {
+    marginLeft: 28,
+    marginRight: theme.spacing.md,
+    marginVertical: theme.spacing.xs,
+    padding: theme.spacing.sm,
+    minWidth: 320,
+    borderRadius: theme.radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderHighlight,
+    backgroundColor: theme.colors.bgElevated,
+    gap: 4,
+  },
+  inlineReviewCommentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+  },
+  inlineReviewCommentAnchor: {
+    ...theme.typography.caption,
+    color: theme.colors.textMuted,
+    fontWeight: '700',
+    fontSize: 10,
+    textTransform: 'uppercase',
+  },
+  inlineReviewCommentActions: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  inlineReviewCommentAction: {
+    ...theme.typography.caption,
+    color: theme.colors.textSecondary,
+    fontWeight: '700',
+  },
+  inlineReviewCommentDelete: {
+    ...theme.typography.caption,
+    color: theme.colors.error,
+    fontWeight: '700',
+  },
+  inlineReviewCommentText: {
+    ...theme.typography.body,
+    color: theme.colors.textPrimary,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  reviewTray: {
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderHighlight,
+    backgroundColor: theme.colors.bgItem,
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
+  },
+  reviewTrayHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+  },
+  reviewTrayTitle: {
+    ...theme.typography.headline,
+    color: theme.colors.textPrimary,
+    fontSize: 16,
+  },
+  reviewTraySubtitle: {
+    ...theme.typography.caption,
+    color: theme.colors.textMuted,
+    marginTop: 2,
+  },
+  reviewTrayClear: {
+    ...theme.typography.caption,
+    color: theme.colors.error,
+    fontWeight: '700',
+  },
+  reviewTrayComment: {
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.bgInput,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 7,
+    gap: 2,
+  },
+  reviewTrayCommentPressed: {
+    backgroundColor: theme.colors.bgElevated,
+  },
+  reviewTrayCommentAnchor: {
+    ...theme.typography.caption,
+    color: theme.colors.textSecondary,
+    fontWeight: '700',
+  },
+  reviewTrayCommentText: {
+    ...theme.typography.caption,
+    color: theme.colors.textPrimary,
+  },
+  submitReviewButton: {
+    minHeight: 44,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.accent,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+  },
+  submitReviewButtonText: {
+    ...theme.typography.body,
+    color: theme.colors.accentText,
+    fontWeight: '700',
+  },
+  reviewModalBackdrop: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: theme.spacing.lg,
+    backgroundColor: theme.colors.overlayBackdrop,
+  },
+  reviewModalCard: {
+    borderRadius: theme.radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderHighlight,
+    backgroundColor: theme.colors.bgElevated,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+  },
+  reviewModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+  },
+  reviewModalTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  reviewModalEyebrow: {
+    ...theme.typography.caption,
+    color: theme.colors.textMuted,
+    textTransform: 'uppercase',
+    fontWeight: '700',
+    fontSize: 10,
+  },
+  reviewModalTitle: {
+    ...theme.typography.body,
+    color: theme.colors.textPrimary,
+    fontWeight: '700',
+  },
+  reviewCommentInput: {
+    ...theme.typography.body,
+    color: theme.colors.textPrimary,
+    minHeight: 130,
+    maxHeight: 260,
+    borderRadius: theme.radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.borderHighlight,
+    backgroundColor: theme.colors.bgInput,
+    padding: theme.spacing.md,
+  },
+  reviewModalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: theme.spacing.sm,
+  },
+  reviewModalCancel: {
+    minHeight: 42,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.md,
+  },
+  reviewModalCancelText: {
+    ...theme.typography.body,
+    color: theme.colors.textSecondary,
+    fontWeight: '600',
+  },
+  reviewModalSave: {
+    minHeight: 42,
+    justifyContent: 'center',
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.accent,
+    paddingHorizontal: theme.spacing.lg,
+  },
+  reviewModalSaveText: {
+    ...theme.typography.body,
+    color: theme.colors.accentText,
+    fontWeight: '700',
   },
   emptyFilesText: {
     ...theme.typography.caption,

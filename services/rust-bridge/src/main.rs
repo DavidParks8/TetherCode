@@ -1360,6 +1360,7 @@ struct BridgeCapabilitySupport {
     compact_start: bool,
     goal_slash: bool,
     plan_mode: bool,
+    agent_list: bool,
     turn_steer: bool,
     command_output_delta: bool,
     fast_mode: bool,
@@ -2012,6 +2013,7 @@ impl RuntimeBackend {
                 compact_start: true,
                 goal_slash: true,
                 plan_mode: true,
+                agent_list: false,
                 turn_steer: true,
                 command_output_delta: true,
                 fast_mode: true,
@@ -2026,6 +2028,7 @@ impl RuntimeBackend {
                 compact_start: true,
                 goal_slash: false,
                 plan_mode: true,
+                agent_list: true,
                 turn_steer: false,
                 command_output_delta: false,
                 fast_mode: false,
@@ -2040,6 +2043,7 @@ impl RuntimeBackend {
                 compact_start: false,
                 goal_slash: false,
                 plan_mode: true,
+                agent_list: false,
                 turn_steer: false,
                 command_output_delta: false,
                 fast_mode: false,
@@ -5383,6 +5387,7 @@ impl OpencodeBackend {
                 "requiresOpenaiAuth": false,
             })),
             "config/read" => Ok(json!({ "config": {} })),
+            "agent/list" => self.list_agents(params).await,
             "thread/list" => self.list_threads(params).await,
             "thread/loaded/list" => self.list_loaded_threads().await,
             "thread/read" => self.read_thread(params).await,
@@ -5640,6 +5645,72 @@ impl OpencodeBackend {
         }))
     }
 
+    async fn list_agents(&self, params: Option<Value>) -> Result<Value, String> {
+        let params_object = params.as_ref().and_then(Value::as_object);
+        let requested_directory = read_string(params_object.and_then(|params| params.get("cwd")));
+        let thread_id = read_string(params_object.and_then(|params| params.get("threadId")));
+        let directory = match (
+            requested_directory.filter(|value| !value.is_empty()),
+            thread_id.filter(|value| !value.is_empty()),
+        ) {
+            (Some(directory), _) => directory,
+            (None, Some(session_id)) => self.current_directory_for_session(&session_id).await,
+            (None, None) => self.fallback_directory.clone(),
+        };
+        let agents = self
+            .request_json(HttpMethod::GET, "agent", Some(&directory), None, None)
+            .await?;
+        let data = agents
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|value| {
+                let agent = value.as_object()?;
+                let name = read_string(agent.get("name"))?.trim().to_string();
+                let mode = read_string(agent.get("mode"))?.trim().to_ascii_lowercase();
+                let hidden = agent
+                    .get("hidden")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if name.is_empty()
+                    || hidden
+                    || !matches!(mode.as_str(), "primary" | "subagent" | "all")
+                {
+                    return None;
+                }
+                let custom = agent
+                    .get("native")
+                    .and_then(Value::as_bool)
+                    .map(|native| !native)
+                    .or_else(|| {
+                        agent
+                            .get("builtIn")
+                            .and_then(Value::as_bool)
+                            .map(|built_in| !built_in)
+                    })
+                    .unwrap_or(true);
+                let model = agent
+                    .get("model")
+                    .and_then(Value::as_object)
+                    .and_then(|model| {
+                        let provider_id = read_string(model.get("providerID"))?;
+                        let model_id = read_string(model.get("modelID"))?;
+                        Some(format!("{provider_id}/{model_id}"))
+                    });
+                Some(json!({
+                    "id": name,
+                    "name": name,
+                    "description": read_string(agent.get("description")),
+                    "mode": mode,
+                    "custom": custom,
+                    "color": read_string(agent.get("color")),
+                    "model": model,
+                }))
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({ "data": data }))
+    }
+
     async fn set_thread_name(&self, params: Option<Value>) -> Result<Value, String> {
         let params_object = params
             .as_ref()
@@ -5765,10 +5836,11 @@ impl OpencodeBackend {
         let mut body = json!({
             "parts": parts,
         });
-        if let Some(agent) =
+        if let Some(agent) = read_string(params_object.get("agent")).or_else(|| {
             opencode_agent_for_collaboration_mode(params_object.get("collaborationMode"))
-        {
-            body["agent"] = Value::String(agent.to_string());
+                .map(str::to_string)
+        }) {
+            body["agent"] = Value::String(agent);
         }
         let requested_effort = read_string(params_object.get("effort"));
         let mut configured_providers: Option<Value> = None;
@@ -14018,6 +14090,7 @@ fn is_forwarded_method(method: &str) -> bool {
             | "account/logout"
             | "account/rateLimits/read"
             | "account/read"
+            | "agent/list"
             | "app/list"
             | "collaborationMode/list"
             | "command/exec"
@@ -16491,6 +16564,121 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn opencode_explicit_agent_overrides_builtin_collaboration_agent() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock opencode server");
+        let address = listener.local_addr().expect("mock server address");
+        let prompted = Arc::new(AtomicBool::new(false));
+        let prompted_for_messages = prompted.clone();
+        let prompted_for_request = prompted.clone();
+        let app = Router::new()
+            .route(
+                "/session/session-agent/message",
+                get(move || {
+                    let prompted = prompted_for_messages.clone();
+                    async move {
+                        Json(if prompted.load(Ordering::SeqCst) {
+                            json!([{ "info": { "id": "message-agent", "role": "user" } }])
+                        } else {
+                            json!([])
+                        })
+                    }
+                }),
+            )
+            .route(
+                "/session/session-agent/prompt_async",
+                axum::routing::post(move |Json(body): Json<Value>| {
+                    let prompted = prompted_for_request.clone();
+                    async move {
+                        assert_eq!(body["agent"], "security-auditor");
+                        prompted.store(true, Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve mock opencode");
+        });
+        let hub = Arc::new(ClientHub::new());
+        let backend = build_test_opencode_backend_for_url(
+            hub,
+            Url::parse(&format!("http://{address}/")).expect("mock base url"),
+        )
+        .await;
+
+        backend
+            .dispatch_request(
+                "turn/start",
+                Some(json!({
+                    "threadId": "session-agent",
+                    "input": [{ "type": "text", "text": "Audit this" }],
+                    "model": "anthropic/claude-sonnet",
+                    "agent": "security-auditor",
+                    "collaborationMode": { "mode": "plan" },
+                })),
+            )
+            .await
+            .expect("custom agent turn should succeed");
+
+        shutdown_test_opencode_backend(&backend).await;
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn opencode_agent_list_sanitizes_and_filters_catalog() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock opencode server");
+        let address = listener.local_addr().expect("mock server address");
+        let app = Router::new().route(
+            "/agent",
+            get(|| async {
+                Json(json!([
+                    {
+                        "name": "security-auditor",
+                        "description": "Security review",
+                        "mode": "primary",
+                        "native": false,
+                        "prompt": "secret prompt",
+                        "permission": { "edit": "deny" },
+                        "model": { "providerID": "anthropic", "modelID": "claude-sonnet" }
+                    },
+                    { "name": "hidden-agent", "mode": "primary", "hidden": true },
+                    { "name": "worker", "mode": "subagent", "native": false }
+                ]))
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve mock opencode");
+        });
+        let hub = Arc::new(ClientHub::new());
+        let backend = build_test_opencode_backend_for_url(
+            hub,
+            Url::parse(&format!("http://{address}/")).expect("mock base url"),
+        )
+        .await;
+
+        let result = backend
+            .dispatch_request("agent/list", Some(json!({ "cwd": "/tmp/workdir" })))
+            .await
+            .expect("agent list should succeed");
+        assert_eq!(result["data"].as_array().map(Vec::len), Some(2));
+        assert_eq!(result["data"][0]["name"], "security-auditor");
+        assert_eq!(result["data"][0]["custom"], true);
+        assert_eq!(result["data"][0]["model"], "anthropic/claude-sonnet");
+        assert!(result["data"][0].get("prompt").is_none());
+        assert!(result["data"][0].get("permission").is_none());
+
+        shutdown_test_opencode_backend(&backend).await;
+        server.abort();
+    }
+
     async fn add_test_client(hub: &Arc<ClientHub>) -> (u64, mpsc::Receiver<Message>) {
         let (tx, rx) = mpsc::channel(8);
         let client_id = hub.add_client(tx).await;
@@ -16624,6 +16812,7 @@ mod tests {
     #[test]
     fn forwarded_method_allowlist_matches_expected() {
         assert!(is_forwarded_method("thread/start"));
+        assert!(is_forwarded_method("agent/list"));
         assert!(is_forwarded_method("thread/compact/start"));
         assert!(is_forwarded_method("turn/start"));
         assert!(is_forwarded_method("account/read"));

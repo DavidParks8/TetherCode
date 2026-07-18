@@ -4,6 +4,7 @@ import {
   collectRelatedAgentThreads,
   describeAgentThreadSource,
   findMatchingAgentThread,
+  resolveAgentActivitySummary,
 } from '../agentThreads';
 
 function chat(
@@ -30,6 +31,26 @@ function chat(
 }
 
 describe('agentThreads', () => {
+  it('prefers current activity then latest command for the compact summary', () => {
+    expect(
+      resolveAgentActivitySummary({
+        runtimeDetail: 'Inspecting API routes',
+        latestCommandDetail: 'npm test | running',
+        role: 'Explorer',
+        preview: 'Previous output',
+        sourceDescription: 'Spawned sub-agent',
+      })
+    ).toBe('Inspecting API routes');
+    expect(
+      resolveAgentActivitySummary({
+        latestCommandDetail: 'npm test | complete',
+        role: 'Explorer',
+        preview: 'Previous output',
+        sourceDescription: 'Spawned sub-agent',
+      })
+    ).toBe('npm test | complete');
+  });
+
   it('collects the full related thread tree for a spawned sub-agent', () => {
     const root = chat('thr_root', {
       title: 'Main task',

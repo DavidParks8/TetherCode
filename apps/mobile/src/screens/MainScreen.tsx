@@ -63,6 +63,7 @@ import type {
   ChatMessage as ChatTranscriptMessage,
   FileSystemEntry,
   FileSystemListResponse,
+  HarnessAgentOption,
   WorkspaceSummary,
 } from '../api/types';
 import type { HostBridgeWsClient } from '../api/ws';
@@ -89,10 +90,10 @@ import {
   formatModelOptionLabel,
 } from '../modelOptions';
 import {
-  collectLiveAgentPanelThreadIds,
   collectRelatedAgentThreads,
   describeAgentThreadSource,
   findMatchingAgentThread,
+  resolveAgentActivitySummary,
 } from './agentThreads';
 import {
   buildAgentThreadDisplayState,
@@ -106,6 +107,7 @@ import {
 import type { TranscriptDisplayItem } from './transcriptMessages';
 import { useAppTheme } from '../theme';
 import { ChatTranscriptView } from './ChatTranscriptView';
+import { SubAgentDetailView } from './SubAgentDetailView';
 import { createStyles, createWorkflowMarkdownStyles } from './mainScreenStyles';
 import {
   type ActivityState,
@@ -135,7 +137,6 @@ import {
   APP_FOCUS_DISCONNECT_GRACE_MS,
   ACTIVITY_DETAIL_HOLD_MS,
   GENERIC_RUNNING_ACTIVITY_DELAY_MS,
-  CONTEXT_WINDOW_BASELINE_TOKENS,
   GENERIC_RUNNING_ACTIVITY_TITLES,
   CHAT_DRAFTS_VERSION,
   CHAT_MODEL_PREFERENCES_VERSION,
@@ -160,7 +161,6 @@ import {
   readNumber,
   readIntegerLike,
   mergeThreadContextUsage,
-  formatTokenCount,
   buildNextPlanStateFromDelta,
   buildNextPlanStateFromUpdate,
   renderPlanStatusGlyph,
@@ -443,6 +443,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [defaultServiceTier, setDefaultServiceTier] = useState<ServiceTier | null>(null);
     const [selectedCollaborationMode, setSelectedCollaborationMode] =
       useState<CollaborationMode>('default');
+    const [harnessAgentOptions, setHarnessAgentOptions] = useState<HarnessAgentOption[]>([]);
+    const [selectedHarnessAgent, setSelectedHarnessAgent] = useState<string | null>(null);
+    const [loadingHarnessAgents, setLoadingHarnessAgents] = useState(false);
     const [keyboardVisible, setKeyboardVisible] = useState(false);
     const [androidKeyboardInset, setAndroidKeyboardInset] = useState(0);
     const [composerHeight, setComposerHeight] = useState(0);
@@ -453,6 +456,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [agentPanelCollapsed, setAgentPanelCollapsed] = useState(false);
     const [agentRuntimeRevision, setAgentRuntimeRevision] = useState(0);
     const [loadingAgentThreads, setLoadingAgentThreads] = useState(false);
+    const [agentDetailThreadId, setAgentDetailThreadId] = useState<string | null>(null);
+    const [agentDetailChat, setAgentDetailChat] = useState<Chat | null>(null);
+    const [agentDetailParentChat, setAgentDetailParentChat] = useState<Chat | null>(null);
+    const [agentDetailLoading, setAgentDetailLoading] = useState(false);
+    const [agentDetailError, setAgentDetailError] = useState<string | null>(null);
     const [collaborationModeMenuVisible, setCollaborationModeMenuVisible] = useState(false);
     const [effortModalVisible, setEffortModalVisible] = useState(false);
     const [effortPickerModelId, setEffortPickerModelId] = useState<string | null>(null);
@@ -476,9 +484,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const stoppingTurnRef = useRef(stoppingTurn);
     stoppingTurnRef.current = stoppingTurn;
     const attachmentPickerInProgressRef = useRef(false);
-    const [threadContextUsage, setThreadContextUsage] = useState<ThreadContextUsage | null>(
-      null
-    );
     const chatDraftsRef = useRef<Record<string, string>>({});
     const draftPersistenceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const heldActivityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -502,6 +507,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const loadChatRequestRef = useRef(0);
     const modelOptionsRequestRef = useRef(0);
     const agentThreadsRequestRef = useRef(0);
+    const agentDetailRequestRef = useRef(0);
     const agentThreadsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const openAgentThreadSelectorRef = useRef<(query?: string | null) => Promise<boolean>>(
       async () => false
@@ -847,7 +853,13 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       if (activeChatEngine !== 'cursor' && selectedCollaborationMode === 'ask') {
         setSelectedCollaborationMode('default');
       }
-    }, [activeChatEngine, selectedCollaborationMode]);
+      if (activeChatEngine !== 'opencode' && selectedHarnessAgent) {
+        setSelectedHarnessAgent(null);
+      }
+      if (selectedCollaborationMode !== 'default' && selectedHarnessAgent) {
+        setSelectedHarnessAgent(null);
+      }
+    }, [activeChatEngine, selectedCollaborationMode, selectedHarnessAgent]);
 
     const queueOptimisticUserMessage = useCallback(
       (
@@ -1729,22 +1741,28 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           const merged = mergeStreamingDelta(previous.streamingText ?? null, delta);
           return { streamingText: merged };
         });
+        bumpAgentRuntimeRevision();
       },
-      [upsertThreadRuntimeSnapshot]
+      [bumpAgentRuntimeRevision, upsertThreadRuntimeSnapshot]
     );
 
     const cacheThreadActiveCommand = useCallback(
       (threadId: string, eventType: string, detail: string) => {
-        upsertThreadRuntimeSnapshot(threadId, (previous) => ({
-          activeCommands: appendRunEventHistory(
+        upsertThreadRuntimeSnapshot(threadId, (previous) => {
+          const activeCommands = appendRunEventHistory(
             previous.activeCommands ?? [],
             threadId,
             eventType,
             detail
-          ),
-        }));
+          );
+          return {
+            activeCommands,
+            latestCommand: activeCommands[activeCommands.length - 1] ?? previous.latestCommand ?? null,
+          };
+        });
+        bumpAgentRuntimeRevision();
       },
-      [upsertThreadRuntimeSnapshot]
+      [bumpAgentRuntimeRevision, upsertThreadRuntimeSnapshot]
     );
 
     const cacheThreadPendingApproval = useCallback(
@@ -1945,7 +1963,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const applyThreadRuntimeSnapshot = useCallback(
       (threadId: string) => {
         if (!threadId) {
-          setThreadContextUsage(null);
           setActivePlan(null);
           setActiveBridgeUiSurfaces([]);
           setSelectedCollaborationMode('default');
@@ -1954,7 +1971,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
         const snapshot = threadRuntimeSnapshotsRef.current[threadId];
         if (!snapshot) {
-          setThreadContextUsage(null);
           setActivePlan(null);
           setActiveBridgeUiSurfaces([]);
           setSelectedCollaborationMode('default');
@@ -1981,7 +1997,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           setUserInputError(null);
           setResolvingUserInput(false);
         }
-        setThreadContextUsage(snapshot.contextUsage ?? null);
         setActivePlan(snapshot.plan ?? null);
         setActiveBridgeUiSurfaces(snapshot.bridgeUiSurfaces ?? []);
         if (snapshot.activeTurnId !== undefined) {
@@ -2539,7 +2554,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             ? formatReasoningEffort(activeEffort)
             : 'Model default';
     const modelReasoningLabel = `${activeModelLabel} · ${activeEffortLabel}`;
-    const collaborationModeLabel = formatCollaborationModeLabel(selectedCollaborationMode);
+    const collaborationModeLabel =
+      selectedHarnessAgent ?? formatCollaborationModeLabel(selectedCollaborationMode);
     const hasPendingServiceTierChange =
       Boolean(selectedChatId) && appliedServiceTierForSelectedChat !== activeServiceTier;
     const fastModeLabel = hasPendingServiceTierChange
@@ -2607,7 +2623,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           : undefined
       );
       setActiveCommands([]);
-      setThreadContextUsage(null);
       setPendingApproval(null);
       setPendingUserInputRequest(null);
       setUserInputDrafts({});
@@ -3762,7 +3777,27 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
     const openCollaborationModeMenu = useCallback(() => {
       setCollaborationModeMenuVisible(true);
-    }, []);
+      if (activeEngineSupports?.agentList === true) {
+        setLoadingHarnessAgents(true);
+        void api
+          .listHarnessAgents({
+            engine: activeChatEngine,
+            threadId: selectedChatId,
+            cwd: selectedChat?.cwd ?? preferredStartCwd,
+          })
+          .then((agents) => {
+            setHarnessAgentOptions(agents);
+            setSelectedHarnessAgent((current) =>
+              current && !agents.some((agent) => agent.name === current) ? null : current
+            );
+          })
+          .catch((err) => setError((err as Error).message))
+          .finally(() => setLoadingHarnessAgents(false));
+      } else {
+        setHarnessAgentOptions([]);
+        setSelectedHarnessAgent(null);
+      }
+    }, [activeChatEngine, activeEngineSupports?.agentList, api, preferredStartCwd, selectedChat?.cwd, selectedChatId]);
 
     const toggleFastMode = useCallback(() => {
       if (!supportsFastMode) {
@@ -3863,6 +3898,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       () => {
         const setMode = (mode: CollaborationMode) => {
           setSelectedCollaborationMode(mode);
+          setSelectedHarnessAgent(null);
           setCollaborationModeMenuVisible(false);
           setError(null);
         };
@@ -3913,9 +3949,26 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             selected: selectedCollaborationMode === 'plan',
             onPress: () => setMode('plan'),
           },
+          ...harnessAgentOptions.map((agent) => ({
+            key: `agent:${agent.id}`,
+            title: agent.name,
+            description:
+              agent.description ||
+              (agent.custom ? 'Custom agent exposed by OpenCode.' : 'Agent exposed by OpenCode.'),
+            icon: 'person-circle-outline' as const,
+            badge: agent.custom ? 'Custom' : undefined,
+            meta: agent.mode === 'subagent' ? 'Sub-agent' : agent.model,
+            selected: selectedHarnessAgent === agent.name,
+            onPress: () => {
+              setSelectedHarnessAgent(agent.name);
+              setSelectedCollaborationMode('default');
+              setCollaborationModeMenuVisible(false);
+              setError(null);
+            },
+          })),
         ];
       },
-      [activeChatEngine, selectedCollaborationMode]
+      [activeChatEngine, harnessAgentOptions, selectedCollaborationMode, selectedHarnessAgent]
     );
 
     const modelSettingsMenuOptions = useMemo<SelectionSheetOption[]>(
@@ -4743,6 +4796,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 serviceTier: activeServiceTier ?? undefined,
                 approvalPolicy: activeApprovalPolicy,
                 collaborationMode: 'plan',
+                agent: null,
               }, {
                 onTurnStarted: (turnId) => registerTurnStarted(created.id, turnId),
               });
@@ -4846,6 +4900,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               serviceTier: activeServiceTier ?? undefined,
               approvalPolicy: activeApprovalPolicy,
               collaborationMode: 'plan',
+              agent: null,
             }, {
               onTurnStarted: (turnId) => registerTurnStarted(targetChatId, turnId),
             });
@@ -5328,6 +5383,101 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       ]
     );
 
+    const closeAgentDetail = useCallback(() => {
+      agentDetailRequestRef.current += 1;
+      setAgentDetailThreadId(null);
+      setAgentDetailChat(null);
+      setAgentDetailParentChat(null);
+      setAgentDetailLoading(false);
+      setAgentDetailError(null);
+    }, []);
+
+    const loadAgentDetail = useCallback(
+      async (threadId: string, showLoading = false) => {
+        const requestId = agentDetailRequestRef.current + 1;
+        agentDetailRequestRef.current = requestId;
+        if (showLoading) {
+          setAgentDetailLoading(true);
+        }
+
+        try {
+          const chat = await api.getChat(threadId, { forceRefresh: true });
+          if (agentDetailRequestRef.current !== requestId) {
+            return;
+          }
+          setAgentDetailChat((previous) =>
+            previous?.id === chat.id ? resolveEquivalentChat(previous, chat) : chat
+          );
+          if (chat.parentThreadId) {
+            const parent =
+              api.peekChat(chat.parentThreadId) ??
+              (await api.getChat(chat.parentThreadId).catch(() => null));
+            if (agentDetailRequestRef.current === requestId) {
+              setAgentDetailParentChat(parent);
+            }
+          } else {
+            setAgentDetailParentChat(null);
+          }
+          setAgentDetailError(null);
+        } catch (err) {
+          if (agentDetailRequestRef.current === requestId) {
+            setAgentDetailError((err as Error).message);
+          }
+        } finally {
+          if (agentDetailRequestRef.current === requestId) {
+            setAgentDetailLoading(false);
+          }
+        }
+      },
+      [api]
+    );
+
+    const openAgentDetail = useCallback(
+      (threadId: string) => {
+        if (!threadId || threadId === agentRootThreadId) {
+          closeAgentDetail();
+          return;
+        }
+        setAgentThreadMenuVisible(false);
+        setAgentDetailThreadId(threadId);
+        setAgentDetailChat(api.peekChat(threadId) ?? api.peekChatShell(threadId));
+        setAgentDetailParentChat(null);
+        setAgentDetailError(null);
+        void loadAgentDetail(threadId, true);
+      },
+      [agentRootThreadId, api, closeAgentDetail, loadAgentDetail]
+    );
+
+    useEffect(() => {
+      if (!agentDetailThreadId) {
+        return;
+      }
+      let stopped = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const poll = async () => {
+        if (stopped) {
+          return;
+        }
+        await loadAgentDetail(agentDetailThreadId);
+        if (stopped) {
+          return;
+        }
+        const summary = api.peekChatSummary(agentDetailThreadId) ?? agentDetailChat;
+        const snapshot = threadRuntimeSnapshotsRef.current[agentDetailThreadId];
+        const running = summary
+          ? buildAgentThreadDisplayState(summary, snapshot).isActive
+          : false;
+        timer = setTimeout(poll, running ? ACTIVE_CHAT_SYNC_INTERVAL_MS : IDLE_CHAT_SYNC_INTERVAL_MS);
+      };
+      timer = setTimeout(poll, ACTIVE_CHAT_SYNC_INTERVAL_MS);
+      return () => {
+        stopped = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+      };
+    }, [agentDetailChat, agentDetailThreadId, api, loadAgentDetail]);
+
     const openAgentThreadSelector = useCallback(
       async (query?: string | null): Promise<boolean> => {
         const focusChat = selectedChatRef.current;
@@ -5358,13 +5508,14 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
 
         setAgentThreadMenuVisible(false);
-        openChatThread(
-          match.id,
-          selectedChatRef.current?.id === match.id ? selectedChatRef.current : null
-        );
+        if (match.id === agentRootThreadId) {
+          closeAgentDetail();
+        } else {
+          openAgentDetail(match.id);
+        }
         return true;
       },
-      [openChatThread, refreshAgentThreads]
+      [agentRootThreadId, closeAgentDetail, openAgentDetail, refreshAgentThreads]
     );
     openAgentThreadSelectorRef.current = openAgentThreadSelector;
 
@@ -5380,19 +5531,23 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           snapshot,
           runWatchdogNow
         );
-        const fallbackDescription =
-          chat.agentRole?.trim() ||
-          chat.lastMessagePreview.trim() ||
-          describeAgentThreadSource(chat, agentRootThreadId);
+        const latestCommand = snapshot?.latestCommand ?? snapshot?.activeCommands?.at(-1) ?? null;
 
         return {
           chat,
           isRootThread,
           ordinal,
           title: formatAgentThreadOptionTitle(chat, agentRootThreadId, ordinal),
-          description: runtime.detail ?? fallbackDescription,
+          description: resolveAgentActivitySummary({
+            runtimeDetail: runtime.detail,
+            latestCommandDetail: latestCommand?.detail,
+            role: chat.agentRole,
+            preview: chat.lastMessagePreview,
+            sourceDescription: describeAgentThreadSource(chat, agentRootThreadId),
+          }),
+          latestCommand,
           runtime,
-          selected: chat.id === selectedChatId,
+          selected: chat.id === agentDetailThreadId,
         };
       });
     }, [
@@ -5400,22 +5555,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       agentRuntimeRevision,
       relatedAgentThreads,
       runWatchdogNow,
-      selectedChatId,
+      agentDetailThreadId,
     ]);
 
     const liveAgentRows = useMemo(
-      () => {
-        const visibleIds = new Set(
-          collectLiveAgentPanelThreadIds(
-            agentThreadRows.map((row) => ({
-              id: row.chat.id,
-              isRootThread: row.isRootThread,
-              isActive: row.runtime.isActive,
-            }))
-          )
-        );
-        return agentThreadRows.filter((row) => visibleIds.has(row.chat.id));
-      },
+      () => agentThreadRows.filter((row) => !row.isRootThread),
       [agentThreadRows]
     );
     const liveRunningAgentCount = useMemo(
@@ -5449,23 +5593,30 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           selected: row.selected,
           onPress: () => {
             setAgentThreadMenuVisible(false);
-            if (chat.id === selectedChatRef.current?.id) {
-              return;
+            if (isRootThread) {
+              closeAgentDetail();
+            } else {
+              openAgentDetail(chat.id);
             }
-            openChatThread(chat.id);
           },
         } satisfies SelectionSheetOption;
       });
-    }, [agentRootThreadId, agentThreadRows, openChatThread]);
+    }, [agentRootThreadId, agentThreadRows, closeAgentDetail, openAgentDetail]);
 
-    useImperativeHandle(ref, () => ({
-      openChat: (id: string, optimisticChat?: Chat | null) => {
-        openChatThread(id, optimisticChat);
-      },
-      startNewChat: () => {
-        startNewChat();
-      },
-    }));
+    useImperativeHandle(
+      ref,
+      () => ({
+        openChat: (id: string, optimisticChat?: Chat | null) => {
+          closeAgentDetail();
+          openChatThread(id, optimisticChat);
+        },
+        startNewChat: () => {
+          closeAgentDetail();
+          startNewChat();
+        },
+      }),
+      [closeAgentDetail, openChatThread, startNewChat]
+    );
 
     useLayoutEffect(() => {
       if (!pendingOpenChatId) {
@@ -5617,6 +5768,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             serviceTier: activeServiceTier ?? undefined,
             approvalPolicy: activeApprovalPolicy,
             collaborationMode: selectedCollaborationMode,
+            agent: selectedHarnessAgent ?? undefined,
           },
           {
             onTurnStarted: (turnId) => registerTurnStarted(created.id, turnId),
@@ -5692,6 +5844,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       pendingLocalImagePaths,
       preferredStartCwd,
       selectedCollaborationMode,
+      selectedHarnessAgent,
       registerTurnStarted,
       handleTurnFailure,
       discardOptimisticUserMessage,
@@ -5891,6 +6044,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               serviceTier: activeServiceTier ?? undefined,
               approvalPolicy: activeApprovalPolicy,
               collaborationMode: resolvedCollaborationMode,
+              agent: selectedHarnessAgent ?? undefined,
             },
             {
               skipResume: likelyQueuesLocally,
@@ -6017,6 +6171,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         pendingApproval?.id,
         pendingUserInputRequest?.id,
         selectedCollaborationMode,
+        selectedHarnessAgent,
         selectedChat,
         selectedChatId,
         handleTurnFailure,
@@ -6233,9 +6388,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             if (threadId && contextUsage) {
               cacheThreadContextUsage(threadId, contextUsage);
               if (threadId === currentId) {
-                setThreadContextUsage((previous) =>
-                  mergeThreadContextUsage(previous, contextUsage)
-                );
               }
             }
             return;
@@ -6611,9 +6763,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           }
           cacheThreadContextUsage(threadId, contextUsage);
           if (threadId === currentId) {
-            setThreadContextUsage((previous) =>
-              mergeThreadContextUsage(previous, contextUsage)
-            );
           }
           return;
         }
@@ -6661,9 +6810,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           }
           if (startedContextUsage) {
             cacheThreadContextUsage(threadId, startedContextUsage);
-            setThreadContextUsage((previous) =>
-              mergeThreadContextUsage(previous, startedContextUsage)
-            );
           }
           upsertThreadRuntimeSnapshot(threadId, () => ({
             activeCommands: [],
@@ -7229,6 +7375,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                       title: 'Turn completed',
                     },
             }));
+            bumpAgentRuntimeRevision();
+            if (agentDetailThreadId === threadId) {
+              void loadAgentDetail(threadId);
+            }
             if (shouldPromptPlanImplementation && promptTurnId) {
               setPendingPlanImplementationPrompts((prev) => ({
                 ...prev,
@@ -7621,7 +7771,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       pendingApproval?.id,
       pendingUserInputRequest?.id,
       loadChat,
+      loadAgentDetail,
       appendStopSystemMessageIfNeeded,
+      agentDetailThreadId,
       bumpRunWatchdog,
       clearDeferredDisconnectActivity,
       cacheCodexRuntimeForThread,
@@ -8145,29 +8297,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       (displayedActivity.tone !== 'idle' &&
         (!isGenericRunningActivity || showDelayedGenericRunningActivity)) ||
       Boolean(activityDetail);
-    const activeContextWindow =
-      threadContextUsage?.modelContextWindow ?? activeModel?.contextWindow ?? null;
-    const contextUsedTokens = threadContextUsage?.lastTokens ?? null;
-    const contextWindowLabel =
-      activeContextWindow !== null ? formatTokenCount(activeContextWindow) : null;
-    const contextUsedLabel =
-      contextUsedTokens !== null ? formatTokenCount(contextUsedTokens) : null;
-    const contextRemainingPercent =
-      activeContextWindow !== null && contextUsedTokens !== null && activeContextWindow > 0
-        ? (() => {
-            if (activeContextWindow <= CONTEXT_WINDOW_BASELINE_TOKENS) {
-              return 0;
-            }
-
-            const effectiveWindow = activeContextWindow - CONTEXT_WINDOW_BASELINE_TOKENS;
-            const used = Math.max(0, contextUsedTokens - CONTEXT_WINDOW_BASELINE_TOKENS);
-            const remaining = Math.max(0, effectiveWindow - used);
-            return Math.max(
-              0,
-              Math.min(100, Math.round((remaining / effectiveWindow) * 100))
-            );
-          })()
-        : null;
     const composerUsageLimitBadges =
       activeChatEngine === 'codex'
         ? buildComposerUsageLimitBadges(accountRateLimits)
@@ -8198,24 +8327,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       displayedActivity.tone === 'running';
     const showUsageLimitBanner =
       Boolean(usageLimitAlert) && ws.isConnected && !usageLimitBannerTurnInProgress;
-    const contextChipLabel =
-      contextUsedLabel && contextWindowLabel
-        ? `${contextUsedLabel} / ${contextWindowLabel}${
-            contextRemainingPercent !== null ? ` · ${String(contextRemainingPercent)}% left` : ''
-          }`
-        : contextWindowLabel
-          ? `Context ${contextWindowLabel}`
-          : 'Context';
-    const contextIndicatorColor =
-      contextRemainingPercent === null
-        ? contextWindowLabel
-          ? theme.colors.borderHighlight
-          : theme.colors.textMuted
-        : contextRemainingPercent <= 10
-          ? theme.colors.error
-          : contextRemainingPercent <= 25
-            ? theme.colors.accent
-            : theme.colors.borderHighlight;
     const headerTitle = isOpeningChat ? 'Opening chat' : selectedChat?.title?.trim() || 'New chat';
     const defaultStartWorkspaceLabel =
       preferredStartCwd ?? 'Select project';
@@ -8253,6 +8364,23 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       agentThreadStatusByIdRef.current = nextMap;
       return nextMap;
     }, [relatedAgentThreads]);
+    const agentDetailSummary = agentDetailThreadId
+      ? relatedAgentThreads.find((chat) => chat.id === agentDetailThreadId) ??
+        api.peekChatSummary(agentDetailThreadId)
+      : null;
+    const agentDetailRuntime = agentDetailThreadId
+      ? threadRuntimeSnapshotsRef.current[agentDetailThreadId] ?? null
+      : null;
+    const agentDetailDisplay = agentDetailSummary
+      ? buildAgentThreadDisplayState(agentDetailSummary, agentDetailRuntime, runWatchdogNow)
+      : null;
+    const agentDetailTitle = agentDetailSummary
+      ? formatAgentThreadOptionTitle(
+          agentDetailSummary,
+          agentRootThreadId,
+          agentThreadRows.find((row) => row.chat.id === agentDetailSummary.id)?.ordinal ?? null
+        )
+      : 'Sub-agent';
     const selectedThreadRuntimeSnapshot = selectedChat
       ? threadRuntimeSnapshotsRef.current[selectedChat.id] ?? null
       : null;
@@ -8841,19 +8969,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.sessionMetaRowContent}
             >
-              <View style={styles.contextChip}>
-                <View
-                  style={[
-                    styles.contextChipIndicator,
-                    {
-                      backgroundColor: contextIndicatorColor,
-                    },
-                  ]}
-                />
-                <Text style={styles.contextChipText} numberOfLines={1}>
-                  {contextChipLabel}
-                </Text>
-              </View>
               <Pressable
                 style={({ pressed }) => [
                   styles.modelChip,
@@ -8971,10 +9086,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 setAgentPanelCollapsed((previous) => !previous);
               }}
               onSelectThread={(threadId) => {
-                if (threadId === selectedChatRef.current?.id) {
-                  return;
-                }
-                openChatThread(threadId);
+                openAgentDetail(threadId);
               }}
             />
           </View>
@@ -8991,6 +9103,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                   bridgeUrl={bridgeUrl}
                   bridgeToken={bridgeToken}
                   onOpenLocalPreview={onOpenLocalPreviewHandler}
+                  onOpenSubAgentThread={openAgentDetail}
                   showToolCalls={showToolCalls}
                   agentThreadStatusById={agentThreadStatusById}
                   scrollRef={scrollRef}
@@ -9044,6 +9157,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 bridgeUrl={bridgeUrl}
                 bridgeToken={bridgeToken}
                 onOpenLocalPreview={onOpenLocalPreviewHandler}
+                onOpenSubAgentThread={openAgentDetail}
                 showToolCalls={showToolCalls}
                 agentThreadStatusById={agentThreadStatusById}
                 scrollRef={scrollRef}
@@ -9094,6 +9208,36 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           </KeyboardAvoidingView>
         )}
 
+        <SubAgentDetailView
+          visible={Boolean(agentDetailThreadId)}
+          chat={agentDetailChat}
+          parentChat={agentDetailParentChat}
+          runtime={agentDetailRuntime}
+          display={agentDetailDisplay}
+          title={agentDetailTitle}
+          role={agentDetailSummary?.agentRole}
+          loading={agentDetailLoading}
+          error={agentDetailError}
+          bridgeUrl={bridgeUrl}
+          bridgeToken={bridgeToken}
+          showToolCalls={showToolCalls}
+          agentThreadStatusById={agentThreadStatusById}
+          onOpenLocalPreview={onOpenLocalPreviewHandler}
+          onClose={closeAgentDetail}
+          onRefresh={() => {
+            if (agentDetailThreadId) {
+              void loadAgentDetail(agentDetailThreadId, true);
+            }
+          }}
+          onOpenAsChat={() => {
+            const threadId = agentDetailThreadId;
+            closeAgentDetail();
+            if (threadId) {
+              openChatThread(threadId, agentDetailChat);
+            }
+          }}
+        />
+
         <SelectionSheet
           visible={attachmentMenuVisible}
           eyebrow="Attachments"
@@ -9128,10 +9272,12 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
         <SelectionSheet
           visible={collaborationModeMenuVisible}
-          eyebrow="Mode"
-          title="Collaboration mode"
-          subtitle={`Choose how ${activeChatEngineLabel} should steer the next turn.`}
+          eyebrow="Agent"
+          title="Agent mode"
+          subtitle={`Choose a built-in mode or an agent exposed by ${activeChatEngineLabel}.`}
           options={collaborationModeOptions}
+          loading={loadingHarnessAgents}
+          loadingLabel="Loading harness agents…"
           onClose={() => setCollaborationModeMenuVisible(false)}
         />
 
@@ -9782,6 +9928,7 @@ interface AgentThreadPanelRow {
   description: string;
   runtime: AgentThreadDisplayState;
   selected: boolean;
+  latestCommand?: RunEvent | null;
 }
 
 
@@ -9886,11 +10033,15 @@ function AgentThreadsPanel({
                   },
                 ]}
               >
-                <Ionicons
-                  name={row.runtime.icon}
-                  size={12}
-                  color={row.runtime.statusColor}
-                />
+                {row.runtime.isActive ? (
+                  <ActivityIndicator size="small" color={row.runtime.statusColor} />
+                ) : (
+                  <Ionicons
+                    name={row.runtime.icon}
+                    size={12}
+                    color={row.runtime.statusColor}
+                  />
+                )}
                 <Text
                   style={[
                     styles.agentPanelStatusText,

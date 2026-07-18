@@ -286,6 +286,10 @@ Behavior:
 
 ### Model and Slash Commands
 
+The Agent mode picker includes built-in modes for every harness. When OpenCode
+is active, it also lists custom agents exposed by the current workspace's
+`/agent` catalog and applies the selected agent to the next turn.
+
 Supported mobile slash commands:
 
 - `/help`

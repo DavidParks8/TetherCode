@@ -96,6 +96,7 @@ export interface ThreadContextUsage {
 export interface ThreadRuntimeSnapshot {
   activity?: ActivityState;
   activeCommands?: RunEvent[];
+  latestCommand?: RunEvent | null;
   streamingText?: string | null;
   pendingApproval?: PendingApproval | null;
   pendingUserInputRequest?: PendingUserInputRequest | null;
@@ -170,7 +171,6 @@ export const AGENT_THREADS_LIST_LIMIT = 20;
 export const APP_FOCUS_DISCONNECT_GRACE_MS = 5_000;
 export const ACTIVITY_DETAIL_HOLD_MS = 2_500;
 export const GENERIC_RUNNING_ACTIVITY_DELAY_MS = 1_200;
-export const CONTEXT_WINDOW_BASELINE_TOKENS = 5_000;
 export const GENERIC_RUNNING_ACTIVITY_TITLES = new Set(['working', 'thinking']);
 export const CHAT_DRAFTS_FILE = 'chat-drafts.json';
 export const CHAT_DRAFTS_VERSION = 1;
@@ -494,21 +494,6 @@ export function mergeThreadContextUsage(
     modelContextWindow: next.modelContextWindow ?? previous?.modelContextWindow ?? null,
     updatedAtMs: next.updatedAtMs,
   };
-}
-
-export function formatTokenCount(value: number): string {
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000) {
-    const millions = value / 1_000_000;
-    return `${millions >= 10 ? millions.toFixed(0) : millions.toFixed(1)}M`;
-  }
-
-  if (abs >= 1_000) {
-    const thousands = value / 1_000;
-    return `${thousands >= 10 ? thousands.toFixed(0) : thousands.toFixed(1)}k`;
-  }
-
-  return String(Math.round(value));
 }
 
 export function compactPlanDelta(value: string): string {

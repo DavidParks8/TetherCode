@@ -22,6 +22,7 @@ interface ReactNativeWebSocketConstructor {
 }
 
 interface PendingRequest {
+  method: string;
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
   timeout: ReturnType<typeof setTimeout>;
@@ -35,10 +36,22 @@ interface TurnCompletionSnapshot {
   completedAt: number;
 }
 
-interface RpcError {
-  code: number;
-  message: string;
-  data?: unknown;
+export class RpcRequestError extends Error {
+  readonly name = 'RpcRequestError';
+
+  constructor(
+    readonly method: string,
+    readonly code: number,
+    message: string,
+    readonly data?: unknown
+  ) {
+    super(message);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export function isRpcRequestError(error: unknown): error is RpcRequestError {
+  return error instanceof RpcRequestError;
 }
 
 interface ReplayEventsResponse {
@@ -148,6 +161,7 @@ export class HostBridgeWsClient {
       }, this.requestTimeoutMs);
 
       this.pendingRequests.set(id, {
+        method,
         resolve: (value) => resolve(value as T),
         reject,
         timeout,
@@ -451,9 +465,15 @@ export class HostBridgeWsClient {
       clearTimeout(pending.timeout);
       this.pendingRequests.delete(record.id as string | number);
 
-      const error = toRecord(record.error) as RpcError | null;
-      if (error && typeof error.message === 'string') {
-        pending.reject(new Error(`RPC ${String(error.code)}: ${error.message}`));
+      const error = toRecord(record.error);
+      if (
+        error &&
+        typeof error.code === 'number' &&
+        typeof error.message === 'string'
+      ) {
+        pending.reject(
+          new RpcRequestError(pending.method, error.code, error.message, error.data)
+        );
         return;
       }
 
@@ -557,11 +577,7 @@ export class HostBridgeWsClient {
           limit: 200,
         });
       } catch (error) {
-        const message = String((error as Error).message ?? error).toLowerCase();
-        if (
-          message.includes('rpc -32601') ||
-          message.includes('unknown bridge method: bridge/events/replay')
-        ) {
+        if (isRpcRequestError(error) && error.code === -32601) {
           this.replaySupported = false;
           return;
         }
