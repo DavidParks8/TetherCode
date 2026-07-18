@@ -16,7 +16,7 @@
         <p class="eyebrow">Privacy Policy</p>
         <h1>Clawdex Mobile privacy policy.</h1>
         <p>
-          Last updated: March 11, 2026
+          Last updated: July 18, 2026
         </p>
       </section>
       <section class="card">
@@ -32,7 +32,10 @@
         <p>
           Clawdex Mobile can process chat prompts and assistant responses, bridge connection
           details, terminal command text and output, Git repository status and metadata, and file
-          or image attachments you choose to send.
+          or image attachments you choose to send. If notifications are enabled, it also processes
+          an Expo push token, notification-routing identifiers, the bridge project folder name in
+          generic notification text, and an optional assistant reply preview of at most 140
+          characters.
         </p>
       </section>
       <section class="card">
@@ -54,11 +57,25 @@
         </p>
       </section>
       <section class="card">
+        <h2>Push notifications</h2>
+        <p>
+          The self-hosted bridge sends enabled notifications through the Expo Push Notification
+          Service and then APNs or FCM. Expo receives the device push token, notification title and
+          body, and routing or deep-link identifiers. A completion can contain the last non-empty
+          assistant-reply line, collapsed and capped at 140 characters. Generic completion and
+          approval text can contain the bridge project folder name. Prompts, code, diffs, tool
+          output, and full conversations are not included. Notifications can be disabled in
+          Settings.
+        </p>
+      </section>
+      <section class="card">
         <h2>Sharing and security</h2>
         <p>
           Clawdex Mobile does not include advertising SDKs. Data may be transmitted to third-party
           model or infrastructure providers only when you configure and use those services as part
-          of your own setup. Security depends on how you configure your bridge and network.
+          of your own setup. Security depends on how you configure your bridge and network. Keep the
+          authenticated bridge on a private LAN, VPN, or private overlay; do not expose it directly
+          to the public internet.
         </p>
       </section>
       <section class="card">

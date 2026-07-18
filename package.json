@@ -80,6 +80,7 @@
     "bridge:ts": "BRIDGE_WORKDIR=$(pwd) npm run -w @codex/mac-bridge dev",
     "version:sync": "node scripts/sync-versions.js",
     "release:check": "node scripts/validate-npm-release-workflow.mjs",
+    "docs:check": "node scripts/validate-doc-consistency.mjs",
     "test:scripts": "node --test scripts/__tests__/*.test.mjs",
     "test:release": "node --test scripts/__tests__/npm-release-policy.test.mjs",
     "contract:check": "node scripts/validate-rpc-contract-fixtures.mjs && npm run test:contract -w apps/mobile && npm run test:contract -w @codex/rust-bridge",

@@ -1,115 +1,39 @@
-# Project Status & Assessment
+# Project Status
 
-> Last reviewed: 2026-02-20
+Last reviewed: July 18, 2026
 
-## Verdict
+## Current Runtime
 
-The foundation is solid. The Codex integration protocol, the bridge architecture, and the real-time streaming pipeline are all correctly implemented. What we have is a working prototype that needs hardening and polish to become production-ready.
+The maintained product path is:
 
-## Open Source License Requirements
-
-- Apply the checklist in `docs/open-source-license-requirements.md` for all distributed builds.
-- Include third-party notices in release artifacts before submission/distribution.
-
-## Delivery Order (Working Plan)
-
-1. **Phase 1 (in progress)**: Security + approvals
-   - [x] Bridge token auth (REST + WS)
-   - [x] Replace auto-accept with explicit approval queue and decision API
-   - [x] Mobile approval surface for allow/decline decisions
-2. **Phase 2 (next)**: Thread UX polish (drawer navigation, smoother mobile interactions)
-3. **Phase 3**: Worktree/mode metadata and archive/filter flows
-4. **Phase 4**: Reliability (WS reconnect, app-server recovery) + production hardening
-
-## Architecture
-
-```
-Mobile App (Expo/RN)  ──HTTP REST + WS──▶  mac-bridge (Fastify)  ──JSON-RPC 2.0 over stdio──▶  codex app-server
+```text
+Expo mobile app -> authenticated private-network WebSocket/HTTP -> Rust bridge -> coding-agent backends
 ```
 
-Two-layer design — the phone talks to the bridge over the network, and the bridge speaks the Codex `app-server` protocol.
+- Mobile: `apps/mobile`
+- Bridge: `services/rust-bridge`
+- Operator CLI and launch automation: `bin/clawdex.js` and `scripts/`
+- Legacy reference implementation: `services/mac-bridge`
 
-## What's Working
+The Rust bridge supports Codex, OpenCode, and Cursor harnesses. The mobile app includes reconnect and
+replay recovery, approvals and user input, push notifications, Git and constrained terminal
+surfaces, attachments, browser preview, and bridge maintenance. CI validates JavaScript workspaces,
+the Rust bridge, release policy, and cross-language RPC fixtures.
 
-- **Full end-to-end loop** — list threads, create threads, send messages, stream responses via WebSocket deltas
-- **Codex `app-server` integration** — proper JSON-RPC 2.0 handshake, request correlation, notification dispatch, explicit approval routing
-- **Real-time streaming** — `thread.message.delta` events flow from Codex → bridge → WS → mobile UI
-- **4 functional screens** — Threads, Terminal, Git, Settings with state management, loading states, error handling
-- **Zod validation** on the bridge API, proper error codes (409 for busy threads), typed clients on both sides
-- **Thread management** — list, create, open, reply, status tracking (idle/running/error/complete), run event log
-- **Terminal** — execute shell commands, view stdout/stderr/exit code/duration
-- **Git** — view branch, status, diff, commit with custom message
-- **Settings** — health check, live WS connection indicator
+## Security Boundary
 
-## Tech Stack
+The bridge controls sensitive host operations and is private-network software. Keep it on a private
+LAN, VPN, or private overlay, require `BRIDGE_AUTH_TOKEN`, and do not expose it directly to the
+public internet. Generic terminal execution is deny-all unless explicit argument-aware policies are
+configured.
 
-| Component | Stack |
-|-----------|-------|
-| Mobile | Expo 54, React Native 0.81, React 19, React Navigation v7 |
-| Bridge | Fastify v5, @fastify/websocket v11, Zod v3, tsx |
-| Codex IPC | JSON-RPC 2.0 over stdio (`codex app-server --listen stdio://`) |
-| Monorepo | npm workspaces |
-| Language | TypeScript (ES2022) throughout |
+## Current Trackers
 
-## What Needs Work (priority order)
+- Active engineering work: `docs/engineering-improvement-checklist.md`
+- Codex app-server parity: `docs/codex-app-server-cli-gap-tracker.md`
+- Realtime constraints: `docs/realtime-streaming-limitations.md`
+- Setup and verification: `docs/setup-and-operations.md`
+- Troubleshooting: `docs/troubleshooting.md`
 
-### P0 — Security
-
-- [x] **Bridge auth token support added** — REST + WS now support bearer token auth (`BRIDGE_AUTH_TOKEN` / `EXPO_PUBLIC_HOST_BRIDGE_TOKEN`).
-- [ ] **Pairing flow not added yet** — auth still depends on manual token setup rather than QR/one-time pairing.
-
-### P1 — Reliability
-
-- [ ] **No WebSocket reconnection** — if the WS drops, it stays dead. Add auto-reconnect with exponential backoff in `HostBridgeWsClient`.
-- [ ] **No Codex process recovery** — if `codex app-server` crashes, the bridge is stuck. Add auto-restart with a health check loop.
-- [ ] **No error recovery** — the bridge doesn't handle the Codex process dying mid-turn.
-
-### P2 — Functionality Gaps
-
-- [ ] **Git staging missing** — `GitService.commit()` only runs `git commit -m`, not `git add` first. No staging area management. Users will get "nothing to commit" errors.
-- [ ] **No markdown rendering** — assistant messages are plain `Text` blocks. Codex responses are markdown-heavy.
-- [ ] **No dedicated thread detail view** — message content is inline in the thread list; will get cramped with longer conversations.
-- [ ] **No push notifications** — can't be alerted when a long-running Codex task finishes.
-
-### P3 — Polish & Production
-
-- [ ] **No tests** — zero test coverage (unit, integration, e2e).
-- [ ] **No EAS build configuration** — needed for distributing to real devices.
-- [ ] **No CI/CD pipeline** — no GitHub Actions or equivalent.
-- [ ] **Bleeding-edge dependencies** — Expo 54 + RN 0.81 + React 19 may have ecosystem compat issues.
-
-## Design Decisions Worth Noting
-
-- **Explicit approval flow** — thread runs now use `approvalPolicy: 'on-request'` and surface command/file approvals to the mobile client (`/approvals` + `/approvals/:id/decision`) rather than auto-accepting.
-- **In-memory thread cache** — the `CodexCliAdapter` caches threads in a `Map`. If the bridge restarts, it re-fetches from Codex's persisted sessions on next access.
-- **Bridge binds to 0.0.0.0** — accessible from the LAN by default, which is required for physical device testing; keep auth enabled for non-local use.
-
-## File Map
-
-```
-apps/mobile/
-  App.tsx                          Root — navigation + tab setup
-  src/
-    config.ts                      Bridge URL from env
-    api/
-      client.ts                    HostBridgeApiClient (REST)
-      ws.ts                        HostBridgeWsClient (WebSocket)
-      types.ts                     Shared TypeScript types
-    screens/
-      ThreadsScreen.tsx            Chat UI — list + create + reply + streaming
-      TerminalScreen.tsx           Command execution UI
-      GitScreen.tsx                Git status/diff/commit
-      SettingsScreen.tsx           Health + connection status
-
-services/mac-bridge/
-  src/
-    index.ts                       Entry — port/host config, buildServer()
-    server.ts                      Fastify routes + dependency wiring
-    types.ts                       Shared types
-    services/
-      codexAppServerClient.ts      JSON-RPC over stdio client
-      codexCliAdapter.ts           High-level Codex adapter
-      realtimeHub.ts               WS broadcast hub
-      terminalService.ts           Shell execution via spawn
-      gitService.ts                Git ops via terminalService
-```
+Historical plans under `docs/plans/` and versioned release notes are retained as historical records,
+not current architecture or operating policy.

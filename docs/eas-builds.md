@@ -70,6 +70,10 @@ eas submit --platform ios --latest --profile production
 eas submit --platform android --latest --profile production
 ```
 
+For App Review, do not make the bridge public. Prepare the isolated private VPN/overlay deployment,
+temporary reviewer enrollment, private bridge URL, and separate bridge token described in
+`docs/app-review-notes.md` before submitting the production build.
+
 ## Local Native Build Option (No EAS Cloud)
 
 If you want local native builds instead:

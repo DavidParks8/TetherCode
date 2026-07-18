@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last updated: March 6, 2026
+Last updated: July 18, 2026
 
 ## Overview
 
@@ -15,6 +15,9 @@ Clawdex Mobile can process:
 - Terminal command text and command output returned by your bridge
 - Git repository status, diffs, commit messages, and related metadata
 - File or image attachments you choose to send
+- If notifications are enabled, an Expo push token, notification-routing identifiers, the bridge
+  project folder name in generic notification text, and an optional assistant reply preview of at
+  most 140 characters
 
 ## How Information Is Used
 
@@ -24,6 +27,7 @@ The app uses this information to:
 - display and continue assistant threads
 - execute approved terminal and Git workflows on infrastructure you control
 - upload user-selected files and images to your own workflow
+- deliver user-enabled turn-completion and approval notifications
 
 ## Storage and Retention
 
@@ -33,9 +37,19 @@ Clawdex Mobile does not define a separate cloud retention layer for your project
 
 Clawdex Mobile does not include advertising SDKs. Data may be transmitted to third-party model or infrastructure providers only when you configure and use those services as part of your own setup.
 
+When notifications are enabled, the self-hosted bridge sends the device push token, notification
+title/body, and routing/deep-link identifiers through the Expo Push Notification Service and then
+APNs or FCM. A completion notification can include the last non-empty line of an assistant reply,
+collapsed and capped at 140 characters. Generic completion and approval text can include the bridge
+project folder name. Prompts, code, diffs, tool output, and full conversations are not included in
+push payloads. Notifications can be disabled in Settings.
+
 ## Security
 
-Security depends on how you configure your bridge and network. The app is intended for trusted-network use. You are responsible for protecting bridge tokens, provider credentials, repository access, and device access.
+Security depends on how you configure your bridge and network. The app is intended for private LAN,
+VPN, or private-overlay use and the bridge must not be exposed directly to the public internet.
+Bridge authentication remains required on private networks. You are responsible for protecting
+bridge tokens, provider credentials, repository access, and device access.
 
 ## Your Responsibility
 

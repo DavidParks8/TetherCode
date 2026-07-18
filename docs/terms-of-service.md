@@ -1,6 +1,6 @@
 # Terms of Service
 
-Last updated: March 6, 2026
+Last updated: July 18, 2026
 
 ## Overview
 
@@ -12,7 +12,10 @@ You may not use Clawdex Mobile to access, control, or modify machines, repositor
 
 ## Credentials and Access
 
-You must keep bridge tokens, provider credentials, repository credentials, and device access secure. If you believe credentials have been exposed, you should rotate them immediately and stop using the affected bridge until it is secured.
+You must keep bridge tokens, provider credentials, repository credentials, and device access secure.
+Keep the bridge on a private LAN, VPN, or private overlay and do not expose it directly to the
+public internet. If you believe credentials have been exposed, rotate them immediately and stop
+using the affected bridge until it is secured.
 
 ## Operational Risk
 

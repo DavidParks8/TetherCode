@@ -295,7 +295,11 @@ source .env.secure
 curl "http://$BRIDGE_HOST:$BRIDGE_PORT/health"
 ```
 
-Expected response contains `"status":"ok"`.
+Expected response contains `"status":"ok"` or `"status":"degraded"` with HTTP
+200 when at least one configured engine is ready. It returns HTTP 503 with
+`"status":"unhealthy"` when no configured engine is ready. `/health` is the one
+unauthenticated, minimal availability endpoint; use authenticated `/status` or
+`bridge/status/read` for operational detail.
 
 ### In-app smoke test
 
@@ -392,34 +396,42 @@ Use `npm run test:release` to validate workflow YAML and the release ownership g
 
 ### Endpoints
 
-- `GET /health`
-- `GET /rpc` (WebSocket JSON-RPC)
-- `POST /attachments` (authenticated `multipart/form-data`; one streamed file, maximum `20 MB`)
+- `GET /health`: unauthenticated minimal availability (`ok`, `degraded`, or `unhealthy`); no
+  operational detail or project content
+- `GET /rpc`: authenticated WebSocket JSON-RPC; bearer auth is preferred and query-token auth is a
+  private-network compatibility fallback when explicitly enabled
+- `GET /status`: authenticated full bridge/backend/operational status
+- `GET /local-image`: authenticated, path-policy-constrained local image response (maximum `20 MiB`)
+- `POST /attachments`: bearer-authenticated `multipart/form-data`; one streamed file, maximum
+  `20 MiB`
 
-### Forwarded methods
+Browser preview uses its separately configured listener and a short-lived, owner-scoped session
+bootstrap rather than adding another route to the main bridge listener.
 
-- `thread/*`
-- `turn/*` (includes `turn/interrupt`)
-- `review/start`
-- `model/list`
-- `skills/list`
-- `app/list`
+### Forwarded RPC methods
 
-### Bridge RPC methods
+The bridge forwards an explicit allowlist, not arbitrary `thread/*` or `turn/*` methods. It includes
+the mobile account/auth reads and actions, model/agent/app/skill/config catalogs, supported config
+writes, review start, thread lifecycle/history operations, and turn start/steer/interrupt. The
+versioned inventory in `contracts/bridge-rpc/v1/manifest.json` is the checked contract for methods
+the mobile client invokes; `services/rust-bridge/src/rpc.rs` is the complete runtime allowlist.
 
-- `bridge/health/read`
-- `bridge/terminal/exec`
-- `bridge/git/status`
-- `bridge/git/diff`
-- `bridge/git/commit`
-- `bridge/git/push`
-- `bridge/approvals/list`
-- `bridge/approvals/resolve`
-- `bridge/userInput/resolve`
-- `bridge/ui/present`
-- `bridge/ui/update`
-- `bridge/ui/dismiss`
-- `bridge/ui/resolve`
+### Bridge-native RPC methods
+
+The checked inventory is `contracts/bridge-rpc/v1/manifest.json`. Major groups are:
+
+- Health/runtime: `bridge/health/read`, `bridge/status/read`, `bridge/capabilities/read`, and
+  `bridge/runtime/read`
+- Push registration: `bridge/push/register`, `bridge/push/unregister`, and `bridge/push/list`
+- Replay and coordination: `bridge/events/replay`, `bridge/thread/create`,
+  `bridge/thread/list/stream/*`, and `bridge/thread/queue/*`
+- Host surfaces: `bridge/workspaces/list`, `bridge/fs/list`, `bridge/terminal/exec`, and
+  `bridge/git/*`
+- Interaction: `bridge/approvals/*`, `bridge/userInput/resolve`, and `bridge/ui/*`
+- Browser and maintenance: `bridge/browser/*`, `bridge/codex/*`, `bridge/restart/start`, and
+  `bridge/update/start`
+
+All of these methods are available only after the WebSocket connection passes bridge authentication.
 
 ### Host execution policy
 

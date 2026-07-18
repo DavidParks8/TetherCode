@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 ## 5.2.3 - 2026-05-30
 
 ### Added
-- Push notifications for agent turn completion and approval requests. Because the app's WebSocket closes when backgrounded, the always-on bridge is the sender: devices register an Expo push token (`bridge/push/register`/`unregister`/`list`) and the bridge POSTs a minimal payload to the Expo push service, which relays via APNs (iOS) and FCM (Android). Auto-enabled on first bridge connect; Settings → Notifications is the override (opt out + per-event toggles). Foreground banners are suppressed; tapping a notification deep-links to the thread.
+- Push notifications for agent turn completion and approval requests. Because the app suspends its WebSocket when backgrounded, the always-on bridge is the sender: devices register an Expo push token with `bridge/push/register`, `bridge/push/unregister`, and `bridge/push/list`, and the bridge POSTs a bounded payload to the Expo push service, which relays via APNs (iOS) and FCM (Android). Auto-enabled on first bridge connect; Settings → Notifications is the override (opt out + per-event toggles). Foreground banners are suppressed; tapping a notification deep-links to the thread.
 - Reply preview on turn-completed notifications: the agent's last reply line, whitespace-collapsed and capped at 140 characters. A reply snippet therefore transits Expo/Apple/Google when notifications are enabled; disclosed in the privacy policy and store data-safety answers.
 - Actionable Approve/Deny buttons on approval notifications, resolved over the authenticated bridge WebSocket without opening the conversation.
 - Android push support (Firebase project + FCM v1 credentials).

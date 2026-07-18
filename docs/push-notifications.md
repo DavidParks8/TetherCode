@@ -20,30 +20,36 @@ codex app-server ──turn/completed──▶ bridge ──HTTPS POST──▶ 
 
 Waking a backgrounded/killed app is only possible through the OS push transports
 (APNs on iOS, FCM on Android). Clawdex reaches them via the **Expo Push
-Notification Service**, which the bridge calls with a minimal, content-free
-payload.
+Notification Service**. Pushes are deliberately bounded; notification text can
+contain a short assistant reply preview or the bridge project folder name as
+described below.
 
 ## What is sent
 
-Payloads carry:
+The request sent to Expo carries the device push token, visible notification
+title/body, and a `data` object. The data object carries:
 
 - the event type (`turn_completed` or `approval_requested`)
 - an immutable notification, bridge profile, and device registration identity
-- the bridge project name (the working directory's folder name)
 - the thread id (in `data`, used for deep-linking when the notification is tapped)
-- for completed turns, a **short preview of the agent's reply** — the last
-  non-empty line, whitespace-collapsed and capped at 140 characters
+- the approval id for approval requests
 
-This means a snippet of the agent's reply text leaves your network (via Expo and
-Apple/Google push infrastructure) when notifications are enabled. Full diffs,
-prompts, tool output, and the rest of the conversation are never sent. When a
-turn produces no reply text, the notification falls back to a generic "Codex
-finished working in &lt;project&gt;" message. Approval notifications never include
-reply content.
+Visible notification text carries either:
+
+- for completed turns, a **short preview of the agent's reply**: the last
+  non-empty line, whitespace-collapsed and capped at 140 characters; or a generic
+  completion message containing the bridge project folder name if no preview is available
+- for approvals, a generic message containing the bridge project folder name
+
+This means the Expo push token, routing/deep-link identifiers, project folder
+name in generic text, and possibly a snippet of the agent's reply leave your
+network via Expo and Apple/Google push infrastructure when notifications are
+enabled. Full diffs, prompts, tool output, and the rest of the conversation are
+not sent. Approval notifications never include reply content.
 
 ## Bridge side
 
-- New RPC methods (over the existing authenticated WS):
+- Push registration RPC methods (over the existing authenticated WS):
   - `bridge/push/register` `{ profileId, registrationId, token, platform, deviceName, events }`
   - `bridge/push/unregister` `{ profileId, registrationId }`
   - `bridge/push/list` → device list (tokens are masked to a short suffix)
@@ -63,6 +69,8 @@ reply content.
   top-level thread reaches a final completion with no queued continuation.
 - Optional: set `EXPO_ACCESS_TOKEN` in the bridge environment to send with an
   Expo access token (enhanced security / receipts).
+- Expo delivery needs outbound HTTPS from the bridge. It does not require, and
+  must not be used to justify, inbound public access to the bridge.
 
 ## Mobile side
 
@@ -85,8 +93,8 @@ reply content.
 - Tapping a notification opens the app and navigates to the relevant thread.
 - **Approval notifications carry Approve / Deny action buttons** (iOS notification
   category `approval`). The approval push includes the `approvalId`; tapping a
-  button foregrounds the app and resolves that approval over the authenticated
-  matching profile's authenticated bridge WebSocket (`bridge/approvals/resolve`).
+  button foregrounds the app and resolves that approval over the matching
+  profile's authenticated bridge WebSocket (`bridge/approvals/resolve`).
   Identity-less, stale-profile, and duplicate cold/live action responses are
   rejected. Deferred timers/listeners are cancelled on profile change or unmount,
   and `resolutionId` makes a transport retry idempotent. The buttons foreground the app on

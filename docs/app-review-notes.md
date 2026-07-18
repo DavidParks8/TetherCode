@@ -2,8 +2,10 @@
 
 Use this file as the source for App Store Connect "Notes for Review" and internal submission prep.
 
-Related engineering reference:
+Related references:
 
+- `docs/eas-builds.md`
+- `docs/push-notifications.md`
 - `docs/realtime-streaming-limitations.md`
 
 ## Submission Snapshot
@@ -19,87 +21,125 @@ Related engineering reference:
 Clawdex is a companion app for a bridge running on infrastructure the user controls.
 The iPhone and iPad app connects to that bridge and lets the user:
 
-- Start new Codex runs and continue existing threads
+- Start new coding-agent runs and continue existing threads
 - Monitor run progress and respond to clarifications
 - Review approvals, Git status, and diffs
 - Create Git commits on the connected host
-- Execute allowed terminal commands on the connected host
+- Execute explicitly enabled terminal commands on the connected host
 - Attach files or images from the workspace or device
 
 The app does not provide a public multi-tenant shell service.
 
-## Test Setup For Review
+## Secure Test Setup For Review
 
-Reviewer should use a dedicated review bridge.
+Provide a dedicated review bridge on an isolated private network. Do not expose the bridge, its
+WebSocket, browser preview, status endpoint, or attachment endpoint directly to the public internet.
+Do not use a public HTTP tunnel or reverse proxy as a substitute for private networking.
 
-- Provide a publicly reachable bridge URL and token directly in App Store Connect review notes.
-- Keep that bridge online during App Review hours.
-- Do not submit with placeholder or expired host details.
+Recommended deployment:
 
-Optional fallback if App Review specifically asks for self-host setup:
+1. Create a short-lived review-only network and sanitized workspace with no production source,
+   credentials, personal conversations, or unrelated services.
+2. Put the review bridge behind a standards-based VPN gateway, such as IKEv2, or a dedicated private
+   overlay that Apple App Review can enroll in. The VPN gateway may accept internet connections; the
+   bridge itself must have only a private address and a host/cloud firewall rule that accepts the
+   bridge and preview ports from the review VPN subnet or interface only.
+3. Require a random, review-only `BRIDGE_AUTH_TOKEN` in addition to VPN membership. Keep
+   `BRIDGE_ALLOW_INSECURE_NO_AUTH=false`. Scope `BRIDGE_WORKDIR` to the sanitized workspace and leave
+   terminal execution disabled unless a walkthrough step requires one safe policy.
+4. Test the exact production build from a device that is not already on the operator's LAN: enroll
+   through the reviewer VPN path, connect to the private bridge URL, and complete the walkthrough.
+5. In App Store Connect review notes, provide the temporary VPN configuration/enrollment steps,
+   VPN credentials, private bridge URL, bridge token, availability window, and a live support
+   contact. Avoid dependencies on an employee account or production identity. If enrollment needs a
+   profile or attachment that does not fit in review notes, coordinate delivery through App Review's
+   secure attachment or Resolution Center flow.
+6. Keep the isolated host and VPN available for the stated review window. Revoke VPN access, rotate
+   the bridge token, and destroy or shut down the review environment when review is complete.
+
+Self-host setup is not the primary reviewer path because it asks the reviewer to provision a host.
+If App Review specifically requests it, provide these commands as a fallback:
 
 ```bash
 npm install -g clawdex-mobile@latest
 clawdex init
 ```
 
-Then:
-
-- Start the bridge on a machine you control.
-- Use the generated bridge URL and token.
-- Pair from the app by scanning the bridge QR code or by entering the URL and token manually.
-
 ## Reviewer Walkthrough
 
-1. Launch the app on iPhone or iPad.
-2. On `Connect Your Bridge`, scan the bridge QR code or enter the provided bridge URL and token.
-3. Tap `Test Connection`, then continue.
-4. Start a new run or open an existing thread.
-5. Send a prompt and confirm that a response is received.
-6. Open the Git screen and verify status / diff rendering.
-7. If prompted, review and approve an action.
-8. To attach an image, use the add action in the composer and choose an image from the device.
+1. Connect the review device to the supplied review VPN/private overlay.
+2. Launch the app on iPhone or iPad.
+3. On `Connect Your Bridge`, enter the supplied private bridge URL and bridge token.
+4. Tap `Test Connection`, then continue.
+5. Start a new run or open an existing review thread.
+6. Send a prompt and confirm that a response is received.
+7. Open the Git screen and verify status/diff rendering in the sanitized repository.
+8. If prompted, review and approve or deny an action.
+9. To attach an image, use the add action in the composer and choose a non-sensitive image from the
+   device.
 
 ## Security And Privacy Notes For Review
 
-- Bridge auth token is required by default.
-- The app is intended for trusted private networking such as LAN, VPN, or Tailscale.
-- Any remote execution happens only on infrastructure controlled by the user or review account owner.
-- Generic terminal execution is disabled by default and can only be enabled through argument-aware server policies; Git uses separate hardened bridge operations.
+- Bridge token authentication is required by default and is defense in depth, not a replacement for
+  the private VPN/overlay boundary.
+- Any remote execution occurs only on the isolated review infrastructure controlled by the review
+  account owner.
+- Generic terminal execution is deny-all by default and can only be enabled through argument-aware
+  server policies; Git uses separate hardened bridge operations.
 - In-app Privacy and Terms screens remain accessible from Settings.
 
-## Push Notifications (new in 5.2.3)
+## Push Notifications
 
-- The user's self-hosted bridge sends push notifications when an agent turn completes or needs approval; the app's WebSocket closes when backgrounded, so the bridge is the sender.
-- Delivery path: bridge → Expo push service → APNs (iOS) / FCM (Android).
-- Notification payloads contain the event type, the bridge project (folder) name, and, for completed turns, a short preview of the agent's reply (last line, max 140 chars). No prompts, code, diffs, or tool output are sent.
-- Notifications are controllable in Settings (master toggle + per-event toggles).
-- Approval notifications include Approve/Deny actions that resolve the approval over the authenticated bridge connection.
-- To exercise notifications during review: enable notifications, background the app, and trigger a turn on the review bridge.
+- The review bridge sends pushes for final top-level turn completion and approval requests. The
+  mobile WebSocket is intentionally suspended while the app is backgrounded, so the always-on bridge
+  observes those runtime events and sends the push.
+- Runtime triggers are `turn/completed` and `bridge/approval.requested`. Device registration uses
+  authenticated RPC methods `bridge/push/register`, `bridge/push/unregister`, and `bridge/push/list`.
+- Delivery path: review bridge -> Expo Push Notification Service -> APNs on iOS (or FCM on Android).
+  Push delivery therefore requires outbound HTTPS from the bridge, but never inbound public access
+  to the bridge.
+- Expo receives the device push token, visible notification title/body, and data containing event
+  type, notification ID, bridge profile ID, registration ID, thread ID, and approval ID when
+  applicable. A completion body may contain the last non-empty assistant-reply line, collapsed and
+  capped at 140 characters. An approval body, or a completion without a preview, contains the
+  sanitized review project folder name. Prompts, code, diffs, and tool output are not sent.
+- Notifications are controllable in Settings with a master opt-out and per-event toggles.
+- Approval notifications include Approve/Deny actions. Selecting one foregrounds the app and resolves
+  the approval through the matching profile's authenticated bridge WebSocket; it is not a
+  background network mutation.
+- To exercise notifications, send a sufficiently long run from the app and background it before
+  completion. Use a review-only prompt whose possible reply preview is safe to send through push
+  providers.
 
-## App Privacy / Data Safety Answers (reply preview)
+## App Privacy / Data Safety Answers
 
-Because a reply snippet leaves the device via Expo/APNs/FCM when notifications are on, declare:
+When notifications are enabled, declare the data that transits Expo and APNs/FCM:
 
-- Data type: "Other user content" (a truncated snippet of assistant reply text) and a device push token (a non-advertising identifier used solely for notification routing).
-- Linked to identity: No.
+- Other user content: an optional assistant reply preview of at most 140 characters and the review
+  project folder name used in generic notification text.
+- Device or other identifiers: the Expo push token plus notification, bridge-profile, device
+  registration, thread, and approval identifiers used for routing, deep linking, and safe approval
+  handling.
+- Linked to identity: No, unless the submitter's separate configuration makes it so.
 - Used for tracking: No.
 - Purpose: App functionality (delivering notifications the user enabled).
-- Optional: Yes — controlled by the in-app notifications toggle.
+- Optional: Yes; the user can opt out in Settings.
 
 ## Guideline Positioning Notes
 
-- The app is for access to user-controlled infrastructure, not a shared cloud shell.
-- The bridge dependency is disclosed during onboarding and in review notes.
-- Reviewers do not need to create an external account when a review bridge URL and token are supplied.
+- The app accesses user-controlled infrastructure rather than a shared cloud shell.
+- The bridge and private-network dependency are disclosed during onboarding and in review notes.
+- Reviewers receive temporary review credentials and do not need to create a product account.
 
 ## What To Provide In App Store Connect
 
 - Privacy Policy URL: [required final URL]
 - Support URL: [required final URL]
-- Review bridge URL: [final public URL]
-- Review bridge token: [final token]
-- Review host availability window: [time range + time zone]
+- Review VPN/overlay enrollment instructions: [temporary review access]
+- Review VPN credentials or one-time enrollment: [temporary credentials]
+- Private review bridge URL: [private VPN/overlay URL]
+- Review bridge token: [short-lived token distinct from VPN credentials]
+- Review environment availability window: [time range + time zone]
 - Support contact reachable during review: [contact details]
 
 ## Open Source License Requirements
@@ -109,10 +149,15 @@ Because a reply snippet leaves the device via Expo/APNs/FCM when notifications a
 
 ## Final Pre-Submit Checklist
 
-- [ ] Privacy Policy URL is live and matches the in-app link.
+- [ ] Privacy Policy URL is live, matches the in-app link, and discloses push-provider transit.
 - [ ] Support URL is live and matches the listing.
-- [ ] Review bridge is reachable from the public internet and returns a healthy response.
-- [ ] Review bridge token has been tested in the current App Store build.
+- [ ] The dedicated review VPN/overlay works from outside the operator LAN.
+- [ ] Firewall verification confirms the bridge and preview ports are reachable only through the
+  review VPN/overlay, not directly from the public internet.
+- [ ] Review VPN credentials, private bridge URL, and short-lived bridge token work in the submitted
+  App Store build.
+- [ ] The review workspace and notification test content contain no production or personal data.
+- [ ] Revocation/token-rotation and review-environment shutdown owners are assigned.
 - [ ] Review notes in App Store Connect were refreshed for the current version.
 - [ ] Build is attached to the App Store version.
 - [ ] `asc validate` returns no blocking errors.
