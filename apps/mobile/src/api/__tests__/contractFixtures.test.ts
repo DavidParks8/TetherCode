@@ -7,6 +7,7 @@ interface ContractManifest {
   fixtureFormatVersion: number;
   protocolVersion: number;
   bridgeMethods: string[];
+  httpEndpoints: Array<{ method: string; path: string; auth: string; maxFileBytes: number }>;
   mobileForwardedMethods: string[];
   notifications: string[];
   errors: Array<{ code: number; name: string }>;
@@ -47,6 +48,13 @@ describe('bridge RPC contract fixtures', () => {
     });
     expect(manifest.fixtures.resourceLimitError).toMatchObject({
       error: { code: -32602, data: { resource: 'attachment_bytes', limit: 20971520 } },
+    });
+    expect(manifest.httpEndpoints).toContainEqual({
+      method: 'POST',
+      path: '/attachments',
+      auth: 'bearer',
+      contentType: 'multipart/form-data',
+      maxFileBytes: 20971520,
     });
     expect(manifest.fixtures.browserPreviewSession).toMatchObject({
       sessionId: expect.any(String),

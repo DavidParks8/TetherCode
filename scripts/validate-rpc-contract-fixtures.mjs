@@ -12,6 +12,7 @@ const rust = [
 const client = readFileSync(path.join(root, 'apps/mobile/src/api/client.ts'), 'utf8');
 const ws = readFileSync(path.join(root, 'apps/mobile/src/api/ws.ts'), 'utf8');
 const mobileSource = `${client}\n${ws}`;
+const attachments = readFileSync(path.join(root, 'services/rust-bridge/src/attachments.rs'), 'utf8');
 
 const fail = (message) => {
   throw new Error(`RPC contract validation failed: ${message}`);
@@ -32,6 +33,11 @@ if (manifest.fixtureFormatVersion !== 1 || manifest.protocolVersion !== 1) {
 assertUniqueSortedStrings('bridgeMethods', manifest.bridgeMethods);
 assertUniqueSortedStrings('mobileForwardedMethods', manifest.mobileForwardedMethods);
 assertUniqueSortedStrings('notifications', manifest.notifications);
+if (!Array.isArray(manifest.httpEndpoints) || manifest.httpEndpoints.length !== 1) fail('HTTP endpoint inventory');
+const attachmentEndpoint = manifest.httpEndpoints[0];
+if (attachmentEndpoint.method !== 'POST' || attachmentEndpoint.path !== '/attachments' || attachmentEndpoint.auth !== 'bearer') fail('attachment HTTP endpoint');
+if (!rust.includes('"/attachments"') || !client.includes('/attachments')) fail('attachment endpoint implementation');
+if (!attachments.includes('ATTACHMENT_MAX_BYTES') || attachmentEndpoint.maxFileBytes !== 20971520) fail('attachment endpoint limit');
 
 const rustProtocol = Number(rust.match(/const BRIDGE_PROTOCOL_VERSION: u32 = (\d+);/)?.[1]);
 const mobileProtocol = Number(ws.match(/static readonly PROTOCOL_VERSION = (\d+);/)?.[1]);

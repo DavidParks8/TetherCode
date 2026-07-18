@@ -17,7 +17,7 @@ use axum::{
     body::{to_bytes, Body},
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        FromRequestParts, Query, Request, State,
+        DefaultBodyLimit, FromRequest, FromRequestParts, Multipart, Query, Request, State,
     },
     http::{
         header::{
@@ -27,7 +27,7 @@ use axum::{
         HeaderMap, HeaderValue, Method, StatusCode, Uri,
     },
     response::{IntoResponse, Response},
-    routing::{any, get},
+    routing::{any, get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose, Engine as _};
@@ -68,11 +68,11 @@ mod storage;
 
 #[cfg(test)]
 use attachments::{
-    build_attachment_file_name, decode_base64_payload, estimate_base64_decoded_size,
-    infer_extension_from_mime, normalize_attachment_kind, sanitize_filename, sanitize_path_segment,
+    build_attachment_file_name, infer_extension_from_mime, normalize_attachment_kind,
+    sanitize_filename, sanitize_path_segment,
 };
 use attachments::{
-    infer_image_content_type_from_path, save_uploaded_attachment, AttachmentUploadRequest,
+    infer_image_content_type_from_path, save_multipart_attachment, ATTACHMENT_MULTIPART_MAX_BYTES,
 };
 use backend_runtime::{BackendLifecycleState, BackendRuntimeSnapshot, BackendRuntimeStatus};
 #[cfg(test)]
@@ -7511,6 +7511,11 @@ async fn main() {
 
     let app = Router::new()
         .route("/rpc", get(ws_handler))
+        .route(
+            "/attachments",
+            post(attachment_upload_handler)
+                .layer(DefaultBodyLimit::max(ATTACHMENT_MULTIPART_MAX_BYTES)),
+        )
         .route("/health", get(health_handler))
         .route("/status", get(status_handler))
         .route("/local-image", get(local_image_handler))
@@ -8236,6 +8241,62 @@ async fn ws_handler(
         .into_response()
 }
 
+async fn attachment_upload_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<RpcQuery>,
+    request: Request,
+) -> Response {
+    if let Some(response) = protected_request_error(&state.config, &headers, query.token.as_deref())
+    {
+        return response;
+    }
+
+    let multipart = match Multipart::from_request(request, &state).await {
+        Ok(multipart) => multipart,
+        Err(error) => {
+            return (
+                error.status(),
+                Json(json!({
+                    "error": "invalid_upload",
+                    "message": error.body_text(),
+                })),
+            )
+                .into_response();
+        }
+    };
+    match save_multipart_attachment(multipart, &state.path_policy).await {
+        Ok(uploaded) => (StatusCode::CREATED, Json(uploaded)).into_response(),
+        Err(error) => bridge_error_http_response(error),
+    }
+}
+
+fn bridge_error_http_response(error: BridgeError) -> Response {
+    let status = if error
+        .data
+        .as_ref()
+        .and_then(|data| data.get("error"))
+        .and_then(Value::as_str)
+        == Some("resource_limit_exceeded")
+    {
+        StatusCode::PAYLOAD_TOO_LARGE
+    } else if error.code == -32602 {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    let mut body = json!({
+        "error": if status == StatusCode::INTERNAL_SERVER_ERROR { "upload_failed" } else { "invalid_upload" },
+        "message": error.message,
+    });
+    if let (Some(target), Some(data)) = (body.as_object_mut(), error.data) {
+        if let Some(data) = data.as_object() {
+            target.extend(data.clone());
+        }
+    }
+    (status, Json(body)).into_response()
+}
+
 fn protected_request_error(
     config: &BridgeConfig,
     headers: &HeaderMap,
@@ -8900,13 +8961,6 @@ async fn handle_bridge_method(
                     .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
             let result = install_github_git_auth(state, request).await?;
             serde_json::to_value(result).map_err(|error| BridgeError::server(&error.to_string()))
-        }
-        "bridge/attachments/upload" => {
-            let request: AttachmentUploadRequest =
-                serde_json::from_value(params.unwrap_or_else(|| json!({})))
-                    .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
-            let uploaded = save_uploaded_attachment(request, &state.path_policy).await?;
-            serde_json::to_value(uploaded).map_err(|error| BridgeError::server(&error.to_string()))
         }
         "bridge/git/status" => {
             let request: GitQueryRequest =
@@ -17161,42 +17215,6 @@ mod tests {
             },
         );
         assert!(!is_valid_user_input_answers(&invalid_blank_answer));
-    }
-
-    #[test]
-    fn decode_base64_payload_supports_standard_urlsafe_and_data_uri_inputs() {
-        assert_eq!(
-            decode_base64_payload("aGVsbG8=").expect("decode standard base64"),
-            b"hello".to_vec()
-        );
-        assert_eq!(
-            decode_base64_payload("data:text/plain;base64,aGVsbG8=")
-                .expect("decode data-uri base64"),
-            b"hello".to_vec()
-        );
-        assert_eq!(
-            decode_base64_payload("_w==").expect("decode url-safe base64"),
-            vec![255]
-        );
-    }
-
-    #[test]
-    fn decode_base64_payload_rejects_invalid_payloads() {
-        assert!(decode_base64_payload("not@@base64").is_err());
-        assert!(decode_base64_payload("data:text/plain;base64,").is_err());
-    }
-
-    #[test]
-    fn estimate_base64_decoded_size_matches_expected_values() {
-        assert_eq!(
-            estimate_base64_decoded_size("aGVsbG8=").unwrap_or_default(),
-            5
-        );
-        assert_eq!(
-            estimate_base64_decoded_size("data:text/plain;base64,aGVsbG8=").unwrap_or_default(),
-            5
-        );
-        assert_eq!(estimate_base64_decoded_size("YQ==").unwrap_or_default(), 1);
     }
 
     #[test]

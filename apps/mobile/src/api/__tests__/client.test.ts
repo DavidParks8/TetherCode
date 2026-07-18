@@ -1,5 +1,12 @@
 import { HostBridgeApiClient } from '../client';
 import { RpcRequestError, type HostBridgeWsClient } from '../ws';
+import * as FileSystem from 'expo-file-system/legacy';
+
+jest.mock('expo-file-system/legacy', () => ({
+  uploadAsync: jest.fn(),
+  FileSystemUploadType: { MULTIPART: 1 },
+  FileSystemSessionType: { FOREGROUND: 1 },
+}));
 
 function createWsMock() {
   type WsLike = Pick<HostBridgeWsClient, 'request' | 'waitForTurnCompletion' | 'onEvent'>;
@@ -2358,30 +2365,44 @@ describe('HostBridgeApiClient', () => {
     );
   });
 
-  it('uploadAttachment() calls bridge/attachments/upload', async () => {
+  it('uploadAttachment() uses authenticated file-backed multipart upload', async () => {
     const ws = createWsMock();
-    ws.request.mockResolvedValue({
-      path: '.clawdex-mobile-attachments/file.txt',
-      fileName: 'file.txt',
-      mimeType: 'text/plain',
-      sizeBytes: 10,
-      kind: 'file',
+    const uploadAsync = FileSystem.uploadAsync as jest.MockedFunction<typeof FileSystem.uploadAsync>;
+    uploadAsync.mockResolvedValue({
+      status: 201,
+      headers: {},
+      mimeType: 'application/json',
+      body: JSON.stringify({
+        path: '.clawdex-mobile-attachments/file.txt',
+        fileName: 'file.txt',
+        mimeType: 'text/plain',
+        sizeBytes: 10,
+        kind: 'file',
+      }),
     });
 
-    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+    const client = new HostBridgeApiClient({
+      ws: ws as unknown as HostBridgeWsClient,
+      bridgeUrl: 'http://bridge:8787/',
+      authToken: 'secret',
+    });
     const uploaded = await client.uploadAttachment({
-      dataBase64: 'aGVsbG8=',
+      uri: 'file:///cache/file.txt',
       fileName: 'file.txt',
       mimeType: 'text/plain',
       kind: 'file',
     });
 
-    expect(ws.request).toHaveBeenCalledWith('bridge/attachments/upload', {
-      dataBase64: 'aGVsbG8=',
-      fileName: 'file.txt',
+    expect(uploadAsync).toHaveBeenCalledWith('http://bridge:8787/attachments', 'file:///cache/file.txt', {
+      fieldName: 'file',
+      headers: { Authorization: 'Bearer secret' },
+      httpMethod: 'POST',
       mimeType: 'text/plain',
-      kind: 'file',
+      parameters: { fileName: 'file.txt', kind: 'file', mimeType: 'text/plain' },
+      sessionType: 1,
+      uploadType: 1,
     });
+    expect(ws.request).not.toHaveBeenCalled();
     expect(uploaded.path).toBe('.clawdex-mobile-attachments/file.txt');
   });
 

@@ -183,9 +183,11 @@ export default function App() {
       ws
         ? new HostBridgeApiClient({
             ws,
+            bridgeUrl: bridgeUrl ?? undefined,
+            authToken: bridgeToken ?? env.hostBridgeToken,
           })
         : null,
-    [ws]
+    [bridgeToken, bridgeUrl, ws]
   );
   const mainRef = useRef<MainScreenHandle>(null);
   const browserRef = useRef<BrowserScreenHandle>(null);

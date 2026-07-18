@@ -1,142 +1,194 @@
 use std::path::{Path, PathBuf};
 
-use base64::{engine::general_purpose, Engine as _};
-use serde::{Deserialize, Serialize};
+use axum::extract::Multipart;
+use serde::Serialize;
+use tokio::{fs, io::AsyncWriteExt};
 use uuid::Uuid;
 
 use crate::{
     decode_engine_qualified_id, path_policy::PathPolicy, resource_limits::ATTACHMENT_MAX_BYTES,
-    storage::write_private_new, BridgeError,
+    BridgeError,
 };
 
 const MOBILE_ATTACHMENTS_DIR: &str = ".clawdex-mobile-attachments";
+pub(crate) const ATTACHMENT_MULTIPART_MAX_BYTES: usize = ATTACHMENT_MAX_BYTES + 64 * 1024;
+const ATTACHMENT_METADATA_MAX_BYTES: usize = 4 * 1024;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AttachmentUploadRequest {
-    pub(crate) data_base64: String,
-    pub(crate) file_name: Option<String>,
-    pub(crate) mime_type: Option<String>,
-    pub(crate) thread_id: Option<String>,
-    pub(crate) kind: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AttachmentUploadResponse {
-    path: String,
-    file_name: String,
-    mime_type: Option<String>,
-    size_bytes: usize,
-    kind: String,
+    pub(crate) path: String,
+    pub(crate) file_name: String,
+    pub(crate) mime_type: Option<String>,
+    pub(crate) size_bytes: usize,
+    pub(crate) kind: String,
 }
 
-pub(crate) async fn save_uploaded_attachment(
-    request: AttachmentUploadRequest,
+pub(crate) async fn save_multipart_attachment(
+    mut multipart: Multipart,
     path_policy: &PathPolicy,
 ) -> Result<AttachmentUploadResponse, BridgeError> {
-    let encoded = request.data_base64.trim();
-    if encoded.is_empty() {
-        return Err(BridgeError::invalid_params("dataBase64 must not be empty"));
-    }
+    let temporary_dir = path_policy
+        .resolve_root_owned_directory(&PathBuf::from(MOBILE_ATTACHMENTS_DIR).join(".tmp"))?;
+    secure_directory(&temporary_dir).await?;
+    let temporary_path = temporary_dir.join(format!("{}.upload", Uuid::new_v4()));
+    let mut temporary_file: Option<fs::File> = None;
+    let mut uploaded_size = 0usize;
+    let mut field_file_name = None;
+    let mut file_name = None;
+    let mut mime_type = None;
+    let mut thread_id = None;
+    let mut kind = None;
 
-    let estimated_size = estimate_base64_decoded_size(encoded)?;
-    if estimated_size > ATTACHMENT_MAX_BYTES {
-        return Err(BridgeError::resource_limit(
-            "attachment_bytes",
-            ATTACHMENT_MAX_BYTES,
-            estimated_size,
-        ));
-    }
+    let result = async {
+        while let Some(mut field) = multipart.next_field().await.map_err(|error| {
+            BridgeError::invalid_params(&format!("invalid multipart upload: {error}"))
+        })? {
+            let name = field.name().unwrap_or_default().to_string();
+            if name == "file" {
+                if temporary_file.is_some() {
+                    return Err(BridgeError::invalid_params(
+                        "exactly one file field is required",
+                    ));
+                }
+                field_file_name = field.file_name().map(str::to_string);
+                mime_type = field.content_type().map(str::to_string);
+                let mut file = private_new_file(&temporary_path).await?;
+                while let Some(chunk) = field.chunk().await.map_err(|error| {
+                    BridgeError::invalid_params(&format!("invalid file field: {error}"))
+                })? {
+                    append_bounded_chunk(&mut file, &mut uploaded_size, &chunk).await?;
+                }
+                temporary_file = Some(file);
+                continue;
+            }
 
-    let bytes = decode_base64_payload(encoded)?;
-    if bytes.is_empty() {
-        return Err(BridgeError::invalid_params("attachment payload is empty"));
-    }
-
-    if bytes.len() > ATTACHMENT_MAX_BYTES {
-        return Err(BridgeError::resource_limit(
-            "attachment_bytes",
-            ATTACHMENT_MAX_BYTES,
-            bytes.len(),
-        ));
-    }
-
-    let normalized_kind =
-        normalize_attachment_kind(request.kind.as_deref(), request.mime_type.as_deref());
-    let file_name = build_attachment_file_name(
-        request.file_name.as_deref(),
-        request.mime_type.as_deref(),
-        normalized_kind,
-    );
-
-    let mut attachment_relative = PathBuf::from(MOBILE_ATTACHMENTS_DIR);
-    if let Some(thread_id) = request.thread_id.as_deref() {
-        let normalized_thread = sanitize_path_segment(&decode_engine_qualified_id(thread_id));
-        if !normalized_thread.is_empty() {
-            attachment_relative = attachment_relative.join(normalized_thread);
+            let value = read_bounded_text_field(&mut field).await?;
+            match name.as_str() {
+                "fileName" => file_name = non_empty(value),
+                "mimeType" => mime_type = non_empty(value),
+                "threadId" => thread_id = non_empty(value),
+                "kind" => kind = non_empty(value),
+                _ => return Err(BridgeError::invalid_params("unsupported multipart field")),
+            }
         }
+
+        let file = temporary_file
+            .take()
+            .ok_or_else(|| BridgeError::invalid_params("file field is required"))?;
+        if uploaded_size == 0 {
+            return Err(BridgeError::invalid_params("attachment payload is empty"));
+        }
+        file.sync_all()
+            .await
+            .map_err(|error| BridgeError::server(&format!("failed to sync attachment: {error}")))?;
+        drop(file);
+
+        let normalized_kind = normalize_attachment_kind(kind.as_deref(), mime_type.as_deref());
+        let final_file_name = build_attachment_file_name(
+            file_name.as_deref().or(field_file_name.as_deref()),
+            mime_type.as_deref(),
+            normalized_kind,
+        );
+        let mut attachment_relative = PathBuf::from(MOBILE_ATTACHMENTS_DIR);
+        if let Some(thread_id) = thread_id.as_deref() {
+            let normalized_thread = sanitize_path_segment(&decode_engine_qualified_id(thread_id));
+            if !normalized_thread.is_empty() {
+                attachment_relative = attachment_relative.join(normalized_thread);
+            }
+        }
+        let attachment_dir = path_policy.resolve_root_owned_directory(&attachment_relative)?;
+        let target_path = attachment_dir.join(format!("{}-{final_file_name}", Uuid::new_v4()));
+        fs::rename(&temporary_path, &target_path)
+            .await
+            .map_err(|error| {
+                BridgeError::server(&format!("failed to finalize attachment: {error}"))
+            })?;
+
+        Ok(AttachmentUploadResponse {
+            path: target_path.to_string_lossy().to_string(),
+            file_name: final_file_name,
+            mime_type,
+            size_bytes: uploaded_size,
+            kind: normalized_kind.to_string(),
+        })
     }
+    .await;
 
-    let attachment_dir = path_policy.resolve_root_owned_directory(&attachment_relative)?;
+    if result.is_err() {
+        drop(temporary_file);
+        let _ = fs::remove_file(&temporary_path).await;
+    }
+    result
+}
 
-    let unique_name = format!("{}-{file_name}", Uuid::new_v4());
-    let target_path = attachment_dir.join(unique_name);
-
-    write_private_new(&target_path, &bytes)
-        .await
-        .map_err(|error| BridgeError::server(&format!("failed to persist attachment: {error}")))?;
-
-    Ok(AttachmentUploadResponse {
-        path: target_path.to_string_lossy().to_string(),
-        file_name,
-        mime_type: request
-            .mime_type
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
-        size_bytes: bytes.len(),
-        kind: normalized_kind.to_string(),
+async fn private_new_file(path: &Path) -> Result<fs::File, BridgeError> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path).await.map_err(|error| {
+        BridgeError::server(&format!(
+            "failed to create attachment staging file: {error}"
+        ))
     })
 }
 
-fn extract_base64_payload(raw: &str) -> Result<&str, BridgeError> {
-    let payload = raw
-        .split_once(',')
-        .map(|(_, data)| data)
-        .unwrap_or(raw)
-        .trim();
-    if payload.is_empty() {
-        return Err(BridgeError::invalid_params(
-            "dataBase64 must contain base64 payload",
+async fn append_bounded_chunk(
+    file: &mut fs::File,
+    uploaded_size: &mut usize,
+    chunk: &[u8],
+) -> Result<(), BridgeError> {
+    let next_size = uploaded_size.saturating_add(chunk.len());
+    if next_size > ATTACHMENT_MAX_BYTES {
+        return Err(BridgeError::resource_limit(
+            "attachment_bytes",
+            ATTACHMENT_MAX_BYTES,
+            next_size,
         ));
     }
-    Ok(payload)
+    file.write_all(chunk)
+        .await
+        .map_err(|error| BridgeError::server(&format!("failed to stage attachment: {error}")))?;
+    *uploaded_size = next_size;
+    Ok(())
 }
 
-pub(crate) fn estimate_base64_decoded_size(raw: &str) -> Result<usize, BridgeError> {
-    let payload = extract_base64_payload(raw)?;
-    let encoded_len = payload.len();
-    let padding = payload
-        .as_bytes()
-        .iter()
-        .rev()
-        .take_while(|byte| **byte == b'=')
-        .count()
-        .min(2);
-    let block_count = (encoded_len + 3) / 4;
-    Ok(block_count.saturating_mul(3).saturating_sub(padding))
-}
-
-pub(crate) fn decode_base64_payload(raw: &str) -> Result<Vec<u8>, BridgeError> {
-    let payload = extract_base64_payload(raw)?;
-    general_purpose::STANDARD
-        .decode(payload)
-        .or_else(|_| general_purpose::URL_SAFE.decode(payload))
+async fn secure_directory(path: &Path) -> Result<(), BridgeError> {
+    #[cfg(unix)]
+    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .await
         .map_err(|error| {
-            BridgeError::invalid_params(&format!("invalid base64 attachment payload: {error}"))
-        })
+            BridgeError::server(&format!(
+                "failed to secure attachment staging directory: {error}"
+            ))
+        })?;
+    Ok(())
+}
+
+async fn read_bounded_text_field(
+    field: &mut axum::extract::multipart::Field<'_>,
+) -> Result<String, BridgeError> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = field.chunk().await.map_err(|error| {
+        BridgeError::invalid_params(&format!("invalid multipart field: {error}"))
+    })? {
+        if bytes.len().saturating_add(chunk.len()) > ATTACHMENT_METADATA_MAX_BYTES {
+            return Err(BridgeError::resource_limit(
+                "attachment_metadata_bytes",
+                ATTACHMENT_METADATA_MAX_BYTES,
+                bytes.len().saturating_add(chunk.len()),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| BridgeError::invalid_params("multipart metadata must be UTF-8"))
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 pub(crate) fn normalize_attachment_kind(
@@ -262,12 +314,11 @@ pub(crate) fn infer_image_content_type_from_path(path: &Path) -> Option<&'static
 #[cfg(test)]
 mod tests {
     use super::{
-        estimate_base64_decoded_size, save_uploaded_attachment, AttachmentUploadRequest,
-        MOBILE_ATTACHMENTS_DIR,
+        append_bounded_chunk, build_attachment_file_name, normalize_attachment_kind,
+        private_new_file, secure_directory, MOBILE_ATTACHMENTS_DIR,
     };
     use crate::path_policy::PathPolicy;
     use crate::resource_limits::ATTACHMENT_MAX_BYTES;
-    use base64::{engine::general_purpose, Engine as _};
     use std::{fs, path::PathBuf};
     use uuid::Uuid;
 
@@ -287,52 +338,65 @@ mod tests {
         }
     }
 
-    fn upload_request() -> AttachmentUploadRequest {
-        AttachmentUploadRequest {
-            data_base64: general_purpose::STANDARD.encode(b"attachment contents"),
-            file_name: Some("note.txt".to_string()),
-            mime_type: Some("text/plain".to_string()),
-            thread_id: Some("codex:thread/one".to_string()),
-            kind: Some("file".to_string()),
-        }
-    }
-
     #[test]
-    fn base64_estimate_distinguishes_exact_and_over_limit_boundaries() {
-        let exact_encoded_len = ATTACHMENT_MAX_BYTES.div_ceil(3) * 4;
-        let exact_padding = (3 - ATTACHMENT_MAX_BYTES % 3) % 3;
-        let mut exact = "A".repeat(exact_encoded_len);
-        for index in 0..exact_padding {
-            exact.replace_range(exact.len() - index - 1..exact.len() - index, "=");
-        }
+    fn metadata_normalization_is_safe() {
+        assert_eq!(normalize_attachment_kind(Some("image"), None), "image");
+        assert_eq!(normalize_attachment_kind(None, Some("text/plain")), "file");
         assert_eq!(
-            estimate_base64_decoded_size(&exact).unwrap(),
-            ATTACHMENT_MAX_BYTES
+            build_attachment_file_name(Some("../unsafe name"), Some("image/jpeg"), "image"),
+            "unsafe_name.jpg"
         );
-        assert!(estimate_base64_decoded_size(&(exact + "AAAA")).unwrap() > ATTACHMENT_MAX_BYTES);
     }
 
     #[tokio::test]
-    async fn upload_stays_in_canonical_root_owned_storage() {
+    async fn staging_is_private_bounded_and_atomically_finalized() {
         let temp = TestDir::new();
-        let root = temp.0.join("root");
-        fs::create_dir(&root).expect("create root");
-        let policy = PathPolicy::new(root.clone(), true).expect("create policy");
-
-        let uploaded = save_uploaded_attachment(upload_request(), &policy)
+        let staging_dir = temp.0.join("staging");
+        fs::create_dir(&staging_dir).expect("create staging directory");
+        secure_directory(&staging_dir)
             .await
-            .expect("save attachment");
-        let canonical = fs::canonicalize(uploaded.path).expect("canonical uploaded path");
-        assert!(canonical.starts_with(fs::canonicalize(root).expect("canonical root")));
+            .expect("secure staging");
+        let temporary_path = staging_dir.join("attachment.upload");
+        let final_path = staging_dir.join("attachment.txt");
+        let mut file = private_new_file(&temporary_path)
+            .await
+            .expect("create private file");
+        let mut size = 0;
+        append_bounded_chunk(&mut file, &mut size, &vec![0; ATTACHMENT_MAX_BYTES])
+            .await
+            .expect("accept exact limit");
+        let error = append_bounded_chunk(&mut file, &mut size, &[1])
+            .await
+            .expect_err("reject over limit");
+        assert_eq!(error.code, -32602);
+        assert_eq!(size, ATTACHMENT_MAX_BYTES);
+        file.sync_all().await.expect("sync staging file");
+        drop(file);
+        tokio::fs::rename(&temporary_path, &final_path)
+            .await
+            .expect("atomic finalization");
+        assert!(!temporary_path.exists());
         assert_eq!(
-            fs::read(canonical).expect("read attachment"),
-            b"attachment contents"
+            fs::metadata(&final_path).unwrap().len(),
+            ATTACHMENT_MAX_BYTES as u64
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&staging_dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&final_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn upload_rejects_attachment_directory_symlink_escape() {
+    #[test]
+    fn staging_directory_rejects_symlink_escape() {
         use std::os::unix::fs::symlink;
 
         let temp = TestDir::new();
@@ -343,8 +407,8 @@ mod tests {
         symlink(&outside, root.join(MOBILE_ATTACHMENTS_DIR)).expect("create attachment symlink");
         let policy = PathPolicy::new(root, true).expect("create policy");
 
-        let error = save_uploaded_attachment(upload_request(), &policy)
-            .await
+        let error = policy
+            .resolve_root_owned_directory(&PathBuf::from(MOBILE_ATTACHMENTS_DIR).join(".tmp"))
             .expect_err("reject attachment symlink escape");
         assert_eq!(error.code, -32602);
         assert!(fs::read_dir(outside)

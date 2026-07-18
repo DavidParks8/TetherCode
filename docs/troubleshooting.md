@@ -125,8 +125,12 @@ Also update Expo Go on your phone.
 ## Attachment upload issues
 
 - Ensure mobile app has file/photo permissions
-- File limit is `20 MB` per upload
+- The app displays and enforces a `20 MB` limit per upload before starting file-backed transfer
+- Phone images are resized to at most `2048 px` on their longest side, JPEG-compressed, and checked against the limit again
+- Failed prepared uploads remain in the composer as `retry` chips; open Attachments to retry them or remove the chip
+- Uploads use authenticated streaming `multipart/form-data` at `POST /attachments`; there is no WebSocket/base64 upload method
 - Uploads persist under `BRIDGE_WORKDIR/.clawdex-mobile-attachments`
+- The bridge writes mode-`0600` staging files in a private mode-`0700` temporary directory and atomically renames successful uploads into place
 - `resource_limit_exceeded` includes the rejected `resource`, configured `limit`, and observed `actual` size. Git, filesystem, and replay responses may instead return `truncated`/count or byte metadata; narrow the workspace/request when the omitted data is needed.
 - Ensure `BRIDGE_WORKDIR` is writable
 

@@ -1,3 +1,5 @@
+import * as FileSystem from 'expo-file-system/legacy';
+
 import {
   isGeneratedCursorThreadTitle,
   mapChat,
@@ -90,6 +92,8 @@ interface HealthResponse {
 
 interface ApiClientOptions {
   ws: HostBridgeWsClient;
+  bridgeUrl?: string;
+  authToken?: string | null;
 }
 
 interface AppServerListResponse {
@@ -346,6 +350,8 @@ const ACTIVE_TURN_STATUSES = new Set([
 
 export class HostBridgeApiClient {
   private readonly ws: HostBridgeWsClient;
+  private readonly bridgeUrl: string | null;
+  private readonly authToken: string | null;
   private readonly renamedTitles = new Map<string, string>();
   private readonly chatListCache = new Map<string, CacheEntry<ChatSummary[]>>();
   private readonly chatListInFlight = new Map<string, Promise<ChatSummary[]>>();
@@ -358,6 +364,8 @@ export class HostBridgeApiClient {
 
   constructor(options: ApiClientOptions) {
     this.ws = options.ws;
+    this.bridgeUrl = options.bridgeUrl?.replace(/\/$/, '') ?? null;
+    this.authToken = options.authToken?.trim() || null;
   }
 
   health(): Promise<HealthResponse> {
@@ -1437,8 +1445,36 @@ export class HostBridgeApiClient {
     });
   }
 
-  uploadAttachment(body: UploadAttachmentRequest): Promise<UploadAttachmentResponse> {
-    return this.ws.request<UploadAttachmentResponse>('bridge/attachments/upload', body);
+  async uploadAttachment(body: UploadAttachmentRequest): Promise<UploadAttachmentResponse> {
+    if (!this.bridgeUrl) {
+      throw new Error('Bridge URL is required for attachment uploads');
+    }
+    const parameters: Record<string, string> = { kind: body.kind };
+    if (body.fileName?.trim()) parameters.fileName = body.fileName.trim();
+    if (body.mimeType?.trim()) parameters.mimeType = body.mimeType.trim();
+    if (body.threadId?.trim()) parameters.threadId = body.threadId.trim();
+    const result = await FileSystem.uploadAsync(`${this.bridgeUrl}/attachments`, body.uri, {
+      httpMethod: 'POST',
+      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+      fieldName: 'file',
+      mimeType: body.mimeType,
+      parameters,
+      headers: this.authToken ? { Authorization: `Bearer ${this.authToken}` } : undefined,
+      sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
+    });
+    let payload: unknown;
+    try {
+      payload = JSON.parse(result.body);
+    } catch {
+      payload = null;
+    }
+    if (result.status < 200 || result.status >= 300) {
+      const record = toRecord(payload);
+      throw new Error(
+        readString(record?.message) ?? `Attachment upload failed (${String(result.status)})`
+      );
+    }
+    return payload as UploadAttachmentResponse;
   }
 
   async listModels(

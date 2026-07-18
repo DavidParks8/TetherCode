@@ -369,6 +369,7 @@ Automation verifies tag/version consistency and publishes to npm.
 
 - `GET /health`
 - `GET /rpc` (WebSocket JSON-RPC)
+- `POST /attachments` (authenticated `multipart/form-data`; one streamed file, maximum `20 MB`)
 
 ### Forwarded methods
 
@@ -383,7 +384,6 @@ Automation verifies tag/version consistency and publishes to npm.
 
 - `bridge/health/read`
 - `bridge/terminal/exec`
-- `bridge/attachments/upload`
 - `bridge/git/status`
 - `bridge/git/diff`
 - `bridge/git/commit`

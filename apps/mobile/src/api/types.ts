@@ -161,11 +161,11 @@ export interface BridgeThreadQueueActionResponse {
 export type AttachmentUploadKind = 'file' | 'image';
 
 export interface UploadAttachmentRequest {
-  dataBase64: string;
+  uri: string;
   fileName?: string;
   mimeType?: string;
   threadId?: string;
-  kind?: AttachmentUploadKind;
+  kind: AttachmentUploadKind;
 }
 
 export interface UploadAttachmentResponse {

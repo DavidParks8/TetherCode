@@ -2,7 +2,7 @@
   "fixtureFormatVersion": 1,
   "protocolVersion": 1,
   "bridgeMethods": [
-    "bridge/approvals/list", "bridge/approvals/resolve", "bridge/attachments/upload",
+    "bridge/approvals/list", "bridge/approvals/resolve",
     "bridge/browser/session/close", "bridge/browser/session/create", "bridge/browser/sessions/list",
     "bridge/browser/targets/discover", "bridge/capabilities/read", "bridge/codex/app-server/restart",
     "bridge/codex/auth/callback/forward", "bridge/cursor/credentials/read", "bridge/events/replay",
@@ -17,6 +17,9 @@
     "bridge/thread/queue/steer", "bridge/ui/dismiss", "bridge/ui/present",
     "bridge/ui/resolve", "bridge/ui/update", "bridge/update/start", "bridge/userInput/resolve",
     "bridge/workspaces/list"
+  ],
+  "httpEndpoints": [
+    { "method": "POST", "path": "/attachments", "auth": "bearer", "contentType": "multipart/form-data", "maxFileBytes": 20971520 }
   ],
   "mobileForwardedMethods": [
     "account/login/cancel", "account/login/start", "account/logout", "account/rateLimits/read",

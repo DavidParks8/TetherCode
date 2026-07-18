@@ -224,7 +224,10 @@ import {
   upsertBridgeUiSurfaceList,
   removeBridgeUiSurfaceFromList
 } from './mainScreenHelpers';
-import { useAttachmentController } from './controllers/attachmentController';
+import {
+  ATTACHMENT_MAX_LABEL,
+  useAttachmentController,
+} from './controllers/attachmentController';
 import { ApprovalController, buildUserInputAnswers } from './controllers/approvalController';
 import { AgentThreadsController } from './controllers/agentThreadsController';
 import {
@@ -806,6 +809,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       loadingFileCandidates: loadingAttachmentFileCandidates,
       pickerBusy: attachmentPickerBusy,
       uploading: uploadingAttachment,
+      hasFailedUploads: hasFailedAttachmentUploads,
       composerAttachments,
       pathSuggestions: attachmentPathSuggestions,
       openMenu: openAttachmentMenu,
@@ -815,6 +819,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       selectMentionSuggestion,
       removeComposerAttachment,
       removeMentionPath: removePendingMentionPath,
+      retryFailedUploads,
     } = attachmentController;
     const slashQuery = parseSlashQuery(draft);
     const slashSuggestions =
@@ -3126,6 +3131,21 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
     const attachmentMenuOptions = useMemo<SelectionSheetOption[]>(
       () => [
+        ...(hasFailedAttachmentUploads
+          ? [
+              {
+                key: 'retry-uploads',
+                title: 'Retry failed uploads',
+                description: `Retry prepared files without selecting them again. ${ATTACHMENT_MAX_LABEL} each.`,
+                icon: 'refresh-outline' as const,
+                disabled: attachmentControlsDisabled,
+                onPress: () => {
+                  attachmentController.closeMenu();
+                  retryFailedUploads();
+                },
+              },
+            ]
+          : []),
         {
           key: 'workspace-path',
           title: 'Attach from workspace path',
@@ -3139,7 +3159,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         {
           key: 'phone-file',
           title: 'Pick file from phone',
-          description: 'Import a document or asset from local storage.',
+          description: `Import a document or asset, up to ${ATTACHMENT_MAX_LABEL}.`,
           icon: 'document-outline',
           disabled: attachmentControlsDisabled,
           onPress: () => {
@@ -3149,7 +3169,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         {
           key: 'phone-image',
           title: 'Pick image from phone',
-          description: 'Send an image directly from your photo library.',
+          description: `Resize and compress an image, up to ${ATTACHMENT_MAX_LABEL}.`,
           icon: 'image-outline',
           disabled: attachmentControlsDisabled,
           onPress: () => {
@@ -3159,7 +3179,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         {
           key: 'phone-camera',
           title: 'Take photo',
-          description: 'Capture a new photo and attach it right away.',
+          description: `Capture, resize, and compress a photo, up to ${ATTACHMENT_MAX_LABEL}.`,
           icon: 'camera-outline',
           disabled: attachmentControlsDisabled,
           onPress: () => {
@@ -3167,7 +3187,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           },
         },
       ],
-      [attachmentController, attachmentControlsDisabled]
+      [attachmentController, attachmentControlsDisabled, hasFailedAttachmentUploads, retryFailedUploads]
     );
 
     const chatTitleMenuOptions = useMemo<SelectionSheetOption[]>(
@@ -5553,6 +5573,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         return;
       }
 
+      if (hasFailedAttachmentUploads) {
+        setError('Retry or remove failed attachments before sending.');
+        return;
+      }
+
       if (await handleSlashCommand(content)) {
         setDraft('');
         return;
@@ -5572,6 +5597,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       pendingMentionPaths,
       pendingLocalImagePaths,
       uploadingAttachment,
+      hasFailedAttachmentUploads,
     ]);
 
     const handleSteerQueuedMessage = useCallback(async () => {
