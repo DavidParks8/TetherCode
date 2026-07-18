@@ -1,19 +1,21 @@
 use std::{
     collections::{HashMap, HashSet},
     process::Stdio,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime},
 };
 
 use base64::{engine::general_purpose, Engine as _};
+use chrono::{DateTime, Utc};
 use futures_util::{stream, StreamExt};
+use getrandom::fill as fill_random;
 use reqwest::{Client as HttpClient, Url};
 use serde::Serialize;
 use tokio::{process::Command, sync::RwLock, time::timeout};
 
 use crate::{config::constant_time_eq, now_iso, BridgeError};
 
-pub(crate) const BROWSER_PREVIEW_SESSION_TTL: Duration = Duration::from_secs(60 * 60 * 12);
+pub(crate) const BROWSER_PREVIEW_SESSION_TTL: Duration = Duration::from_secs(60 * 30);
 const BROWSER_PREVIEW_MAX_SESSIONS: usize = 12;
 const BROWSER_PREVIEW_DISCOVERY_HTTP_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -27,6 +29,7 @@ pub(crate) struct BrowserPreviewSessionResponse {
     bootstrap_path: String,
     created_at: String,
     last_accessed_at: String,
+    expires_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,14 +50,17 @@ pub(crate) struct BrowserPreviewDiscoveryResponse {
 #[derive(Debug, Clone)]
 struct BrowserPreviewSessionEntry {
     id: String,
+    owner_client_id: u64,
     target_url: Url,
     bootstrap_token: String,
     created_at: String,
     last_accessed_at: String,
+    expires_at: SystemTime,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct BrowserPreviewResolvedSession {
+    pub(crate) session_id: String,
     pub(crate) target_url: Url,
 }
 
@@ -62,8 +68,8 @@ pub(crate) struct BrowserPreviewService {
     bridge_port: u16,
     preview_port: u16,
     preview_base_url: Option<String>,
+    secure_cookie: bool,
     available: AtomicBool,
-    next_session_counter: AtomicU64,
     pub(crate) http: HttpClient,
     sessions: RwLock<HashMap<String, BrowserPreviewSessionEntry>>,
 }
@@ -73,13 +79,19 @@ impl BrowserPreviewService {
         bridge_port: u16,
         preview_port: u16,
         preview_base_url: Option<String>,
+        fallback_connect_url: Option<String>,
     ) -> Self {
+        let secure_cookie = preview_base_url
+            .as_deref()
+            .or(fallback_connect_url.as_deref())
+            .and_then(|value| Url::parse(value).ok())
+            .is_some_and(|url| url.scheme() == "https");
         Self {
             bridge_port,
             preview_port,
             preview_base_url,
+            secure_cookie,
             available: AtomicBool::new(false),
-            next_session_counter: AtomicU64::new(1),
             http: HttpClient::builder()
                 .danger_accept_invalid_certs(true)
                 .redirect(reqwest::redirect::Policy::none())
@@ -99,6 +111,7 @@ impl BrowserPreviewService {
 
     pub(crate) async fn create_session(
         &self,
+        owner_client_id: u64,
         target_url: &str,
     ) -> Result<BrowserPreviewSessionResponse, BridgeError> {
         if !self.is_available() {
@@ -106,28 +119,42 @@ impl BrowserPreviewService {
         }
 
         let target_url = normalize_browser_preview_target_url(target_url)?;
-        let created_at = now_iso();
-        let session_id = self.next_id("preview-session");
-        let bootstrap_token = self.next_id("preview-token");
+        let created_at_time = SystemTime::now();
+        let expires_at = created_at_time
+            .checked_add(BROWSER_PREVIEW_SESSION_TTL)
+            .ok_or_else(|| BridgeError::server("could not calculate preview session expiry"))?;
+        let created_at = DateTime::<Utc>::from(created_at_time).to_rfc3339();
+        let session_id = random_preview_credential(24)?;
+        let bootstrap_token = random_preview_credential(32)?;
         let entry = BrowserPreviewSessionEntry {
             id: session_id.clone(),
+            owner_client_id,
             target_url,
             bootstrap_token,
             created_at: created_at.clone(),
             last_accessed_at: created_at,
+            expires_at,
         };
 
         let mut sessions = self.sessions.write().await;
         prune_expired_preview_sessions(&mut sessions);
+        sessions.retain(|_, existing| existing.owner_client_id != owner_client_id);
         evict_excess_preview_sessions(&mut sessions);
         sessions.insert(session_id, entry.clone());
         Ok(self.to_session_response(&entry))
     }
 
-    pub(crate) async fn list_sessions(&self) -> Vec<BrowserPreviewSessionResponse> {
+    pub(crate) async fn list_sessions(
+        &self,
+        owner_client_id: u64,
+    ) -> Vec<BrowserPreviewSessionResponse> {
         let mut sessions = self.sessions.write().await;
         prune_expired_preview_sessions(&mut sessions);
-        let mut entries = sessions.values().cloned().collect::<Vec<_>>();
+        let mut entries = sessions
+            .values()
+            .filter(|entry| entry.owner_client_id == owner_client_id)
+            .cloned()
+            .collect::<Vec<_>>();
         entries.sort_by(|left, right| right.last_accessed_at.cmp(&left.last_accessed_at));
         entries
             .iter()
@@ -135,8 +162,23 @@ impl BrowserPreviewService {
             .collect()
     }
 
-    pub(crate) async fn close_session(&self, session_id: &str) -> bool {
-        self.sessions.write().await.remove(session_id).is_some()
+    pub(crate) async fn close_session(&self, owner_client_id: u64, session_id: &str) -> bool {
+        let mut sessions = self.sessions.write().await;
+        let owned = sessions
+            .get(session_id)
+            .is_some_and(|entry| entry.owner_client_id == owner_client_id);
+        owned && sessions.remove(session_id).is_some()
+    }
+
+    pub(crate) async fn revoke_owner(&self, owner_client_id: u64) -> usize {
+        let mut sessions = self.sessions.write().await;
+        let before = sessions.len();
+        sessions.retain(|_, entry| entry.owner_client_id != owner_client_id);
+        before.saturating_sub(sessions.len())
+    }
+
+    pub(crate) fn secure_cookie(&self) -> bool {
+        self.secure_cookie
     }
 
     pub(crate) async fn resolve_bootstrap(
@@ -152,6 +194,7 @@ impl BrowserPreviewService {
         }
         entry.last_accessed_at = now_iso();
         Some(BrowserPreviewResolvedSession {
+            session_id: entry.id.clone(),
             target_url: entry.target_url.clone(),
         })
     }
@@ -167,6 +210,7 @@ impl BrowserPreviewService {
             if constant_time_eq(&entry.bootstrap_token, bootstrap_token) {
                 entry.last_accessed_at = now.clone();
                 return Some(BrowserPreviewResolvedSession {
+                    session_id: entry.id.clone(),
                     target_url: entry.target_url.clone(),
                 });
             }
@@ -220,18 +264,17 @@ impl BrowserPreviewService {
             ),
             created_at: entry.created_at.clone(),
             last_accessed_at: entry.last_accessed_at.clone(),
+            expires_at: DateTime::<Utc>::from(entry.expires_at).to_rfc3339(),
         }
     }
+}
 
-    fn next_id(&self, prefix: &str) -> String {
-        let nonce = self.next_session_counter.fetch_add(1, Ordering::Relaxed);
-        let stamp = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        let raw = format!("{prefix}:{stamp:x}:{nonce:x}");
-        general_purpose::URL_SAFE_NO_PAD.encode(raw.as_bytes())
-    }
+fn random_preview_credential(byte_len: usize) -> Result<String, BridgeError> {
+    let mut bytes = vec![0_u8; byte_len];
+    fill_random(&mut bytes).map_err(|error| {
+        BridgeError::server(&format!("failed to generate preview credential: {error}"))
+    })?;
+    Ok(general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }
 
 pub(crate) fn normalize_browser_preview_target_url(raw: &str) -> Result<Url, BridgeError> {
@@ -441,18 +484,8 @@ pub(crate) fn browser_preview_label_for_port(port: u16) -> String {
 }
 
 fn prune_expired_preview_sessions(sessions: &mut HashMap<String, BrowserPreviewSessionEntry>) {
-    let cutoff = SystemTime::now()
-        .checked_sub(BROWSER_PREVIEW_SESSION_TTL)
-        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs() as i64);
-    let Some(cutoff_secs) = cutoff else {
-        return;
-    };
-    sessions.retain(|_, entry| {
-        chrono::DateTime::parse_from_rfc3339(&entry.last_accessed_at)
-            .map(|value| value.timestamp() >= cutoff_secs)
-            .unwrap_or(true)
-    });
+    let now = SystemTime::now();
+    sessions.retain(|_, entry| entry.expires_at > now);
 }
 
 fn evict_excess_preview_sessions(sessions: &mut HashMap<String, BrowserPreviewSessionEntry>) {
@@ -465,5 +498,90 @@ fn evict_excess_preview_sessions(sessions: &mut HashMap<String, BrowserPreviewSe
             break;
         };
         sessions.remove(&oldest_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_service() -> BrowserPreviewService {
+        let service = BrowserPreviewService::new(8787, 8788, None, None);
+        service.set_available(true);
+        service
+    }
+
+    #[tokio::test]
+    async fn credentials_are_random_and_owner_replacement_is_immediate() {
+        let service = test_service();
+        let first = service
+            .create_session(7, "http://127.0.0.1:3000")
+            .await
+            .unwrap();
+        let second = service
+            .create_session(7, "http://127.0.0.1:5173")
+            .await
+            .unwrap();
+
+        assert_ne!(first.session_id, second.session_id);
+        assert!(first.session_id.len() >= 32);
+        assert!(second.bootstrap_path.contains("st="));
+        assert!(service
+            .resolve_bootstrap(&first.session_id, "irrelevant")
+            .await
+            .is_none());
+        assert_eq!(service.list_sessions(7).await.len(), 1);
+        assert!(service.list_sessions(8).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn close_and_disconnect_revocation_are_owner_scoped() {
+        let service = test_service();
+        let session = service
+            .create_session(7, "http://127.0.0.1:3000")
+            .await
+            .unwrap();
+
+        assert!(!service.close_session(8, &session.session_id).await);
+        assert_eq!(service.revoke_owner(8).await, 0);
+        assert_eq!(service.revoke_owner(7).await, 1);
+        assert!(service.list_sessions(7).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn expired_sessions_are_removed_without_access_extending_them() {
+        let service = test_service();
+        let session = service
+            .create_session(7, "http://127.0.0.1:3000")
+            .await
+            .unwrap();
+        service
+            .sessions
+            .write()
+            .await
+            .get_mut(&session.session_id)
+            .unwrap()
+            .expires_at = SystemTime::UNIX_EPOCH;
+
+        assert!(service.list_sessions(7).await.is_empty());
+    }
+
+    #[test]
+    fn secure_cookie_follows_https_preview_origin() {
+        assert!(BrowserPreviewService::new(
+            8787,
+            8788,
+            Some("https://preview.example.com".to_string()),
+            None,
+        )
+        .secure_cookie());
+        assert!(BrowserPreviewService::new(
+            8787,
+            8788,
+            None,
+            Some("https://bridge.example.com".to_string()),
+        )
+        .secure_cookie());
+        assert!(!BrowserPreviewService::new(8787, 8788, None, None).secure_cookie());
     }
 }

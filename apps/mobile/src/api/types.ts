@@ -750,6 +750,7 @@ export interface BrowserPreviewSession {
   bootstrapPath: string;
   createdAt: string;
   lastAccessedAt: string;
+  expiresAt: string;
 }
 
 export interface BrowserPreviewTargetSuggestion {

@@ -65,8 +65,11 @@ ls -la "${CODEX_HOME:-$HOME/.codex}/auth.json"
 - If a separate local API runs on another port, make sure the app reaches it through `fetch`, XHR, `EventSource`, `WebSocket`, or a normal form post so the preview runtime can rewrite it through the bridge.
 - See `docs/browser-preview-limitations.md` for the current support boundaries and known caveats.
 - If Browser reports preview is unavailable, check whether `BRIDGE_PREVIEW_PORT` is already in use on the host.
-- By default the preview server binds to `BRIDGE_PORT + 1`.
-- Restart the bridge after changing `BRIDGE_PREVIEW_PORT`.
+- The preview port defaults to `BRIDGE_PORT + 1`, but its bind host independently defaults to
+  loopback. `clawdex init` sets `BRIDGE_PREVIEW_HOST` to the selected private-network host; custom
+  configurations must do the same for a phone to connect.
+- Restart the bridge after changing `BRIDGE_PREVIEW_HOST`, `BRIDGE_PREVIEW_PORT`, or
+  `BRIDGE_PREVIEW_CONNECT_URL`.
 - If the page shell loads but live reload does not, verify the target dev server is still serving its WebSocket/HMR endpoint locally.
 
 ## Tailscale issues

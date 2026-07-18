@@ -2290,8 +2290,9 @@ function readBrowserPreviewSession(value: unknown): BrowserPreviewSession | null
         : 0;
   const createdAt = readTimestampIso(record.createdAt);
   const lastAccessedAt = readTimestampIso(record.lastAccessedAt);
+  const expiresAt = readTimestampIso(record.expiresAt);
 
-  if (!sessionId || !targetUrl || !bootstrapPath || previewPort <= 0 || !createdAt) {
+  if (!sessionId || !targetUrl || !bootstrapPath || previewPort <= 0 || !createdAt || !expiresAt) {
     return null;
   }
 
@@ -2303,6 +2304,7 @@ function readBrowserPreviewSession(value: unknown): BrowserPreviewSession | null
     bootstrapPath,
     createdAt,
     lastAccessedAt: lastAccessedAt ?? createdAt,
+    expiresAt,
   };
 }
 

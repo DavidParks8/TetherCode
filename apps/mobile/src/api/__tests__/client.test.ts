@@ -1215,6 +1215,7 @@ describe('HostBridgeApiClient', () => {
       bootstrapPath: '/?sid=preview-1&st=secret',
       createdAt: '2026-01-01T00:00:00Z',
       lastAccessedAt: '2026-01-01T00:00:00Z',
+      expiresAt: '2026-01-01T00:30:00Z',
     });
 
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
@@ -1226,6 +1227,7 @@ describe('HostBridgeApiClient', () => {
     expect(result.previewPort).toBe(8788);
     expect(result.previewBaseUrl).toBe('https://octocat-8788.app.github.dev');
     expect(result.bootstrapPath).toBe('/?sid=preview-1&st=secret');
+    expect(result.expiresAt).toBe('2026-01-01T00:30:00.000Z');
   });
 
   it('discoverBrowserPreviewTargets() maps bridge/browser/targets/discover', async () => {

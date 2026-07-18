@@ -15,6 +15,7 @@ interface ContractManifest {
     notification: { method: string; protocolVersion: number; eventId: number };
     overloadError: { error: { code: number; data: { retryable: boolean } } };
     resourceLimitError: { error: { code: number; data: { resource: string; limit: number; actual: number } } };
+    browserPreviewSession: { sessionId: string; bootstrapPath: string; expiresAt: string };
     truncatedGitDiff: { truncated: boolean; returnedBytes: number; maxBytes: number };
     truncatedFilesystemList: { truncated: boolean; totalEntries: number; maxEntries: number };
   };
@@ -42,6 +43,11 @@ describe('bridge RPC contract fixtures', () => {
     });
     expect(manifest.fixtures.resourceLimitError).toMatchObject({
       error: { code: -32602, data: { resource: 'attachment_bytes', limit: 20971520 } },
+    });
+    expect(manifest.fixtures.browserPreviewSession).toMatchObject({
+      sessionId: expect.any(String),
+      bootstrapPath: expect.stringContaining('st='),
+      expiresAt: '2026-01-01T00:30:00Z',
     });
     expect(manifest.fixtures.truncatedGitDiff.returnedBytes).toBeLessThanOrEqual(
       manifest.fixtures.truncatedGitDiff.maxBytes

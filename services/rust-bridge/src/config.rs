@@ -14,6 +14,7 @@ pub(crate) const DEFAULT_WS_GLOBAL_IN_FLIGHT: usize = 128;
 pub(crate) struct BridgeConfig {
     pub(crate) host: String,
     pub(crate) port: u16,
+    pub(crate) preview_host: String,
     pub(crate) preview_port: u16,
     pub(crate) connect_url: Option<String>,
     pub(crate) preview_connect_url: Option<String>,
@@ -53,6 +54,8 @@ impl BridgeConfig {
             .ok()
             .and_then(|v| v.parse::<u16>().ok())
             .unwrap_or(8787);
+        let preview_host =
+            env::var("BRIDGE_PREVIEW_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
         let preview_port = env::var("BRIDGE_PREVIEW_PORT")
             .ok()
             .and_then(|v| v.parse::<u16>().ok())
@@ -131,6 +134,7 @@ impl BridgeConfig {
         Ok(Self {
             host,
             port,
+            preview_host,
             preview_port,
             connect_url,
             preview_connect_url,
@@ -515,6 +519,7 @@ mod tests {
         BridgeConfig {
             host: host.to_string(),
             port: 8787,
+            preview_host: "127.0.0.1".to_string(),
             preview_port: 8788,
             connect_url: None,
             preview_connect_url: None,

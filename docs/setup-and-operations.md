@@ -143,7 +143,9 @@ Typical examples:
 
 How it works:
 
-- The app creates a short-lived preview session through the bridge RPC API
+- The app creates one cryptographically random, 30-minute preview session owned by its current
+  bridge WebSocket connection. Opening another preview replaces it; leaving Browser or disconnecting
+  closes it.
 - The bridge serves a dedicated preview origin on a separate port
 - HTTP requests, subresources, cookies, and WebSocket/HMR traffic are proxied from the phone to
   the bridge host's loopback target
@@ -192,6 +194,7 @@ npm run teardown -- --yes
 | `BRIDGE_NETWORK_MODE` | bridge connectivity mode (`tailscale` or `local`) |
 | `BRIDGE_HOST` | bind host for rust bridge |
 | `BRIDGE_PORT` | bridge port (default `8787`) |
+| `BRIDGE_PREVIEW_HOST` | independent browser preview bind host (runtime default `127.0.0.1`; secure LAN/Tailscale setup explicitly uses `BRIDGE_HOST`) |
 | `BRIDGE_PREVIEW_PORT` | browser preview port for proxied localhost web apps (default `BRIDGE_PORT + 1`) |
 | `BRIDGE_CONNECT_URL` | externally reachable bridge base URL used for pairing/QR output |
 | `BRIDGE_PREVIEW_CONNECT_URL` | externally reachable browser preview base URL |
@@ -220,6 +223,11 @@ npm run teardown -- --yes
 Resource-limit values are strict positive integers. Requests above concurrency limits receive retryable JSON-RPC error `-32005`; oversized frames/messages are closed by the WebSocket transport before JSON parsing.
 
 Payload/storage limits are centralized in `services/rust-bridge/src/resource_limits.rs`. Uploads and local images are capped at 20 MiB; Git diff/status, preview buffering, queues, push registrations, UI surfaces, replay notifications/responses, and filesystem listings have bounded byte or collection limits. Rejected RPC payloads return `-32602` with `error: resource_limit_exceeded`, `resource`, `limit`, and `actual`; bounded Git/filesystem/replay responses include explicit truncation metadata. Attachment files are private and collision-safe, and push registry updates use private atomic replacement.
+
+Preview credentials are accepted once from the bootstrap URL, moved into an `HttpOnly`,
+`SameSite=Strict` cookie (`Secure` when `BRIDGE_PREVIEW_CONNECT_URL` is HTTPS), and removed by a
+same-origin redirect. Preview responses use `Referrer-Policy: no-referrer`, and credential query
+parameters are not forwarded to target applications or nested preview frames.
 
 No-auth mode cannot listen on wildcard, hostname, LAN, or Tailscale addresses. Origin-less native and operator clients remain allowed on loopback, while `/rpc`, `/status`, and `/local-image` return `403 forbidden_origin` to browser requests unless the origin exactly matches the bridge listener or `BRIDGE_NO_AUTH_ALLOWED_ORIGINS`. Prefer a short-lived random `BRIDGE_AUTH_TOKEN` instead: leave `BRIDGE_ALLOW_INSECURE_NO_AUTH=false`, restart the bridge and client with the temporary token, then rotate or remove it when local debugging ends.
 

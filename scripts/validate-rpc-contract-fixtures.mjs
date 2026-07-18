@@ -69,6 +69,7 @@ if (fixtures.notification.protocolVersion !== manifest.protocolVersion) fail('no
 if (!manifest.notifications.includes(fixtures.notification.method)) fail('notification fixture method');
 if (!manifest.errors.some((entry) => entry.code === fixtures.overloadError.error.code)) fail('error fixture code');
 if (fixtures.resourceLimitError.error.data.actual <= fixtures.resourceLimitError.error.data.limit) fail('resource limit fixture boundary');
+if (!fixtures.browserPreviewSession.expiresAt || !fixtures.browserPreviewSession.bootstrapPath.includes('sid=') || !fixtures.browserPreviewSession.bootstrapPath.includes('st=')) fail('browser preview session fixture');
 if (!fixtures.truncatedGitDiff.truncated || fixtures.truncatedGitDiff.returnedBytes > fixtures.truncatedGitDiff.maxBytes) fail('git truncation fixture');
 if (!fixtures.truncatedFilesystemList.truncated || fixtures.truncatedFilesystemList.totalEntries <= fixtures.truncatedFilesystemList.maxEntries) fail('filesystem truncation fixture');
 

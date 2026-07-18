@@ -73,6 +73,15 @@
         "data": { "error": "resource_limit_exceeded", "resource": "attachment_bytes", "limit": 20971520, "actual": 20971521 }
       }
     },
+    "browserPreviewSession": {
+      "sessionId": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV",
+      "targetUrl": "http://127.0.0.1:3000/",
+      "previewPort": 8788,
+      "bootstrapPath": "/?sid=VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV&st=qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqo",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "lastAccessedAt": "2026-01-01T00:00:00Z",
+      "expiresAt": "2026-01-01T00:30:00Z"
+    },
     "truncatedGitDiff": {
       "diff": "diff --git a/a b/a\n",
       "cwd": "/workspace",

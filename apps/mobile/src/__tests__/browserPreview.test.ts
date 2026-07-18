@@ -123,7 +123,7 @@ describe('browserPreview', () => {
       getBrowserPreviewShellRequestKey(
         'http://192.168.1.26:8788/?sid=preview-session&st=preview-token&vp=desktop&vw=1728&vh=1117&shell=overview'
       )
-    ).toBe('preview-session:preview-token');
+    ).toBe('preview-session');
   });
 
   it('maps native desktop presets to the expected shell modes on ios and android', () => {

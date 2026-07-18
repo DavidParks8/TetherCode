@@ -51,6 +51,7 @@ import {
   normalizePreviewTargetInput,
   pushRecentPreviewTarget,
 } from '../browserPreview';
+import { BrowserPreviewSessionLifecycle } from '../browserPreviewSessionLifecycle';
 import { useAppTheme, type AppTheme } from '../theme';
 
 interface BrowserScreenProps {
@@ -121,6 +122,7 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
   const overviewHeightLockedRef = useRef(false);
   const lastScrollYRef = useRef(0);
   const previewRequestIdRef = useRef(0);
+  const sessionLifecycle = useMemo(() => new BrowserPreviewSessionLifecycle(api), [api]);
   const [inputValue, setInputValue] = useState(
     recentTargetUrls[0] ?? 'http://127.0.0.1:3000'
   );
@@ -255,6 +257,13 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
   }, [desktopViewportSize.height, desktopViewportSize.width, previewUrl, viewportPreset]);
 
   useEffect(() => {
+    return () => {
+      previewRequestIdRef.current += 1;
+      sessionLifecycle.dispose();
+    };
+  }, [sessionLifecycle]);
+
+  useEffect(() => {
     RNAnimated.timing(bottomBarTranslateY, {
       toValue: bottomBarVisible ? 0 : bottomBarReservedSpace + theme.spacing.sm,
       duration: 180,
@@ -355,7 +364,9 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
         throw new Error('Use a loopback URL like localhost:3000 or just enter a port.');
       }
 
-      const session = await api.createBrowserPreviewSession(normalizedTarget);
+      const session = await sessionLifecycle.serializeCreate(() =>
+        api.createBrowserPreviewSession(normalizedTarget)
+      );
       const nextPreviewUrl = buildBrowserPreviewBootstrapUrl(
         bridgeUrl,
         session.previewPort,
@@ -364,6 +375,7 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
         session.previewBaseUrl ?? null
       );
       if (!nextPreviewUrl) {
+        sessionLifecycle.discard(session.sessionId);
         throw new Error('Could not build preview bootstrap URL.');
       }
 
@@ -373,7 +385,7 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
         nextPreviewUrl,
       };
     },
-    [api, bridgeUrl]
+    [api, bridgeUrl, sessionLifecycle]
   );
 
   const openPreview = useCallback(
@@ -389,12 +401,14 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
           browserViewport
         );
         if (previewRequestIdRef.current !== requestId) {
+          sessionLifecycle.discard(session.sessionId);
           return;
         }
         const resolvedPreviewUrl =
           applyBrowserPreviewShellMode(nextPreviewUrl, nativeShellMode) ??
           nextPreviewUrl;
 
+        sessionLifecycle.adopt(session.sessionId);
         setInputValue(normalizedTarget);
         setActiveSession(session);
         setPreviewUrl(resolvedPreviewUrl);
@@ -427,6 +441,7 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
       nativeShellMode,
       onRecentTargetUrlsChange,
       recentTargetUrls,
+      sessionLifecycle,
       startPreviewSession,
     ]
   );
@@ -597,6 +612,7 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
 
   const handleShowStartPage = useCallback(() => {
     previewRequestIdRef.current += 1;
+    sessionLifecycle.clear();
     setPreviewUrl(null);
     setActiveSession(null);
     setCurrentPreviewNavigationUrl(null);
@@ -607,7 +623,7 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
     setLoadingPreview(false);
     setBottomBarVisible(true);
     lastScrollYRef.current = 0;
-  }, []);
+  }, [sessionLifecycle]);
 
   const handleContentProcessDidTerminate = useCallback(() => {
     if (nativeShellMode) {
@@ -826,11 +842,13 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
       void startPreviewSession(normalizedReloadTarget, nextViewport)
         .then(({ normalizedTarget, session, nextPreviewUrl }) => {
           if (previewRequestIdRef.current !== requestId) {
+            sessionLifecycle.discard(session.sessionId);
             return;
           }
           const nextShellMode = getNativeBrowserPreviewShellMode(Platform.OS, nextPreset);
           const resolvedPreviewUrl =
             applyBrowserPreviewShellMode(nextPreviewUrl, nextShellMode) ?? nextPreviewUrl;
+          sessionLifecycle.adopt(session.sessionId);
           commitViewportSelectionState();
           setInputValue(normalizedTarget);
           setActiveSession(session);
@@ -858,7 +876,15 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
           }
         });
     },
-    [activeSession?.targetUrl, currentUrl, desktopViewportSize, inputValue, previewUrl, startPreviewSession]
+    [
+      activeSession?.targetUrl,
+      currentUrl,
+      desktopViewportSize,
+      inputValue,
+      previewUrl,
+      sessionLifecycle,
+      startPreviewSession,
+    ]
   );
 
   const handleSelectDesktopPreset = useCallback(

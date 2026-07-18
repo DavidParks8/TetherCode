@@ -235,11 +235,10 @@ export function getBrowserPreviewShellRequestKey(rawUrl: string | null | undefin
   try {
     const parsed = new URL(rawUrl.trim());
     const sid = parsed.searchParams.get('sid');
-    const st = parsed.searchParams.get('st');
-    if (!sid || !st) {
+    if (!sid) {
       return null;
     }
-    return `${sid}:${st}`;
+    return sid;
   } catch {
     return null;
   }

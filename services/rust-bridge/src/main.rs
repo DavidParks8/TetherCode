@@ -22,7 +22,7 @@ use axum::{
     http::{
         header::{
             CACHE_CONTROL, CONNECTION, CONTENT_ENCODING, CONTENT_TYPE, COOKIE, HOST, LOCATION,
-            ORIGIN, REFERER, SET_COOKIE, UPGRADE, VARY,
+            ORIGIN, REFERER, REFERRER_POLICY, SET_COOKIE, UPGRADE, VARY,
         },
         HeaderMap, HeaderValue, Method, StatusCode, Uri,
     },
@@ -7380,6 +7380,7 @@ async fn main() {
         config.port,
         config.preview_port,
         config.preview_connect_url.clone(),
+        config.connect_url.clone(),
     ));
     let queue = BridgeQueueService::new(backend.clone(), hub.clone());
 
@@ -7428,7 +7429,7 @@ async fn main() {
         }
     };
 
-    let preview_bind_addr = format!("{}:{}", config.host, config.preview_port);
+    let preview_bind_addr = format!("{}:{}", config.preview_host, config.preview_port);
     let preview_listener = match tokio::net::TcpListener::bind(&preview_bind_addr).await {
         Ok(listener) => {
             state.preview.set_available(true);
@@ -7678,6 +7679,7 @@ fn preview_runtime_script_response() -> Response {
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "application/javascript; charset=utf-8")
         .header(CACHE_CONTROL, "no-store")
+        .header(REFERRER_POLICY, "no-referrer")
         .body(Body::from(build_preview_runtime_script()))
         .unwrap_or_else(|_| Response::new(Body::from(String::new())))
 }
@@ -7705,43 +7707,40 @@ async fn handle_preview_http_request(
     let raw_frame = resolved_request.raw_frame;
     let sanitized_path_and_query = resolved_request.sanitized_path_and_query;
 
-    if let (Some(session_id), Some(token), Some(shell_mode)) = (
-        bootstrap_session_id.as_deref(),
-        bootstrap_token.as_deref(),
-        requested_shell_mode,
-    ) {
-        if !raw_frame {
-            let viewport = requested_viewport.unwrap_or(PreviewViewportConfig {
-                preset: PreviewViewportPreset::Desktop,
-                width: Some(DEFAULT_PREVIEW_DESKTOP_WIDTH),
-                height: Some(DEFAULT_PREVIEW_DESKTOP_HEIGHT),
-            });
-            let mut response = match shell_mode {
-                PreviewShellMode::Desktop => preview_desktop_shell_response(
-                    &sanitized_path_and_query,
-                    viewport,
-                    Some(session_id),
-                    Some(token),
-                ),
-                PreviewShellMode::Overview => preview_overview_shell_response(
-                    &sanitized_path_and_query,
-                    viewport,
-                    Some(session_id),
-                    Some(token),
-                ),
-            };
-            append_preview_bootstrap_headers(&mut response, Some(token), requested_viewport);
-            return response;
-        }
-    }
-
     if let Some(token) = bootstrap_token.as_deref() {
         if !raw_frame {
             return preview_bootstrap_redirect_response(
                 &sanitized_path_and_query,
                 token,
                 requested_viewport,
+                state.preview.secure_cookie(),
             );
+        }
+    }
+
+    if let (Some(session_id), Some(shell_mode)) =
+        (bootstrap_session_id.as_deref(), requested_shell_mode)
+    {
+        if !raw_frame {
+            let viewport = requested_viewport.unwrap_or(PreviewViewportConfig {
+                preset: PreviewViewportPreset::Desktop,
+                width: Some(DEFAULT_PREVIEW_DESKTOP_WIDTH),
+                height: Some(DEFAULT_PREVIEW_DESKTOP_HEIGHT),
+            });
+            return match shell_mode {
+                PreviewShellMode::Desktop => preview_desktop_shell_response(
+                    &sanitized_path_and_query,
+                    viewport,
+                    Some(session_id),
+                    None,
+                ),
+                PreviewShellMode::Overview => preview_overview_shell_response(
+                    &sanitized_path_and_query,
+                    viewport,
+                    Some(session_id),
+                    None,
+                ),
+            };
         }
     }
 
@@ -7941,7 +7940,10 @@ async fn handle_preview_http_request(
         &mut response,
         bootstrap_token.as_deref(),
         requested_viewport,
+        state.preview.secure_cookie(),
     );
+
+    apply_preview_security_headers(&mut response);
 
     response
 }
@@ -8294,6 +8296,7 @@ async fn handle_socket(
 
     state.hub.remove_client(client_id).await;
     state.backend.cancel_client_requests(client_id).await;
+    state.preview.revoke_owner(client_id).await;
     if !writer_task.is_finished() {
         writer_task.abort();
     }
@@ -8469,11 +8472,14 @@ async fn handle_bridge_method(
             let request: BrowserPreviewCreateRequest =
                 serde_json::from_value(params.unwrap_or_else(|| json!({})))
                     .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
-            let session = state.preview.create_session(&request.target_url).await?;
+            let session = state
+                .preview
+                .create_session(client_id, &request.target_url)
+                .await?;
             serde_json::to_value(session).map_err(|error| BridgeError::server(&error.to_string()))
         }
         "bridge/browser/sessions/list" => {
-            let sessions = state.preview.list_sessions().await;
+            let sessions = state.preview.list_sessions(client_id).await;
             serde_json::to_value(json!({ "sessions": sessions }))
                 .map_err(|error| BridgeError::server(&error.to_string()))
         }
@@ -8486,7 +8492,7 @@ async fn handle_bridge_method(
                 return Err(BridgeError::invalid_params("sessionId must not be empty"));
             }
             Ok(json!({
-                "closed": state.preview.close_session(session_id).await,
+                "closed": state.preview.close_session(client_id, session_id).await,
             }))
         }
         "bridge/browser/targets/discover" => {
@@ -9979,8 +9985,8 @@ async fn resolve_preview_session_from_request(
         };
 
         return Ok(ResolvedPreviewRequest {
+            bootstrap_session_id: Some(session.session_id.clone()),
             session,
-            bootstrap_session_id: Some(session_id.to_string()),
             bootstrap_token: Some(bootstrap_token.to_string()),
             requested_viewport: params.viewport,
             requested_shell_mode: params.shell_mode,
@@ -10003,8 +10009,8 @@ async fn resolve_preview_session_from_request(
     };
 
     Ok(ResolvedPreviewRequest {
+        bootstrap_session_id: Some(session.session_id.clone()),
         session,
-        bootstrap_session_id: None,
         bootstrap_token: None,
         requested_viewport: params.viewport,
         requested_shell_mode: params.shell_mode,
@@ -10104,6 +10110,7 @@ fn preview_bootstrap_redirect_response(
     sanitized_path_and_query: &str,
     bootstrap_token: &str,
     viewport: Option<PreviewViewportConfig>,
+    secure_cookie: bool,
 ) -> Response {
     let mut response = Response::new(Body::empty());
     *response.status_mut() = StatusCode::TEMPORARY_REDIRECT;
@@ -10112,7 +10119,7 @@ fn preview_bootstrap_redirect_response(
         HeaderValue::from_str(sanitized_path_and_query)
             .unwrap_or_else(|_| HeaderValue::from_static("/")),
     );
-    if let Ok(cookie) = build_preview_cookie_header(bootstrap_token) {
+    if let Ok(cookie) = build_preview_cookie_header(bootstrap_token, secure_cookie) {
         response.headers_mut().append(SET_COOKIE, cookie);
     }
     if let Some(viewport) = viewport {
@@ -10123,6 +10130,7 @@ fn preview_bootstrap_redirect_response(
     response
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store, private"));
+    apply_preview_security_headers(&mut response);
     response
 }
 
@@ -10130,9 +10138,10 @@ fn append_preview_bootstrap_headers(
     response: &mut Response,
     bootstrap_token: Option<&str>,
     viewport: Option<PreviewViewportConfig>,
+    secure_cookie: bool,
 ) {
     if let Some(token) = bootstrap_token {
-        if let Ok(cookie) = build_preview_cookie_header(token) {
+        if let Ok(cookie) = build_preview_cookie_header(token, secure_cookie) {
             response.headers_mut().append(SET_COOKIE, cookie);
         }
     }
@@ -10146,8 +10155,8 @@ fn append_preview_bootstrap_headers(
 
 fn build_preview_shell_frame_src(
     sanitized_path_and_query: &str,
-    bootstrap_session_id: Option<&str>,
-    bootstrap_token: Option<&str>,
+    _bootstrap_session_id: Option<&str>,
+    _bootstrap_token: Option<&str>,
 ) -> String {
     let Ok(mut parsed) = Url::parse(&format!("http://preview{sanitized_path_and_query}")) else {
         return if sanitized_path_and_query.contains('?') {
@@ -10160,9 +10169,8 @@ fn build_preview_shell_frame_src(
     let mut kept_pairs: Vec<(String, String)> = parsed
         .query_pairs()
         .filter_map(|(key, value)| {
-            let should_drop = matches!(key.as_ref(), "shell" | "frame")
-                || (bootstrap_session_id.is_some() && key == "sid")
-                || (bootstrap_token.is_some() && key == "st");
+            let should_drop =
+                matches!(key.as_ref(), "shell" | "frame") || key == "sid" || key == "st";
             if should_drop {
                 None
             } else {
@@ -10178,12 +10186,6 @@ fn build_preview_shell_frame_src(
             query_pairs.append_pair(&key, &value);
         }
         query_pairs.append_pair("frame", "1");
-        if let Some(session_id) = bootstrap_session_id {
-            query_pairs.append_pair("sid", session_id);
-        }
-        if let Some(token) = bootstrap_token {
-            query_pairs.append_pair("st", token);
-        }
     }
 
     format!(
@@ -10198,9 +10200,9 @@ fn build_preview_shell_frame_src(
 
 fn build_preview_shell_request_key(
     bootstrap_session_id: Option<&str>,
-    bootstrap_token: Option<&str>,
+    _bootstrap_token: Option<&str>,
 ) -> Option<String> {
-    Some(format!("{}:{}", bootstrap_session_id?, bootstrap_token?))
+    Some(bootstrap_session_id?.to_string())
 }
 
 fn preview_error_response(status: StatusCode, message: &str) -> Response {
@@ -10212,14 +10214,20 @@ fn preview_error_response(status: StatusCode, message: &str) -> Response {
         .status(status)
         .header(CONTENT_TYPE, "text/html; charset=utf-8")
         .header(CACHE_CONTROL, "no-store")
+        .header(REFERRER_POLICY, "no-referrer")
         .body(Body::from(body))
         .unwrap_or_else(|_| Response::new(Body::from(message.to_string())))
 }
 
-fn build_preview_cookie_header(bootstrap_token: &str) -> Result<HeaderValue, String> {
+fn build_preview_cookie_header(
+    bootstrap_token: &str,
+    secure_cookie: bool,
+) -> Result<HeaderValue, String> {
+    let secure = if secure_cookie { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
-        "{BROWSER_PREVIEW_COOKIE_NAME}={bootstrap_token}; HttpOnly; Path=/; SameSite=Lax; Max-Age={}",
-        BROWSER_PREVIEW_SESSION_TTL.as_secs()
+        "{BROWSER_PREVIEW_COOKIE_NAME}={bootstrap_token}; HttpOnly; Path=/; SameSite=Strict; Max-Age={}{}",
+        BROWSER_PREVIEW_SESSION_TTL.as_secs(),
+        secure,
     ))
     .map_err(|error| error.to_string())
 }
@@ -10597,6 +10605,8 @@ fn preview_desktop_shell_response(
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "text/html; charset=utf-8")
         .header(CACHE_CONTROL, "no-store, private")
+        .header(REFERRER_POLICY, "no-referrer")
+        .header("x-content-type-options", "nosniff")
         .body(Body::from(body))
         .unwrap_or_else(|_| Response::new(Body::from(String::new())))
 }
@@ -10952,6 +10962,8 @@ fn preview_overview_shell_response(
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "text/html; charset=utf-8")
         .header(CACHE_CONTROL, "no-store, private")
+        .header(REFERRER_POLICY, "no-referrer")
+        .header("x-content-type-options", "nosniff")
         .body(Body::from(body))
         .unwrap_or_else(|_| Response::new(Body::from(String::new())))
 }
@@ -11380,15 +11392,35 @@ fn rewrite_preview_request_header(
     if name.eq_ignore_ascii_case(REFERER.as_str()) {
         let raw = value.to_str().ok()?;
         let Ok(mut referer) = Url::parse(raw) else {
-            return Some(value.clone());
+            return None;
         };
         let _ = referer.set_scheme(target_url.scheme());
         let _ = referer.set_host(target_url.host_str());
         let _ = referer.set_port(target_url.port());
+        let retained_pairs = referer
+            .query_pairs()
+            .filter(|(key, _)| !matches!(key.as_ref(), "sid" | "st"))
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<Vec<_>>();
+        referer.set_query(None);
+        if !retained_pairs.is_empty() {
+            let mut query = referer.query_pairs_mut();
+            query.extend_pairs(retained_pairs);
+        }
         return HeaderValue::from_str(referer.as_str()).ok();
     }
 
     Some(value.clone())
+}
+
+fn apply_preview_security_headers(response: &mut Response) {
+    response
+        .headers_mut()
+        .insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    response.headers_mut().insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
 }
 
 fn rewrite_preview_location_header(
@@ -14379,6 +14411,7 @@ mod tests {
         let config = Arc::new(BridgeConfig {
             host: "127.0.0.1".to_string(),
             port: 8787,
+            preview_host: "127.0.0.1".to_string(),
             preview_port: 8788,
             connect_url: None,
             preview_connect_url: None,
@@ -14420,6 +14453,7 @@ mod tests {
             config.port,
             config.preview_port,
             config.preview_connect_url.clone(),
+            config.connect_url.clone(),
         ));
         let queue = BridgeQueueService::new(backend.clone(), hub.clone());
         let push = PushService::load(&config.workdir, "Clawdex".to_string()).await;
@@ -14547,17 +14581,14 @@ mod tests {
     }
 
     #[test]
-    fn build_preview_shell_frame_src_keeps_bootstrap_session_identity() {
+    fn build_preview_shell_frame_src_uses_cookie_without_query_credentials() {
         let frame_src = build_preview_shell_frame_src(
             "/index.html?vp=desktop&vw=1728&vh=1117",
             Some("session-1"),
             Some("token-1"),
         );
 
-        assert_eq!(
-            frame_src,
-            "/index.html?vp=desktop&vw=1728&vh=1117&frame=1&sid=session-1&st=token-1"
-        );
+        assert_eq!(frame_src, "/index.html?vp=desktop&vw=1728&vh=1117&frame=1");
     }
 
     #[test]
@@ -14568,9 +14599,24 @@ mod tests {
             None,
         );
 
+        assert_eq!(frame_src, "/index.html?vp=desktop&vw=1728&vh=1117&frame=1");
+    }
+
+    #[test]
+    fn preview_cookie_and_referer_do_not_leak_bootstrap_credentials() {
+        let cookie = build_preview_cookie_header("secret-token", true).unwrap();
         assert_eq!(
-            frame_src,
-            "/index.html?sid=session-1&st=token-1&vp=desktop&vw=1728&vh=1117&frame=1"
+            cookie,
+            "clawdex_preview=secret-token; HttpOnly; Path=/; SameSite=Strict; Max-Age=1800; Secure"
+        );
+
+        let referer = HeaderValue::from_static(
+            "http://127.0.0.1:8788/page?sid=session-1&st=token-1&keep=yes",
+        );
+        let target = Url::parse("http://127.0.0.1:3000/").unwrap();
+        assert_eq!(
+            rewrite_preview_request_header(REFERER.as_str(), &referer, &target).unwrap(),
+            "http://127.0.0.1:3000/page?keep=yes"
         );
     }
 
@@ -17064,6 +17110,7 @@ mod tests {
         let config = BridgeConfig {
             host: "127.0.0.1".to_string(),
             port: 8787,
+            preview_host: "127.0.0.1".to_string(),
             preview_port: 8788,
             connect_url: None,
             preview_connect_url: None,
@@ -17101,6 +17148,7 @@ mod tests {
         let config = BridgeConfig {
             host: "0.0.0.0".to_string(),
             port: 8787,
+            preview_host: "127.0.0.1".to_string(),
             preview_port: 8788,
             connect_url: None,
             preview_connect_url: None,
@@ -17139,6 +17187,7 @@ mod tests {
         let config = BridgeConfig {
             host: "127.0.0.1".to_string(),
             port: 8787,
+            preview_host: "127.0.0.1".to_string(),
             preview_port: 8788,
             connect_url: Some("https://octocat-8787.app.github.dev".to_string()),
             preview_connect_url: Some("https://octocat-8788.app.github.dev".to_string()),
@@ -17176,6 +17225,7 @@ mod tests {
         let base = BridgeConfig {
             host: "127.0.0.1".to_string(),
             port: 8787,
+            preview_host: "127.0.0.1".to_string(),
             preview_port: 8788,
             connect_url: None,
             preview_connect_url: None,
