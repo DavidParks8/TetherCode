@@ -16,6 +16,7 @@ pub(crate) const QUEUE_MAX_BYTES_PER_THREAD: usize = 1024 * 1024;
 
 pub(crate) const PUSH_REGISTRY_MAX_DEVICES: usize = 64;
 pub(crate) const PUSH_TOKEN_MAX_BYTES: usize = 512;
+pub(crate) const PUSH_ID_MAX_BYTES: usize = 128;
 pub(crate) const PUSH_PLATFORM_MAX_BYTES: usize = 32;
 pub(crate) const PUSH_DEVICE_NAME_MAX_BYTES: usize = 128;
 pub(crate) const PUSH_REGISTRY_MAX_BYTES: usize = 128 * 1024;

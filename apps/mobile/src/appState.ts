@@ -23,6 +23,7 @@ import {
   type BridgeProfileStore,
 } from './bridgeProfiles';
 import { dedupeRecentPreviewTargets, normalizePreviewTargetInput } from './browserPreview';
+import { normalizeBridgeUrlInput } from './bridgeUrl';
 import {
   DEFAULT_FONT_PREFERENCE,
   normalizeFontPreference,
@@ -30,7 +31,29 @@ import {
 } from './fonts';
 import type { AppearancePreference, DarkUiPalette } from './theme';
 
-export const APP_STATE_VERSION = 2;
+const DEFAULT_PUSH_EVENT_PREFERENCES: PushEventPreferences = {
+  turnCompleted: true,
+  approvalRequested: true,
+};
+
+export interface PushEventPreferences {
+  turnCompleted: boolean;
+  approvalRequested: boolean;
+}
+
+export const APP_STATE_VERSION = 3;
+
+export interface PushProfileRegistration {
+  profileId: string;
+  registrationId: string;
+  token: string | null;
+}
+
+export interface PushSettingsState {
+  optedOut: boolean;
+  events: PushEventPreferences;
+  registrations: PushProfileRegistration[];
+}
 
 export interface AppSettingsState {
   defaultStartCwd: string | null;
@@ -48,6 +71,7 @@ export interface AppSettingsState {
 export interface AppStateData {
   settings: AppSettingsState;
   bridgeProfiles: BridgeProfileStore;
+  push: PushSettingsState;
 }
 
 export type AppStatePersistenceOperation = 'load' | 'import' | 'write';
@@ -103,7 +127,16 @@ export type AppStateAction =
   | { type: 'profiles/switch'; profileId: string }
   | { type: 'profiles/rename'; profileId: string; name: string }
   | { type: 'profiles/remove'; profileId: string }
-  | { type: 'profiles/clear' };
+  | { type: 'profiles/clear' }
+  | { type: 'push/update'; patch: Partial<Pick<PushSettingsState, 'optedOut' | 'events'>> }
+  | { type: 'push/ensure-registration'; profileId: string; registrationId: string }
+  | {
+      type: 'push/registered';
+      profileId: string;
+      registrationId: string;
+      token: string;
+    }
+  | { type: 'push/unregistered'; profileId: string; registrationId: string };
 
 export function createDefaultAppSettings(): AppSettingsState {
   return {
@@ -124,6 +157,15 @@ export function createDefaultAppStateData(): AppStateData {
   return {
     settings: createDefaultAppSettings(),
     bridgeProfiles: createEmptyBridgeProfileStore(),
+    push: createDefaultPushSettings(),
+  };
+}
+
+export function createDefaultPushSettings(): PushSettingsState {
+  return {
+    optedOut: false,
+    events: { ...DEFAULT_PUSH_EVENT_PREFERENCES },
+    registrations: [],
   };
 }
 
@@ -156,11 +198,28 @@ export function appStateReducer(state: AppStateData, action: AppStateAction): Ap
         },
       };
     }
-    case 'profiles/save':
+    case 'profiles/save': {
+      const existing = action.draft.id
+        ? state.bridgeProfiles.profiles.find((profile) => profile.id === action.draft.id)
+        : null;
+      const bridgeIdentityChanged = Boolean(
+        existing &&
+          (existing.bridgeUrl !== normalizeBridgeUrlInput(action.draft.bridgeUrl) ||
+            existing.bridgeToken !== action.draft.bridgeToken.trim())
+      );
       return {
         ...state,
         bridgeProfiles: upsertBridgeProfile(state.bridgeProfiles, action.draft).store,
+        push: bridgeIdentityChanged
+          ? {
+              ...state.push,
+              registrations: state.push.registrations.filter(
+                (registration) => registration.profileId !== existing?.id
+              ),
+            }
+          : state.push,
       };
+    }
     case 'profiles/switch': {
       if (!state.bridgeProfiles.profiles.some((profile) => profile.id === action.profileId)) {
         throw new Error('The selected bridge profile no longer exists.');
@@ -183,11 +242,62 @@ export function appStateReducer(state: AppStateData, action: AppStateAction): Ap
       return {
         ...state,
         bridgeProfiles: removeBridgeProfile(state.bridgeProfiles, action.profileId),
+        push: {
+          ...state.push,
+          registrations: state.push.registrations.filter(
+            (registration) => registration.profileId !== action.profileId
+          ),
+        },
       };
     case 'profiles/clear':
       return {
         ...state,
         bridgeProfiles: createEmptyBridgeProfileStore(),
+        push: { ...state.push, registrations: [] },
+      };
+    case 'push/update':
+      return {
+        ...state,
+        push: normalizePushSettings({ ...state.push, ...action.patch }, state.bridgeProfiles),
+      };
+    case 'push/ensure-registration': {
+      if (!state.bridgeProfiles.profiles.some((profile) => profile.id === action.profileId)) {
+        return state;
+      }
+      const existing = state.push.registrations.find(
+        (registration) => registration.profileId === action.profileId
+      );
+      if (existing) {
+        return state;
+      }
+      return {
+        ...state,
+        push: {
+          ...state.push,
+          registrations: [
+            ...state.push.registrations,
+            {
+              profileId: action.profileId,
+              registrationId: normalizeRequiredString(action.registrationId, 'registrationId'),
+              token: null,
+            },
+          ],
+        },
+      };
+    }
+    case 'push/registered':
+      return updatePushRegistration(state, action.profileId, action.registrationId, action.token);
+    case 'push/unregistered':
+      return {
+        ...state,
+        push: {
+          ...state.push,
+          registrations: state.push.registrations.filter(
+            (registration) =>
+              registration.profileId !== action.profileId ||
+              registration.registrationId !== action.registrationId
+          ),
+        },
       };
   }
 }
@@ -198,6 +308,7 @@ export function serializeAppState(data: AppStateData): string {
     version: APP_STATE_VERSION,
     settings: normalized.settings,
     bridgeProfiles: normalized.bridgeProfiles,
+    push: normalized.push,
   });
 }
 
@@ -207,13 +318,14 @@ export function parsePersistedAppState(raw: string): AppStateData {
     if (
       !parsed ||
       typeof parsed !== 'object' ||
-      (parsed.version !== 1 && parsed.version !== APP_STATE_VERSION)
+      (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== APP_STATE_VERSION)
     ) {
       throw new Error(`Unsupported app-state version: ${String(parsed?.version)}`);
     }
     return normalizeAppStateData({
       settings: normalizeAppSettings(parsed.settings),
       bridgeProfiles: parseBridgeProfileStore(JSON.stringify(parsed.bridgeProfiles ?? {})),
+      push: parsed.push,
     });
   } catch (error) {
     if (error instanceof AppStatePersistenceError) {
@@ -247,6 +359,7 @@ export function importLegacyAppState(source: LegacyAppStateSource): AppStateData
   return {
     settings: normalizeAppSettings(parsedSettings),
     bridgeProfiles,
+    push: createDefaultPushSettings(),
   };
 }
 
@@ -473,11 +586,99 @@ export function createAppStateStore(persistence: AppStatePersistenceAdapter): Ap
   return new AppStateStore(persistence);
 }
 
-function normalizeAppStateData(data: AppStateData): AppStateData {
+function normalizeAppStateData(data: {
+  settings: unknown;
+  bridgeProfiles: BridgeProfileStore;
+  push?: unknown;
+}): AppStateData {
+  const bridgeProfiles = parseBridgeProfileStore(JSON.stringify(data.bridgeProfiles));
   return {
     settings: normalizeAppSettings(data.settings),
-    bridgeProfiles: parseBridgeProfileStore(JSON.stringify(data.bridgeProfiles)),
+    bridgeProfiles,
+    push: normalizePushSettings(data.push, bridgeProfiles),
   };
+}
+
+function normalizePushSettings(value: unknown, profiles: BridgeProfileStore): PushSettingsState {
+  const record = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const events =
+    record.events && typeof record.events === 'object'
+      ? (record.events as Record<string, unknown>)
+      : {};
+  const knownProfiles = new Set(profiles.profiles.map((profile) => profile.id));
+  const seenProfiles = new Set<string>();
+  const seenRegistrations = new Set<string>();
+  const registrations: PushProfileRegistration[] = [];
+  if (Array.isArray(record.registrations)) {
+    for (const value of record.registrations) {
+      if (!value || typeof value !== 'object') continue;
+      const registration = value as Record<string, unknown>;
+      const profileId = normalizeNullableString(registration.profileId);
+      const registrationId = normalizeNullableString(registration.registrationId);
+      if (
+        !profileId ||
+        !registrationId ||
+        !knownProfiles.has(profileId) ||
+        seenProfiles.has(profileId) ||
+        seenRegistrations.has(registrationId)
+      ) {
+        continue;
+      }
+      seenProfiles.add(profileId);
+      seenRegistrations.add(registrationId);
+      registrations.push({
+        profileId,
+        registrationId,
+        token: normalizeNullableString(registration.token),
+      });
+    }
+  }
+  return {
+    optedOut: record.optedOut === true,
+    events: {
+      turnCompleted:
+        typeof events.turnCompleted === 'boolean'
+          ? events.turnCompleted
+          : DEFAULT_PUSH_EVENT_PREFERENCES.turnCompleted,
+      approvalRequested:
+        typeof events.approvalRequested === 'boolean'
+          ? events.approvalRequested
+          : DEFAULT_PUSH_EVENT_PREFERENCES.approvalRequested,
+    },
+    registrations,
+  };
+}
+
+function updatePushRegistration(
+  state: AppStateData,
+  profileId: string,
+  registrationId: string,
+  token: string
+): AppStateData {
+  const normalizedToken = normalizeRequiredString(token, 'token');
+  const existing = state.push.registrations.find(
+    (registration) => registration.profileId === profileId
+  );
+  if (!existing || existing.registrationId !== registrationId) {
+    return state;
+  }
+  return {
+    ...state,
+    push: {
+      ...state.push,
+      registrations: state.push.registrations.map((registration) =>
+        registration.profileId === profileId
+          ? { ...registration, token: normalizedToken }
+          : registration
+      ),
+    },
+  };
+}
+
+function normalizeRequiredString(value: unknown, name: string): string {
+  const normalized = normalizeNullableString(value);
+  if (!normalized) throw new Error(`${name} must not be empty.`);
+  return normalized;
 }
 
 function normalizeAppSettings(value: unknown): AppSettingsState {

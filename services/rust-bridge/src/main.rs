@@ -104,7 +104,7 @@ use replay::NotificationReplay;
 use resource_limits::{
     FILESYSTEM_LIST_MAX_ENTRIES, LOCAL_IMAGE_MAX_BYTES, NOTIFICATION_MAX_BYTES,
     PREVIEW_BUFFERED_RESPONSE_MAX_BYTES, PREVIEW_REQUEST_MAX_BYTES, PUSH_DEVICE_NAME_MAX_BYTES,
-    PUSH_PLATFORM_MAX_BYTES, PUSH_PREVIEW_MAX_BYTES, PUSH_PREVIEW_MAX_THREADS,
+    PUSH_ID_MAX_BYTES, PUSH_PLATFORM_MAX_BYTES, PUSH_PREVIEW_MAX_BYTES, PUSH_PREVIEW_MAX_THREADS,
     PUSH_TOKEN_MAX_BYTES, QUEUE_MAX_BYTES_PER_THREAD, QUEUE_MAX_CONTENT_BYTES,
     QUEUE_MAX_ITEMS_PER_THREAD, QUEUE_MAX_ITEM_BYTES, REPLAY_MAX_BYTES, REPLAY_RESPONSE_MAX_BYTES,
     UI_SURFACE_MAX_ACTIONS, UI_SURFACE_MAX_BLOCKS, UI_SURFACE_MAX_BYTES,
@@ -418,6 +418,7 @@ const PUSH_SEND_MAX_ATTEMPTS: u32 = 4;
 const QUEUE_COMPLETION_DISPOSITION_WAIT_MS: u64 = 2_000;
 const QUEUE_COMPLETION_DISPOSITION_LIMIT: usize = 1_024;
 const SUBMISSION_DEDUPE_LIMIT: usize = 1_024;
+const APPROVAL_RESOLUTION_DEDUPE_LIMIT: usize = 1_024;
 const QUEUE_STATUS_DISPATCH_FALLBACK_MS: u64 = 250;
 
 struct PushService {
@@ -476,18 +477,35 @@ impl PushService {
 
     async fn register(
         &self,
+        profile_id: String,
+        registration_id: String,
         token: String,
         platform: String,
         device_name: String,
         events: PushEventPreferences,
     ) -> Result<usize, BridgeError> {
         self.registry
-            .register(token, platform, device_name, events)
+            .register(
+                profile_id,
+                registration_id,
+                token,
+                platform,
+                device_name,
+                events,
+            )
             .await
     }
 
-    async fn unregister(&self, token: &str) -> bool {
-        match self.registry.unregister(token).await {
+    async fn unregister(
+        &self,
+        profile_id: &str,
+        registration_id: &str,
+    ) -> Result<bool, BridgeError> {
+        self.registry.unregister(profile_id, registration_id).await
+    }
+
+    async fn unregister_stale_token(&self, token: &str) -> bool {
+        match self.registry.unregister_token(token).await {
             Ok(removed) => removed,
             Err(error) => {
                 eprintln!("failed to unregister push device: {}", error.message);
@@ -504,6 +522,8 @@ impl PushService {
             .map(|device| {
                 json!({
                     "platform": device.platform,
+                    "profileId": device.profile_id,
+                    "registrationId": device.registration_id,
                     "deviceName": device.device_name,
                     "events": device.events,
                     "createdAt": device.created_at,
@@ -634,7 +654,7 @@ impl PushService {
             }
         }
 
-        let targets: Vec<String> = {
+        let targets: Vec<(String, String, String)> = {
             let registry = self.registry.snapshot().await;
             registry
                 .devices
@@ -643,7 +663,13 @@ impl PushService {
                     PushEvent::TurnCompleted => device.events.turn_completed,
                     PushEvent::ApprovalRequested => device.events.approval_requested,
                 })
-                .map(|device| device.token.clone())
+                .map(|device| {
+                    (
+                        device.token.clone(),
+                        device.profile_id.clone(),
+                        device.registration_id.clone(),
+                    )
+                })
                 .collect()
         };
         if targets.is_empty() {
@@ -695,6 +721,7 @@ impl PushService {
         };
         let data = json!({
             "type": event.as_str(),
+            "notificationId": Uuid::new_v4().to_string(),
             "threadId": thread_id,
             "approvalId": approval_id,
         });
@@ -714,17 +741,20 @@ impl PushService {
         body: &str,
         data: &Value,
         category_id: Option<&str>,
-        tokens: Vec<String>,
+        targets: Vec<(String, String, String)>,
     ) {
-        for chunk in tokens.chunks(EXPO_PUSH_BATCH_SIZE) {
+        for chunk in targets.chunks(EXPO_PUSH_BATCH_SIZE) {
             let messages: Vec<Value> = chunk
                 .iter()
-                .map(|token| {
+                .map(|(token, profile_id, registration_id)| {
+                    let mut target_data = data.clone();
+                    target_data["profileId"] = json!(profile_id);
+                    target_data["registrationId"] = json!(registration_id);
                     let mut message = json!({
                         "to": token,
                         "title": title,
                         "body": body,
-                        "data": data,
+                        "data": target_data,
                         "sound": "default",
                         "priority": "high",
                     });
@@ -754,7 +784,7 @@ impl PushService {
             let mut stale: Vec<String> = Vec::new();
             let mut pending_receipts: Vec<(String, String)> = Vec::new();
             for (index, ticket) in tickets.iter().enumerate() {
-                let Some(token) = chunk.get(index).cloned() else {
+                let Some((token, _, _)) = chunk.get(index).cloned() else {
                     continue;
                 };
                 match read_string(ticket.get("status")).as_deref() {
@@ -775,7 +805,7 @@ impl PushService {
                 }
             }
             for token in stale {
-                self.unregister(&token).await;
+                self.unregister_stale_token(&token).await;
             }
             if !pending_receipts.is_empty() {
                 self.spawn_receipt_check(pending_receipts);
@@ -872,7 +902,7 @@ impl PushService {
                 }
             }
             for token in stale {
-                self.unregister(&token).await;
+                self.unregister_stale_token(&token).await;
             }
         }
     }
@@ -904,6 +934,9 @@ struct AppState {
     thread_create_results: Arc<Mutex<HashMap<String, BridgeThreadCreateResponse>>>,
     thread_create_order: Arc<Mutex<VecDeque<String>>>,
     thread_create_actor: Arc<Mutex<()>>,
+    approval_resolution_results: Arc<Mutex<HashMap<String, Value>>>,
+    approval_resolution_order: Arc<Mutex<VecDeque<String>>>,
+    approval_resolution_actor: Arc<Mutex<()>>,
     thread_list_streams: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     terminal: Arc<TerminalService>,
     git: Arc<GitService>,
@@ -7087,6 +7120,7 @@ struct PendingApproval {
 struct ResolveApprovalRequest {
     id: String,
     decision: Value,
+    resolution_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7463,6 +7497,9 @@ async fn main() {
         thread_create_results: Arc::new(Mutex::new(HashMap::new())),
         thread_create_order: Arc::new(Mutex::new(VecDeque::new())),
         thread_create_actor: Arc::new(Mutex::new(())),
+        approval_resolution_results: Arc::new(Mutex::new(HashMap::new())),
+        approval_resolution_order: Arc::new(Mutex::new(VecDeque::new())),
+        approval_resolution_actor: Arc::new(Mutex::new(())),
         thread_list_streams: Arc::new(Mutex::new(HashMap::new())),
         terminal,
         git,
@@ -8471,6 +8508,8 @@ async fn handle_bridge_method(
             .map_err(|error| BridgeError::server(&error.to_string())),
         "bridge/push/register" => {
             let params = params.unwrap_or_else(|| json!({}));
+            let profile_id = required_push_id(&params, "profileId")?;
+            let registration_id = required_push_id(&params, "registrationId")?;
             let token = read_string(params.get("token"))
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
@@ -8506,24 +8545,22 @@ async fn handle_bridge_method(
             }
             let count = state
                 .push
-                .register(token, platform, device_name, events)
+                .register(
+                    profile_id,
+                    registration_id,
+                    token,
+                    platform,
+                    device_name,
+                    events,
+                )
                 .await?;
             Ok(json!({ "ok": true, "deviceCount": count }))
         }
         "bridge/push/unregister" => {
             let params = params.unwrap_or_else(|| json!({}));
-            let token = read_string(params.get("token"))
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| BridgeError::invalid_params("push token is required"))?;
-            if token.len() > PUSH_TOKEN_MAX_BYTES {
-                return Err(BridgeError::resource_limit(
-                    "push_token_bytes",
-                    PUSH_TOKEN_MAX_BYTES,
-                    token.len(),
-                ));
-            }
-            let removed = state.push.unregister(&token).await;
+            let profile_id = required_push_id(&params, "profileId")?;
+            let registration_id = required_push_id(&params, "registrationId")?;
+            let removed = state.push.unregister(&profile_id, &registration_id).await?;
             Ok(json!({ "ok": true, "removed": removed }))
         }
         "bridge/push/list" => Ok(json!({ "devices": state.push.list().await })),
@@ -9104,9 +9141,15 @@ async fn handle_bridge_method(
             serde_json::to_value(list).map_err(|error| BridgeError::server(&error.to_string()))
         }
         "bridge/approvals/resolve" => {
-            let request: ResolveApprovalRequest =
+            let mut request: ResolveApprovalRequest =
                 serde_json::from_value(params.unwrap_or_else(|| json!({})))
                     .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
+            request.resolution_id = request.resolution_id.trim().to_string();
+            if request.resolution_id.is_empty() || request.resolution_id.len() > PUSH_ID_MAX_BYTES {
+                return Err(BridgeError::invalid_params(
+                    "resolutionId must be non-empty and at most 128 bytes",
+                ));
+            }
 
             if !is_valid_approval_decision(&request.decision) {
                 return Err(BridgeError::invalid_params(
@@ -9114,6 +9157,24 @@ async fn handle_bridge_method(
                 ));
             }
 
+            let _resolution_guard = state.approval_resolution_actor.lock().await;
+            if let Some(result) = state
+                .approval_resolution_results
+                .lock()
+                .await
+                .get(&request.resolution_id)
+                .cloned()
+            {
+                if read_string(result.get("approval").and_then(|value| value.get("id"))).as_deref()
+                    != Some(request.id.as_str())
+                    || result.get("decision") != Some(&request.decision)
+                {
+                    return Err(BridgeError::invalid_params(
+                        "resolutionId is already bound to another approval decision",
+                    ));
+                }
+                return Ok(result);
+            }
             let resolved = state
                 .backend
                 .resolve_approval(&request.id, &request.decision)
@@ -9128,11 +9189,22 @@ async fn handle_bridge_method(
                 });
             };
 
-            Ok(json!({
+            let result = json!({
                 "ok": true,
                 "approval": approval,
                 "decision": request.decision,
-            }))
+                "resolutionId": request.resolution_id,
+            });
+            let mut results = state.approval_resolution_results.lock().await;
+            let mut order = state.approval_resolution_order.lock().await;
+            results.insert(request.resolution_id.clone(), result.clone());
+            order.push_back(request.resolution_id);
+            while order.len() > APPROVAL_RESOLUTION_DEDUPE_LIMIT {
+                if let Some(oldest) = order.pop_front() {
+                    results.remove(&oldest);
+                }
+            }
+            Ok(result)
         }
         "bridge/userInput/resolve" => {
             let request: ResolveUserInputRequest =
@@ -13732,6 +13804,21 @@ fn read_string(value: Option<&Value>) -> Option<String> {
     value.and_then(Value::as_str).map(str::to_string)
 }
 
+fn required_push_id(params: &Value, field: &str) -> Result<String, BridgeError> {
+    let value = read_string(params.get(field))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| BridgeError::invalid_params(&format!("{field} is required")))?;
+    if value.len() > PUSH_ID_MAX_BYTES {
+        return Err(BridgeError::resource_limit(
+            "push_identity_bytes",
+            PUSH_ID_MAX_BYTES,
+            value.len(),
+        ));
+    }
+    Ok(value)
+}
+
 fn parse_string_array_strict(value: Option<&Value>) -> Option<Vec<String>> {
     let entries = value.and_then(Value::as_array)?;
     if entries.is_empty() {
@@ -14228,6 +14315,8 @@ mod tests {
         let service = PushService::load(&dir, "demo".to_string()).await;
         service
             .register(
+                "profile-queued".to_string(),
+                "registration-queued".to_string(),
                 "ExponentPushToken[queued]".to_string(),
                 "ios".to_string(),
                 "Phone".to_string(),
@@ -14282,6 +14371,8 @@ mod tests {
         let raw = json!({
             "devices": [
                 {
+                    "profileId": "profile-one",
+                    "registrationId": "registration-one",
                     "token": "ExponentPushToken[one]",
                     "platform": "ios",
                     "deviceName": "iPhone",
@@ -14290,6 +14381,8 @@ mod tests {
                     "updatedAt": "2026-05-29T00:00:00Z"
                 },
                 {
+                    "profileId": "profile-two",
+                    "registrationId": "registration-two",
                     "token": "ExponentPushToken[two]",
                     "createdAt": "2026-05-29T00:00:00Z",
                     "updatedAt": "2026-05-29T00:00:00Z"
@@ -14317,6 +14410,8 @@ mod tests {
         let prefs = PushEventPreferences::default();
         let count = service
             .register(
+                "profile-a".to_string(),
+                "registration-a".to_string(),
                 "ExponentPushToken[a]".to_string(),
                 "ios".to_string(),
                 "Phone".to_string(),
@@ -14328,7 +14423,9 @@ mod tests {
         // Re-registering the same token updates in place rather than duplicating.
         let count = service
             .register(
-                "ExponentPushToken[a]".to_string(),
+                "profile-a".to_string(),
+                "registration-a".to_string(),
+                "ExponentPushToken[b]".to_string(),
                 "ios".to_string(),
                 "Phone Renamed".to_string(),
                 prefs,
@@ -14342,11 +14439,21 @@ mod tests {
             listed[0].get("deviceName").and_then(Value::as_str),
             Some("Phone Renamed")
         );
+        assert_eq!(
+            listed[0].get("tokenSuffix").and_then(Value::as_str),
+            Some("ken[b]")
+        );
         // Full tokens are never echoed back.
         assert!(listed[0].get("token").is_none());
 
-        assert!(service.unregister("ExponentPushToken[a]").await);
-        assert!(!service.unregister("ExponentPushToken[a]").await);
+        assert!(service
+            .unregister("profile-a", "registration-a")
+            .await
+            .expect("unregister device"));
+        assert!(!service
+            .unregister("profile-a", "registration-a")
+            .await
+            .expect("repeat unregister"));
         assert!(service.list().await.is_empty());
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -14585,6 +14692,9 @@ mod tests {
             thread_create_results: Arc::new(Mutex::new(HashMap::new())),
             thread_create_order: Arc::new(Mutex::new(VecDeque::new())),
             thread_create_actor: Arc::new(Mutex::new(())),
+            approval_resolution_results: Arc::new(Mutex::new(HashMap::new())),
+            approval_resolution_order: Arc::new(Mutex::new(VecDeque::new())),
+            approval_resolution_actor: Arc::new(Mutex::new(())),
             thread_list_streams: Arc::new(Mutex::new(HashMap::new())),
             terminal,
             git,

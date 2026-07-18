@@ -1,94 +1,97 @@
-import type { HostBridgeApiClient } from './api/client';
-import { requestPushRegistration } from './pushNotifications';
-import {
-  loadPushSettings,
-  savePushSettings,
-  type PushSettings,
-} from './pushSettings';
+import * as Crypto from 'expo-crypto';
 
-/**
- * Shared push registration logic used by both the automatic on-connect path
- * (App.tsx) and the manual Settings toggle. Keeping it in one place avoids the
- * two callers drifting out of sync over the file-backed {@link PushSettings}.
- */
+import type { HostBridgeApiClient } from './api/client';
+import type { AppStateStore, PushSettingsState } from './appState';
+import { requestPushRegistration } from './pushNotifications';
 
 export type PushSyncResult =
   | { status: 'registered'; token: string }
   | { status: 'optedOut' }
   | { status: 'unavailable' };
 
-/**
- * Register this device's Expo push token with the bridge unless the user has
- * opted out. Safe to call on every connect: permission is only prompted the
- * first time, and re-registering refreshes a rotated token. Persists the latest
- * token back to {@link PushSettings}.
- */
 export async function syncPushRegistration(
-  api: HostBridgeApiClient
+  api: HostBridgeApiClient,
+  store: AppStateStore,
+  profileId: string
 ): Promise<PushSyncResult> {
-  const settings = await loadPushSettings();
+  const initialSettings = store.getSnapshot().data.push;
+  let registration = store
+    .getSnapshot()
+    .data.push.registrations.find((entry) => entry.profileId === profileId);
+  if (initialSettings.optedOut && !registration) return { status: 'optedOut' };
+  if (!registration) {
+    const registrationId = `push-${Crypto.randomUUID()}`;
+    const state = await store.dispatchDurable({
+      type: 'push/ensure-registration',
+      profileId,
+      registrationId,
+    });
+    registration = state.push.registrations.find((entry) => entry.profileId === profileId);
+  }
+  if (!registration) {
+    throw new Error('Could not create a push registration identity.');
+  }
+
+  const settings = store.getSnapshot().data.push;
   if (settings.optedOut) {
+    if (registration.token) {
+      await api.unregisterPushDevice({
+        profileId: registration.profileId,
+        registrationId: registration.registrationId,
+      });
+      await store.dispatchDurable({
+        type: 'push/unregistered',
+        profileId: registration.profileId,
+        registrationId: registration.registrationId,
+      });
+    }
     return { status: 'optedOut' };
   }
 
-  const registration = await requestPushRegistration();
-  if (!registration) {
-    // Permission denied, running on a simulator, or push isn't configured.
-    return { status: 'unavailable' };
-  }
+  const token = await requestPushRegistration();
+  if (!token) return { status: 'unavailable' };
 
   await api.registerPushDevice({
-    token: registration.token,
-    platform: registration.platform,
-    deviceName: registration.deviceName,
+    profileId: registration.profileId,
+    registrationId: registration.registrationId,
+    token: token.token,
+    platform: token.platform,
+    deviceName: token.deviceName,
     events: settings.events,
   });
-
-  if (registration.token !== settings.token) {
-    await savePushSettings({ ...settings, token: registration.token });
-  }
-  return { status: 'registered', token: registration.token };
+  await store.dispatchDurable({
+    type: 'push/registered',
+    profileId: registration.profileId,
+    registrationId: registration.registrationId,
+    token: token.token,
+  });
+  return { status: 'registered', token: token.token };
 }
 
-/** Turn notifications back on (clears the opt-out) and register immediately. */
-export async function enablePush(api: HostBridgeApiClient): Promise<PushSyncResult> {
-  const settings = await loadPushSettings();
-  if (settings.optedOut) {
-    await savePushSettings({ ...settings, optedOut: false });
-  }
-  return syncPushRegistration(api);
+export async function enablePush(
+  api: HostBridgeApiClient,
+  store: AppStateStore,
+  profileId: string
+): Promise<PushSyncResult> {
+  await store.dispatchDurable({ type: 'push/update', patch: { optedOut: false } });
+  return syncPushRegistration(api, store, profileId);
 }
 
-/** Opt out, unregister the current token from the bridge, and persist. */
-export async function disablePush(api: HostBridgeApiClient): Promise<void> {
-  const settings = await loadPushSettings();
-  if (settings.token) {
-    try {
-      await api.unregisterPushDevice(settings.token);
-    } catch {
-      // Best-effort: still record the opt-out locally.
-    }
-  }
-  await savePushSettings({ ...settings, optedOut: true, token: null });
+export async function disablePush(
+  api: HostBridgeApiClient,
+  store: AppStateStore,
+  profileId: string
+): Promise<void> {
+  await store.dispatchDurable({ type: 'push/update', patch: { optedOut: true } });
+  await syncPushRegistration(api, store, profileId);
 }
 
-/** Persist updated per-event preferences, re-registering when still opted in. */
 export async function updatePushEvents(
   api: HostBridgeApiClient,
-  events: PushSettings['events']
-): Promise<PushSettings> {
-  const settings = await loadPushSettings();
-  const next: PushSettings = { ...settings, events };
-  await savePushSettings(next);
-  if (!next.optedOut) {
-    try {
-      const result = await syncPushRegistration(api);
-      if (result.status === 'registered') {
-        next.token = result.token;
-      }
-    } catch {
-      // Non-fatal; the preference is still saved locally.
-    }
-  }
-  return next;
+  store: AppStateStore,
+  profileId: string,
+  events: PushSettingsState['events']
+): Promise<void> {
+  const state = await store.dispatchDurable({ type: 'push/update', patch: { events } });
+  if (!state.push.optedOut) await syncPushRegistration(api, store, profileId);
 }

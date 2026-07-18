@@ -7,8 +7,8 @@ use tokio::sync::{Mutex, RwLock};
 use crate::{
     now_iso, read_bool, read_string,
     resource_limits::{
-        PUSH_DEVICE_NAME_MAX_BYTES, PUSH_PLATFORM_MAX_BYTES, PUSH_REGISTRY_MAX_BYTES,
-        PUSH_REGISTRY_MAX_DEVICES, PUSH_TOKEN_MAX_BYTES,
+        PUSH_DEVICE_NAME_MAX_BYTES, PUSH_ID_MAX_BYTES, PUSH_PLATFORM_MAX_BYTES,
+        PUSH_REGISTRY_MAX_BYTES, PUSH_REGISTRY_MAX_DEVICES, PUSH_TOKEN_MAX_BYTES,
     },
     storage::atomic_write_private,
     BridgeError,
@@ -41,6 +41,8 @@ impl Default for PushEventPreferences {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PushDeviceRegistration {
+    pub(crate) profile_id: String,
+    pub(crate) registration_id: String,
     pub(crate) token: String,
     #[serde(default)]
     pub(crate) platform: String,
@@ -74,6 +76,10 @@ impl PushRegistryStore {
                     .map(|mut registry| {
                         registry.devices.retain(|device| {
                             !device.token.is_empty()
+                                && !device.profile_id.is_empty()
+                                && !device.registration_id.is_empty()
+                                && device.profile_id.len() <= PUSH_ID_MAX_BYTES
+                                && device.registration_id.len() <= PUSH_ID_MAX_BYTES
                                 && device.token.len() <= PUSH_TOKEN_MAX_BYTES
                                 && device.platform.len() <= PUSH_PLATFORM_MAX_BYTES
                                 && device.device_name.len() <= PUSH_DEVICE_NAME_MAX_BYTES
@@ -99,6 +105,8 @@ impl PushRegistryStore {
 
     pub(crate) async fn register(
         &self,
+        profile_id: String,
+        registration_id: String,
         token: String,
         platform: String,
         device_name: String,
@@ -111,8 +119,14 @@ impl PushRegistryStore {
         if let Some(existing) = candidate
             .devices
             .iter_mut()
-            .find(|device| device.token == token)
+            .find(|device| device.registration_id == registration_id)
         {
+            if existing.profile_id != profile_id {
+                return Err(BridgeError::invalid_params(
+                    "registrationId is already bound to another profileId",
+                ));
+            }
+            existing.token = token.clone();
             existing.platform = platform;
             existing.device_name = device_name;
             existing.events = events;
@@ -126,7 +140,9 @@ impl PushRegistryStore {
                 ));
             }
             candidate.devices.push(PushDeviceRegistration {
-                token,
+                profile_id,
+                registration_id: registration_id.clone(),
+                token: token.clone(),
                 platform,
                 device_name,
                 events,
@@ -134,20 +150,43 @@ impl PushRegistryStore {
                 updated_at: now,
             });
         }
+        candidate
+            .devices
+            .retain(|device| device.registration_id == registration_id || device.token != token);
         let count = candidate.devices.len();
         self.persist_snapshot(&candidate).await?;
         *registry = candidate;
         Ok(count)
     }
 
-    pub(crate) async fn unregister(&self, token: &str) -> Result<bool, BridgeError> {
+    pub(crate) async fn unregister(
+        &self,
+        profile_id: &str,
+        registration_id: &str,
+    ) -> Result<bool, BridgeError> {
+        let _persist_guard = self.persist_lock.lock().await;
+        let mut registry = self.registry.write().await;
+        let mut candidate = registry.clone();
+        let before = candidate.devices.len();
+        candidate.devices.retain(|device| {
+            device.profile_id != profile_id || device.registration_id != registration_id
+        });
+        let removed = candidate.devices.len() != before;
+        if !removed {
+            return Ok(false);
+        }
+        self.persist_snapshot(&candidate).await?;
+        *registry = candidate;
+        Ok(true)
+    }
+
+    pub(crate) async fn unregister_token(&self, token: &str) -> Result<bool, BridgeError> {
         let _persist_guard = self.persist_lock.lock().await;
         let mut registry = self.registry.write().await;
         let mut candidate = registry.clone();
         let before = candidate.devices.len();
         candidate.devices.retain(|device| device.token != token);
-        let removed = candidate.devices.len() != before;
-        if !removed {
+        if candidate.devices.len() == before {
             return Ok(false);
         }
         self.persist_snapshot(&candidate).await?;

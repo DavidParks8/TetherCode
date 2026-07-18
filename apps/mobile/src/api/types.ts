@@ -528,12 +528,14 @@ export interface PendingApproval {
 
 export interface ResolveApprovalRequest {
   decision: ApprovalDecision;
+  resolutionId: string;
 }
 
 export interface ResolveApprovalResponse {
   ok: true;
   approval: PendingApproval;
   decision: ApprovalDecision;
+  resolutionId: string;
 }
 
 export interface UserInputQuestionOption {

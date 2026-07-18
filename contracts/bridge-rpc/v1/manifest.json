@@ -105,6 +105,27 @@
       "submissionId": "submission-00000000-0000-4000-8000-000000000001",
       "threadId": "thread-1",
       "disposition": "queued"
+    },
+    "pushRegistration": {
+      "profileId": "bridge-profile-1",
+      "registrationId": "push-registration-1",
+      "token": "ExponentPushToken[fixture]",
+      "platform": "ios",
+      "deviceName": "iPhone",
+      "events": { "turnCompleted": true, "approvalRequested": true }
+    },
+    "pushNotificationData": {
+      "notificationId": "push-notification-1",
+      "profileId": "bridge-profile-1",
+      "registrationId": "push-registration-1",
+      "type": "approval_requested",
+      "threadId": "thread-1",
+      "approvalId": "approval-1"
+    },
+    "approvalResolution": {
+      "id": "approval-1",
+      "decision": "accept",
+      "resolutionId": "push-notification-1:approve"
     }
   }
 }

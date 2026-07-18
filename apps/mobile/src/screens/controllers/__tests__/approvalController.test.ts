@@ -39,4 +39,19 @@ describe('approvalController', () => {
     const controller = new ApprovalController(api as never);
     await expect(controller.findForThread('thread-1')).resolves.toMatchObject({ id: 'b' });
   });
+
+  it('reuses the resolution id after a failed approval attempt', async () => {
+    const api = {
+      listApprovals: jest.fn(),
+      resolveApproval: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValueOnce({ ok: true }),
+      resolveUserInput: jest.fn(),
+    };
+    const controller = new ApprovalController(api as never);
+    await expect(controller.resolveApproval('a', 'accept')).rejects.toThrow('offline');
+    await controller.resolveApproval('a', 'accept');
+    expect(api.resolveApproval.mock.calls[1]?.[2]).toBe(api.resolveApproval.mock.calls[0]?.[2]);
+  });
 });

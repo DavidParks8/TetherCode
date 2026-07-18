@@ -377,6 +377,8 @@ export class HostBridgeApiClient {
   }
 
   registerPushDevice(input: {
+    profileId: string;
+    registrationId: string;
     token: string;
     platform: string;
     deviceName: string;
@@ -385,9 +387,12 @@ export class HostBridgeApiClient {
     return this.ws.request<{ ok: boolean; deviceCount: number }>('bridge/push/register', input);
   }
 
-  unregisterPushDevice(token: string): Promise<{ ok: boolean; removed: boolean }> {
+  unregisterPushDevice(input: {
+    profileId: string;
+    registrationId: string;
+  }): Promise<{ ok: boolean; removed: boolean }> {
     return this.ws.request<{ ok: boolean; removed: boolean }>('bridge/push/unregister', {
-      token,
+      ...input,
     });
   }
 
@@ -1612,10 +1617,15 @@ export class HostBridgeApiClient {
     return this.ws.request<PendingApproval[]>('bridge/approvals/list');
   }
 
-  resolveApproval(id: string, decision: ApprovalDecision): Promise<ResolveApprovalResponse> {
+  resolveApproval(
+    id: string,
+    decision: ApprovalDecision,
+    resolutionId: string
+  ): Promise<ResolveApprovalResponse> {
     return this.ws.request<ResolveApprovalResponse>('bridge/approvals/resolve', {
       id,
       decision,
+      resolutionId,
     });
   }
 

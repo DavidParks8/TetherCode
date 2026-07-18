@@ -19,6 +19,9 @@ interface ContractManifest {
     truncatedGitDiff: { truncated: boolean; returnedBytes: number; maxBytes: number };
     truncatedFilesystemList: { truncated: boolean; totalEntries: number; maxEntries: number };
     submission: { submissionId: string; threadId: string; disposition: string };
+    pushRegistration: { profileId: string; registrationId: string };
+    pushNotificationData: { notificationId: string; profileId: string; registrationId: string };
+    approvalResolution: { resolutionId: string };
   };
 }
 
@@ -62,6 +65,16 @@ describe('bridge RPC contract fixtures', () => {
       submissionId: expect.stringMatching(/^submission-/),
       disposition: 'queued',
     });
+    expect(manifest.fixtures.pushRegistration).toMatchObject({
+      profileId: expect.any(String),
+      registrationId: expect.any(String),
+    });
+    expect(manifest.fixtures.pushNotificationData).toMatchObject({
+      notificationId: expect.any(String),
+      profileId: expect.any(String),
+      registrationId: expect.any(String),
+    });
+    expect(manifest.fixtures.approvalResolution.resolutionId).toEqual(expect.any(String));
   });
 
   it('keeps inventories unique', () => {

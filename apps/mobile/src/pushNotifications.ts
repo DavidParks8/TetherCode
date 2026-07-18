@@ -30,6 +30,9 @@ export interface PushRegistrationInfo {
 /** Where a tapped notification should take the user. */
 export interface PushNavigationTarget {
   type: PushEventKey;
+  notificationId: string;
+  profileId: string;
+  registrationId: string;
   threadId: string | null;
   approvalId: string | null;
 }
@@ -43,6 +46,7 @@ export const DENY_ACTION_ID = 'deny';
 export type PushResponseAction = 'default' | 'approve' | 'deny';
 
 export interface PushResponseEvent {
+  actionId: string;
   action: PushResponseAction;
   target: PushNavigationTarget;
 }
@@ -176,8 +180,8 @@ export async function requestPushRegistration(): Promise<PushRegistrationInfo | 
       platform: Platform.OS,
       deviceName: resolveDeviceName(),
     };
-  } catch {
-    return null;
+  } catch (error) {
+    throw error instanceof Error ? error : new Error('Could not retrieve the push token.');
   }
 }
 
@@ -209,7 +213,12 @@ function parsePushResponse(
   if (!target) {
     return null;
   }
-  return { action: mapResponseAction(response.actionIdentifier), target };
+  const action = mapResponseAction(response.actionIdentifier);
+  return {
+    actionId: `${target.notificationId}:${action}`,
+    action,
+    target,
+  };
 }
 
 /** Pure: map a notification's `data` payload to a navigation target. */
@@ -228,6 +237,10 @@ export function parsePushNavigationTarget(data: unknown): PushNavigationTarget |
   if (!type) {
     return null;
   }
+  const notificationId = readRequiredString(record.notificationId);
+  const profileId = readRequiredString(record.profileId);
+  const registrationId = readRequiredString(record.registrationId);
+  if (!notificationId || !profileId || !registrationId) return null;
   const threadIdValue = record.threadId;
   const threadId =
     typeof threadIdValue === 'string' && threadIdValue.trim().length > 0
@@ -238,5 +251,9 @@ export function parsePushNavigationTarget(data: unknown): PushNavigationTarget |
     typeof approvalIdValue === 'string' && approvalIdValue.trim().length > 0
       ? approvalIdValue.trim()
       : null;
-  return { type, threadId, approvalId };
+  return { type, notificationId, profileId, registrationId, threadId, approvalId };
+}
+
+function readRequiredString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }

@@ -28,6 +28,7 @@ payload.
 Payloads carry:
 
 - the event type (`turn_completed` or `approval_requested`)
+- an immutable notification, bridge profile, and device registration identity
 - the bridge project name (the working directory's folder name)
 - the thread id (in `data`, used for deep-linking when the notification is tapped)
 - for completed turns, a **short preview of the agent's reply** — the last
@@ -43,15 +44,17 @@ reply content.
 ## Bridge side
 
 - New RPC methods (over the existing authenticated WS):
-  - `bridge/push/register` `{ token, platform, deviceName, events }`
-  - `bridge/push/unregister` `{ token }`
+  - `bridge/push/register` `{ profileId, registrationId, token, platform, deviceName, events }`
+  - `bridge/push/unregister` `{ profileId, registrationId }`
   - `bridge/push/list` → device list (tokens are masked to a short suffix)
 - Registrations persist to `.clawdex-push-registry.json` in the bridge working
   directory (gitignored).
 - A `PushService` subscribes to the bridge notification stream and, on
   `turn/completed` / `bridge/approval.requested`, POSTs to
   `https://exp.host/--/api/v2/push/send`. Tokens that Expo reports as
-  `DeviceNotRegistered` are pruned automatically.
+  `DeviceNotRegistered` are pruned automatically. Re-registering the same
+  `registrationId` atomically replaces a rotated token; a registration cannot be
+  rebound to another `profileId`.
 - Before sending a completion push, the bridge reads the completed thread and
   verifies that its source is a top-level agent rather than a subagent. If
   lineage cannot be verified, the completion push is suppressed.
@@ -67,13 +70,13 @@ reply content.
   bridge connect (after onboarding/pairing), the app shows the OS permission
   dialog once and registers its Expo push token with the bridge — no Settings
   trip required. It re-registers on each connect (tokens rotate) and whenever the
-  active bridge changes.
+  active bridge changes. Failed registration retries with bounded exponential
+  backoff while that profile remains active.
 - **Settings → Notifications** is the override: a master switch (opt out / back
   in) plus per-event switches (Turn finished, Approval needed). Opting out
   unregisters the token from the bridge.
-- Preferences persist locally in `clawdex-push-settings.json`; `optedOut` records
-  an explicit user opt-out so auto-registration stays off until they turn it back
-  on.
+- Preferences and per-profile registration identities persist in the canonical
+  app-state store. `optedOut` records an explicit user opt-out.
 - The shared registration logic lives in `src/pushController.ts`, used by both
   the auto path (`App.tsx`) and the Settings toggle so they cannot drift.
 - **Foreground:** while the app is active the banner is suppressed (you are
@@ -83,7 +86,10 @@ reply content.
 - **Approval notifications carry Approve / Deny action buttons** (iOS notification
   category `approval`). The approval push includes the `approvalId`; tapping a
   button foregrounds the app and resolves that approval over the authenticated
-  bridge WebSocket (`bridge/approval.resolve`). The buttons foreground the app on
+  matching profile's authenticated bridge WebSocket (`bridge/approvals/resolve`).
+  Identity-less, stale-profile, and duplicate cold/live action responses are
+  rejected. Deferred timers/listeners are cancelled on profile change or unmount,
+  and `resolutionId` makes a transport retry idempotent. The buttons foreground the app on
   purpose: resolving needs the WS, which only runs while the app is active, so a
   fully-background resolve isn't reliable for this transport. The in-app approval
   banner remains as a fallback if the action can't complete.

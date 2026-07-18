@@ -27,6 +27,9 @@ export function buildUserInputAnswers(
 }
 
 export class ApprovalController {
+  private readonly failedResolutionIds = new Map<string, string>();
+  private resolutionCounter = 0;
+
   constructor(private readonly api: ApprovalApi) {}
 
   async findForThread(threadId: string): Promise<PendingApproval | null> {
@@ -35,7 +38,17 @@ export class ApprovalController {
   }
 
   async resolveApproval(id: string, decision: ApprovalDecision): Promise<void> {
-    await this.api.resolveApproval(id, decision);
+    const key = `${id}:${JSON.stringify(decision)}`;
+    const resolutionId =
+      this.failedResolutionIds.get(key) ??
+      `approval-${Date.now().toString(36)}-${(++this.resolutionCounter).toString(36)}`;
+    try {
+      await this.api.resolveApproval(id, decision, resolutionId);
+      this.failedResolutionIds.delete(key);
+    } catch (error) {
+      this.failedResolutionIds.set(key, resolutionId);
+      throw error;
+    }
   }
 
   async resolveUserInput(

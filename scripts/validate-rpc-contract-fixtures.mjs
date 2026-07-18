@@ -73,5 +73,8 @@ if (!fixtures.browserPreviewSession.expiresAt || !fixtures.browserPreviewSession
 if (!fixtures.truncatedGitDiff.truncated || fixtures.truncatedGitDiff.returnedBytes > fixtures.truncatedGitDiff.maxBytes) fail('git truncation fixture');
 if (!fixtures.truncatedFilesystemList.truncated || fixtures.truncatedFilesystemList.totalEntries <= fixtures.truncatedFilesystemList.maxEntries) fail('filesystem truncation fixture');
 if (!fixtures.submission.submissionId || !fixtures.submission.threadId) fail('submission fixture');
+if (!fixtures.pushRegistration.profileId || !fixtures.pushRegistration.registrationId) fail('push registration fixture');
+if (!fixtures.pushNotificationData.notificationId || !fixtures.pushNotificationData.profileId || !fixtures.pushNotificationData.registrationId) fail('push notification fixture');
+if (!fixtures.approvalResolution.resolutionId) fail('approval resolution fixture');
 
 process.stdout.write('RPC contract fixtures are valid.\n');

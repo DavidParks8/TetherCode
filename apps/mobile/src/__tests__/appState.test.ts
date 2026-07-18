@@ -59,6 +59,65 @@ describe('appStateReducer', () => {
       effort: null,
     });
   });
+
+  it('keeps push registration identity immutable per profile', () => {
+    const withProfile = importLegacyAppState({
+      settingsRaw: null,
+      bridgeProfilesRaw: JSON.stringify({
+        activeProfileId: 'profile-1',
+        profiles: [
+          {
+            id: 'profile-1',
+            name: 'One',
+            bridgeUrl: 'http://10.0.0.1:8787',
+            bridgeToken: 'token',
+          },
+        ],
+      }),
+    });
+    const registered = appStateReducer(withProfile, {
+      type: 'push/ensure-registration',
+      profileId: 'profile-1',
+      registrationId: 'registration-1',
+    });
+    const replacement = appStateReducer(registered, {
+        type: 'push/ensure-registration',
+        profileId: 'profile-1',
+        registrationId: 'registration-2',
+      });
+    expect(replacement.push.registrations[0]?.registrationId).toBe('registration-1');
+  });
+
+  it('drops a registration when its profile bridge identity changes', () => {
+    const withProfile = importLegacyAppState({
+      settingsRaw: null,
+      bridgeProfilesRaw: JSON.stringify({
+        activeProfileId: 'profile-1',
+        profiles: [
+          {
+            id: 'profile-1',
+            name: 'One',
+            bridgeUrl: 'http://10.0.0.1:8787',
+            bridgeToken: 'token-1',
+          },
+        ],
+      }),
+    });
+    const registered = appStateReducer(withProfile, {
+      type: 'push/ensure-registration',
+      profileId: 'profile-1',
+      registrationId: 'registration-1',
+    });
+    const edited = appStateReducer(registered, {
+      type: 'profiles/save',
+      draft: {
+        id: 'profile-1',
+        bridgeUrl: 'http://10.0.0.2:8787',
+        bridgeToken: 'token-2',
+      },
+    });
+    expect(edited.push.registrations).toEqual([]);
+  });
 });
 
 describe('app-state persistence format', () => {

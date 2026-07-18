@@ -41,7 +41,6 @@ import {
   type ChatSnapshotCache,
 } from './src/chatSnapshotCache';
 import type {
-  ApprovalDecision,
   Chat,
   ChatEngine,
   CollaborationMode,
@@ -90,6 +89,7 @@ import {
   type PushResponseEvent,
 } from './src/pushNotifications';
 import { syncPushRegistration } from './src/pushController';
+import { PushResponseController } from './src/pushResponseController';
 import { configureRevenueCatIfNeeded } from './src/tips';
 import {
   AppThemeProvider,
@@ -151,6 +151,7 @@ export default function App() {
       recentBrowserTargetUrls,
     },
     bridgeProfiles: currentBridgeProfileStore,
+    push: pushSettings,
   } = appStateSnapshot.data;
   const { activeProfileId: activeBridgeProfileId, profiles: bridgeProfiles } =
     currentBridgeProfileStore;
@@ -188,13 +189,7 @@ export default function App() {
   );
   const mainRef = useRef<MainScreenHandle>(null);
   const browserRef = useRef<BrowserScreenHandle>(null);
-  const pushSyncedApiRef = useRef<HostBridgeApiClient | null>(null);
-  // Kept current so the (zero-dep) notification response listener always reaches
-  // the active bridge clients without re-subscribing.
-  const pushApiRef = useRef(api);
-  pushApiRef.current = api;
-  const pushWsRef = useRef(ws);
-  pushWsRef.current = ws;
+  const pushResponseControllerRef = useRef<PushResponseController | null>(null);
   const [currentScreen, setCurrentScreen] = useState<Screen>('Main');
   const [browserReturnScreen, setBrowserReturnScreen] = useState<AppScreen>('Main');
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
@@ -335,95 +330,86 @@ export default function App() {
   useEffect(() => {
     setupNotificationHandler();
     void registerNotificationCategories();
-
-    // Resolve an approval once the bridge WS is connected. The app foregrounds on
-    // an action tap, so the WS reconnects shortly; we wait for it (with a cap)
-    // rather than firing into a closed socket.
-    const resolveFromAction = (approvalId: string, decision: ApprovalDecision) => {
-      const handles: {
-        done: boolean;
-        unsubscribe?: () => void;
-        timer?: ReturnType<typeof setTimeout>;
-      } = { done: false };
-      const attempt = () => {
-        if (handles.done) {
-          return;
-        }
-        handles.done = true;
-        if (handles.timer) {
-          clearTimeout(handles.timer);
-        }
-        handles.unsubscribe?.();
-        void pushApiRef.current?.resolveApproval(approvalId, decision).catch(() => {
-          // Best-effort; the in-app approval banner remains as a fallback.
-        });
-      };
-      const wsClient = pushWsRef.current;
-      if (wsClient?.isConnected) {
-        attempt();
-        return;
-      }
-      handles.unsubscribe = wsClient?.onStatus((connected) => {
-        if (connected) {
-          attempt();
-        }
-      });
-      handles.timer = setTimeout(attempt, 10000);
-    };
-
-    const handleResponse = (event: PushResponseEvent) => {
-      const { action, target } = event;
-      if ((action === 'approve' || action === 'deny') && target.approvalId) {
-        resolveFromAction(
-          target.approvalId,
-          action === 'approve' ? 'accept' : 'decline'
-        );
-      }
+    const controller = new PushResponseController((event: PushResponseEvent) => {
+      const { target } = event;
       setCurrentScreen('Main');
       if (target.threadId) {
-        const threadId = target.threadId;
-        // Defer so MainScreen is mounted (and on cold start, has begun connecting).
-        setTimeout(() => {
-          mainRef.current?.openChat(threadId);
-        }, 400);
-      }
-    };
-
-    const subscription = addNotificationResponseListener(handleResponse);
-    void getInitialNotificationResponse().then((event) => {
-      if (event) {
-        handleResponse(event);
+        setPendingMainChatId(target.threadId);
+        setPendingMainChatSnapshot(null);
       }
     });
-    return () => subscription.remove();
+    pushResponseControllerRef.current = controller;
+
+    const subscription = addNotificationResponseListener((event) => controller.handle(event));
+    void getInitialNotificationResponse().then((event) => {
+      if (event) controller.handle(event);
+    });
+    return () => {
+      subscription.remove();
+      controller.dispose();
+      pushResponseControllerRef.current = null;
+    };
   }, []);
+
+  useEffect(() => {
+    const registration = pushSettings.registrations.find(
+      (entry) => entry.profileId === activeBridgeProfileId
+    );
+    pushResponseControllerRef.current?.setProfile(
+      activeBridgeProfileId && registration && api && ws
+        ? {
+            profileId: activeBridgeProfileId,
+            registrationId: registration.registrationId,
+            api,
+            ws,
+          }
+        : null
+    );
+  }, [activeBridgeProfileId, api, pushSettings.registrations, ws]);
 
   // Auto-register for push on the first successful bridge connect (skipping
   // onboarding/pairing). The OS permission dialog is shown once here rather than
   // requiring the user to find the Settings toggle. Re-runs when the active
   // bridge changes so a newly paired bridge also learns this device's token.
   useEffect(() => {
-    if (!api || !ws || currentScreen === 'Onboarding') {
+    if (!api || !ws || !activeBridgeProfileId || currentScreen === 'Onboarding') {
       return;
     }
+    let cancelled = false;
+    let inFlight = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryDelay = 1000;
     const attempt = () => {
-      if (pushSyncedApiRef.current === api) {
-        return;
-      }
-      pushSyncedApiRef.current = api;
-      void syncPushRegistration(api).catch(() => {
-        // Leave it to the next connect; never block the connect flow.
-      });
+      if (cancelled || inFlight || !ws.isConnected) return;
+      inFlight = true;
+      void syncPushRegistration(api, appStateStore, activeBridgeProfileId)
+        .then(() => {
+          retryDelay = 1000;
+        })
+        .catch(() => {
+          if (!cancelled) {
+            retryTimer = setTimeout(attempt, retryDelay);
+            retryDelay = Math.min(retryDelay * 2, 30_000);
+          }
+        })
+        .finally(() => {
+          inFlight = false;
+        });
     };
     if (ws.isConnected) {
       attempt();
     }
-    return ws.onStatus((connected) => {
+    const unsubscribe = ws.onStatus((connected) => {
       if (connected) {
         attempt();
       }
     });
-  }, [api, ws, currentScreen]);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [activeBridgeProfileId, api, appStateStore, currentScreen, ws]);
 
   useEffect(() => {
     if (!api || !ws || currentScreen === 'Onboarding') {
@@ -1657,6 +1643,8 @@ export default function App() {
           <SettingsScreen
             api={activeApi}
             ws={activeWs}
+            appStateStore={appStateStore}
+            pushSettings={pushSettings}
             activeBridgeProfileId={activeBridgeProfile?.id ?? null}
             bridgeProfileName={activeBridgeProfile?.name ?? 'Current bridge'}
             bridgeProfiles={bridgeProfiles}

@@ -40,7 +40,11 @@ import type {
   PlanType,
 } from '../api/types';
 import type { HostBridgeWsClient } from '../api/ws';
-import type { AppStatePersistenceError } from '../appState';
+import type {
+  AppStatePersistenceError,
+  AppStateStore,
+  PushSettingsState,
+} from '../appState';
 import { selectApprovalModeWithConfirmation } from '../approvalMode';
 import clawdexMark from '../../assets/brand/mark.png';
 import type { BridgeProfile } from '../bridgeProfiles';
@@ -58,11 +62,6 @@ import {
 } from '../components/usageLimitBadges';
 import { getChatEngineLabel } from '../chatEngines';
 import { type PushEventKey } from '../pushNotifications';
-import {
-  createDefaultPushSettings,
-  loadPushSettings,
-  type PushSettings,
-} from '../pushSettings';
 import { disablePush, enablePush, updatePushEvents } from '../pushController';
 import {
   DEFAULT_FONT_PREFERENCE,
@@ -99,6 +98,8 @@ interface SettingsScreenProps {
   api: HostBridgeApiClient;
   ws: HostBridgeWsClient;
   activeBridgeProfileId?: string | null;
+  appStateStore: AppStateStore;
+  pushSettings: PushSettingsState;
   bridgeProfileName: string;
   bridgeProfiles: BridgeProfile[];
   approvalMode?: ApprovalMode;
@@ -150,6 +151,8 @@ export function SettingsScreen({
   api,
   ws,
   activeBridgeProfileId = null,
+  appStateStore,
+  pushSettings,
   bridgeProfileName,
   bridgeProfiles,
   approvalMode,
@@ -242,7 +245,6 @@ export function SettingsScreen({
   const [tipActionMessage, setTipActionMessage] = useState<string | null>(null);
   const [tipPurchasingPackageId, setTipPurchasingPackageId] = useState<string | null>(null);
   const [tipPaywallOpening, setTipPaywallOpening] = useState(false);
-  const [pushSettings, setPushSettings] = useState<PushSettings>(createDefaultPushSettings);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushError, setPushError] = useState<string | null>(null);
   const [route, setRoute] = useState<SettingsRoute>('home');
@@ -251,33 +253,16 @@ export function SettingsScreen({
   const routeContentTranslateX = useSharedValue(0);
   const routeContentOpacity = useSharedValue(1);
 
-  useEffect(() => {
-    let cancelled = false;
-    void loadPushSettings().then((loaded) => {
-      if (!cancelled) {
-        setPushSettings(loaded);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const refreshPushSettings = useCallback(async () => {
-    const latest = await loadPushSettings();
-    setPushSettings(latest);
-  }, []);
-
   const handleTogglePush = useCallback(
     async (enabled: boolean) => {
-      if (pushBusy) {
+      if (pushBusy || !activeBridgeProfileId) {
         return;
       }
       setPushError(null);
       setPushBusy(true);
       try {
         if (enabled) {
-          const result = await enablePush(api);
+          const result = await enablePush(api, appStateStore, activeBridgeProfileId);
           if (result.status === 'unavailable') {
             setPushError('Notifications permission was not granted.');
             Alert.alert(
@@ -286,30 +271,28 @@ export function SettingsScreen({
             );
           }
         } else {
-          await disablePush(api);
+          await disablePush(api, appStateStore, activeBridgeProfileId);
         }
       } catch (error) {
         setPushError(error instanceof Error ? error.message : 'Could not update notifications.');
       } finally {
-        await refreshPushSettings();
         setPushBusy(false);
       }
     },
-    [api, pushBusy, refreshPushSettings]
+    [activeBridgeProfileId, api, appStateStore, pushBusy]
   );
 
   const handleTogglePushEvent = useCallback(
     async (key: PushEventKey, value: boolean) => {
       const events = { ...pushSettings.events, [key]: value };
-      setPushSettings((prev) => ({ ...prev, events }));
+      if (!activeBridgeProfileId) return;
       try {
-        await updatePushEvents(api, events);
+        await updatePushEvents(api, appStateStore, activeBridgeProfileId, events);
       } catch {
         // Non-fatal; the optimistic update stays and is re-synced below.
       }
-      await refreshPushSettings();
     },
-    [api, pushSettings.events, refreshPushSettings]
+    [activeBridgeProfileId, api, appStateStore, pushSettings.events]
   );
 
   const handleReturnToSettingsHome = useCallback(() => {
