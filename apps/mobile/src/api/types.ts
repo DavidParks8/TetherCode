@@ -142,9 +142,15 @@ export interface BridgeThreadQueueState {
 export type BridgeThreadQueueDisposition = 'queued' | 'sent';
 
 export interface BridgeThreadQueueSendResponse {
+  submissionId: string;
   disposition: BridgeThreadQueueDisposition;
   queue: BridgeThreadQueueState;
   turnId?: string | null;
+}
+
+export interface BridgeThreadCreateResponse {
+  submissionId: string;
+  thread: unknown;
 }
 
 export interface BridgeThreadQueueActionResponse {

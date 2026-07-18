@@ -72,5 +72,6 @@ if (fixtures.resourceLimitError.error.data.actual <= fixtures.resourceLimitError
 if (!fixtures.browserPreviewSession.expiresAt || !fixtures.browserPreviewSession.bootstrapPath.includes('sid=') || !fixtures.browserPreviewSession.bootstrapPath.includes('st=')) fail('browser preview session fixture');
 if (!fixtures.truncatedGitDiff.truncated || fixtures.truncatedGitDiff.returnedBytes > fixtures.truncatedGitDiff.maxBytes) fail('git truncation fixture');
 if (!fixtures.truncatedFilesystemList.truncated || fixtures.truncatedFilesystemList.totalEntries <= fixtures.truncatedFilesystemList.maxEntries) fail('filesystem truncation fixture');
+if (!fixtures.submission.submissionId || !fixtures.submission.threadId) fail('submission fixture');
 
 process.stdout.write('RPC contract fixtures are valid.\n');

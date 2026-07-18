@@ -11,9 +11,10 @@
     "bridge/git/stageAll", "bridge/git/status", "bridge/git/switch", "bridge/git/unstage",
     "bridge/git/unstageAll", "bridge/github/auth/install", "bridge/health/read", "bridge/push/list",
     "bridge/push/register", "bridge/push/unregister", "bridge/restart/start", "bridge/runtime/read",
-    "bridge/status/read", "bridge/terminal/exec", "bridge/thread/list/stream/cancel",
-    "bridge/thread/list/stream/start", "bridge/thread/queue/cancel", "bridge/thread/queue/read",
-    "bridge/thread/queue/send", "bridge/thread/queue/steer", "bridge/ui/dismiss", "bridge/ui/present",
+    "bridge/status/read", "bridge/terminal/exec", "bridge/thread/create",
+    "bridge/thread/list/stream/cancel", "bridge/thread/list/stream/start",
+    "bridge/thread/queue/cancel", "bridge/thread/queue/read", "bridge/thread/queue/send",
+    "bridge/thread/queue/steer", "bridge/ui/dismiss", "bridge/ui/present",
     "bridge/ui/resolve", "bridge/ui/update", "bridge/update/start", "bridge/userInput/resolve",
     "bridge/workspaces/list"
   ],
@@ -99,6 +100,11 @@
       "totalEntries": 1001,
       "omittedEntries": 1,
       "maxEntries": 1000
+    },
+    "submission": {
+      "submissionId": "submission-00000000-0000-4000-8000-000000000001",
+      "threadId": "thread-1",
+      "disposition": "queued"
     }
   }
 }

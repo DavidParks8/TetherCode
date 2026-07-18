@@ -389,7 +389,7 @@ describe('HostBridgeWsClient', () => {
     await expect(waitPromise).resolves.toBeUndefined();
   });
 
-  it('waitForTurnCompletion tolerates completion payloads without turn id', async () => {
+  it('waitForTurnCompletion ignores completion payloads without turn id', async () => {
     const client = new HostBridgeWsClient('http://localhost:8787');
     client.connect();
     latestMockSocket().simulateOpen();
@@ -405,10 +405,10 @@ describe('HostBridgeWsClient', () => {
       })
     );
 
-    await expect(waitPromise).resolves.toBeUndefined();
+    await expect(waitPromise).rejects.toThrow('turn timed out');
   });
 
-  it('waitForTurnCompletion resolves from codex task_complete event', async () => {
+  it('waitForTurnCompletion ignores codex completion events without an exact turn id', async () => {
     const client = new HostBridgeWsClient('http://localhost:8787');
     client.connect();
     latestMockSocket().simulateOpen();
@@ -426,10 +426,10 @@ describe('HostBridgeWsClient', () => {
       })
     );
 
-    await expect(waitPromise).resolves.toBeUndefined();
+    await expect(waitPromise).rejects.toThrow('turn timed out');
   });
 
-  it('waitForTurnCompletion resolves from codex event using source parent_thread_id', async () => {
+  it('waitForTurnCompletion ignores parent-scoped codex completion events', async () => {
     const client = new HostBridgeWsClient('http://localhost:8787');
     client.connect();
     latestMockSocket().simulateOpen();
@@ -453,10 +453,10 @@ describe('HostBridgeWsClient', () => {
       })
     );
 
-    await expect(waitPromise).resolves.toBeUndefined();
+    await expect(waitPromise).rejects.toThrow('turn timed out');
   });
 
-  it('waitForTurnCompletion prefers the direct child thread id over parent_thread_id', async () => {
+  it('waitForTurnCompletion still requires a turn id for direct-child codex events', async () => {
     const client = new HostBridgeWsClient('http://localhost:8787');
     client.connect();
     latestMockSocket().simulateOpen();
@@ -481,7 +481,7 @@ describe('HostBridgeWsClient', () => {
       })
     );
 
-    await expect(waitPromise).resolves.toBeUndefined();
+    await expect(waitPromise).rejects.toThrow('turn timed out');
   });
 
   it('deduplicates notifications by eventId', () => {

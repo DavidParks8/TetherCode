@@ -1630,6 +1630,7 @@ export default function App() {
             ws={activeWs}
             bridgeUrl={bridgeUrl}
             bridgeToken={bridgeToken}
+            bridgeProfileId={activeBridgeProfile?.id ?? ''}
             onOpenDrawer={handleNavigationToggle}
             onOpenGit={handleOpenChatGit}
             onOpenLocalPreview={openBrowser}
@@ -1725,6 +1726,7 @@ export default function App() {
             ws={activeWs}
             bridgeUrl={bridgeUrl}
             bridgeToken={bridgeToken}
+            bridgeProfileId={activeBridgeProfile?.id ?? ''}
             onOpenDrawer={handleNavigationToggle}
             onOpenGit={handleOpenChatGit}
             onOpenLocalPreview={openBrowser}

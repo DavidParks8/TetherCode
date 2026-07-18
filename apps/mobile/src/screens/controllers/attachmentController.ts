@@ -53,6 +53,8 @@ export interface AttachmentController {
   removeComposerAttachment: (id: string) => void;
   removeMentionPath: (path: string) => void;
   clearPending: () => void;
+  beginSubmission: () => void;
+  finishSubmission: (succeeded: boolean, restoringDraft?: boolean) => void;
   clear: () => void;
   toTurnInputs: (cwd?: string | null) => {
     mentions: MentionInput[];
@@ -89,6 +91,8 @@ export function useAttachmentController({
   const inFlightRef = useRef<Record<string, Promise<string[]>>>({});
   const workspaceRef = useRef<string | null>(workspace);
   const pickerInProgressRef = useRef(false);
+  const submissionPendingRef = useRef(false);
+  const skipNextDraftReconcileRef = useRef(false);
   workspaceRef.current = workspace;
 
   const addMention = useCallback(
@@ -341,6 +345,11 @@ export function useAttachmentController({
   }, [loadCandidates, workspace]);
 
   useEffect(() => {
+    if (submissionPendingRef.current) return;
+    if (skipNextDraftReconcileRef.current) {
+      skipNextDraftReconcileRef.current = false;
+      return;
+    }
     setPendingMentionPaths((current) => {
       const next = current.filter((path) =>
         draftContainsMentionLabel(draft, toPathBasename(path))
@@ -454,6 +463,17 @@ export function useAttachmentController({
     clearPending: () => {
       setPendingMentionPaths([]);
       setPendingLocalImagePaths([]);
+    },
+    beginSubmission: () => {
+      submissionPendingRef.current = true;
+    },
+    finishSubmission: (succeeded, restoringDraft = false) => {
+      submissionPendingRef.current = false;
+      skipNextDraftReconcileRef.current = restoringDraft;
+      if (succeeded) {
+        setPendingMentionPaths([]);
+        setPendingLocalImagePaths([]);
+      }
     },
     clear,
     toTurnInputs: (cwd) => ({

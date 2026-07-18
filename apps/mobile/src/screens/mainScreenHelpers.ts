@@ -173,7 +173,7 @@ export const ACTIVITY_DETAIL_HOLD_MS = 2_500;
 export const GENERIC_RUNNING_ACTIVITY_DELAY_MS = 1_200;
 export const GENERIC_RUNNING_ACTIVITY_TITLES = new Set(['working', 'thinking']);
 export const CHAT_DRAFTS_FILE = 'chat-drafts.json';
-export const CHAT_DRAFTS_VERSION = 1;
+export const CHAT_DRAFTS_VERSION = 2;
 export const CHAT_MODEL_PREFERENCES_FILE = 'chat-model-preferences.json';
 export const CHAT_MODEL_PREFERENCES_VERSION = 1;
 export const CHAT_PLAN_SNAPSHOTS_FILE = 'chat-plan-snapshots.json';
@@ -1671,9 +1671,9 @@ export function parseChatDrafts(raw: string): Record<string, string> {
 
     const result: Record<string, string> = {};
     for (const [rawKey, value] of Object.entries(entries)) {
-      const normalizedKey = getDraftScopeKey(rawKey);
+      const normalizedKey = rawKey.trim();
       const text = readString(value)?.replace(/\r\n/g, '\n');
-      if (!text || text.length === 0) {
+      if (!normalizedKey || !text || text.length === 0) {
         continue;
       }
       result[normalizedKey] = text;

@@ -417,6 +417,7 @@ const RECEIPT_CHECK_DELAY_SECS: u64 = 900;
 const PUSH_SEND_MAX_ATTEMPTS: u32 = 4;
 const QUEUE_COMPLETION_DISPOSITION_WAIT_MS: u64 = 2_000;
 const QUEUE_COMPLETION_DISPOSITION_LIMIT: usize = 1_024;
+const SUBMISSION_DEDUPE_LIMIT: usize = 1_024;
 const QUEUE_STATUS_DISPATCH_FALLBACK_MS: u64 = 250;
 
 struct PushService {
@@ -900,6 +901,9 @@ struct AppState {
     hub: Arc<ClientHub>,
     backend: Arc<RuntimeBackend>,
     queue: Arc<BridgeQueueService>,
+    thread_create_results: Arc<Mutex<HashMap<String, BridgeThreadCreateResponse>>>,
+    thread_create_order: Arc<Mutex<VecDeque<String>>>,
+    thread_create_actor: Arc<Mutex<()>>,
     thread_list_streams: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     terminal: Arc<TerminalService>,
     git: Arc<GitService>,
@@ -2247,6 +2251,8 @@ impl BridgeQueueService {
             thread_actors: Arc::new(RwLock::new(HashMap::new())),
             completion_dispositions: Arc::new(Mutex::new(HashMap::new())),
             completion_disposition_notify: Arc::new(Notify::new()),
+            submission_results: Arc::new(Mutex::new(HashMap::new())),
+            submission_order: Arc::new(Mutex::new(VecDeque::new())),
             next_queue_item_id: AtomicU64::new(1),
         });
         service.spawn_notification_loop();
@@ -2347,12 +2353,16 @@ impl BridgeQueueService {
         request: BridgeThreadQueueSendRequest,
     ) -> Result<BridgeThreadQueueSendResponse, String> {
         let normalized_thread_id = request.thread_id.trim().to_string();
+        let submission_id = request.submission_id.trim().to_string();
         let content = request.content.trim().to_string();
         if normalized_thread_id.is_empty() {
             return Err("threadId must not be empty".to_string());
         }
         if content.is_empty() {
             return Err("content must not be empty".to_string());
+        }
+        if submission_id.is_empty() {
+            return Err("submissionId must not be empty".to_string());
         }
         if content.len() > QUEUE_MAX_CONTENT_BYTES {
             return Err(format!(
@@ -2372,6 +2382,18 @@ impl BridgeQueueService {
 
         let actor = self.thread_actor(&normalized_thread_id).await;
         let _actor_guard = actor.lock().await;
+        if let Some(result) = self
+            .submission_results
+            .lock()
+            .await
+            .get(&submission_id)
+            .cloned()
+        {
+            if result.queue.thread_id != normalized_thread_id {
+                return Err("submissionId is already bound to another thread".to_string());
+            }
+            return Ok(result);
+        }
 
         self.ensure_thread_runtime(&normalized_thread_id).await?;
 
@@ -2420,11 +2442,14 @@ impl BridgeQueueService {
                 Self::snapshot_for_thread(&normalized_thread_id, Some(runtime))
             };
             self.broadcast_snapshot(&snapshot).await;
-            return Ok(BridgeThreadQueueSendResponse {
+            let result = BridgeThreadQueueSendResponse {
+                submission_id,
                 disposition: BridgeThreadQueueDisposition::Queued,
                 queue: snapshot,
                 turn_id: None,
-            });
+            };
+            self.remember_submission_result(result.clone()).await;
+            return Ok(result);
         }
 
         {
@@ -2452,11 +2477,14 @@ impl BridgeQueueService {
                     runtime.last_error = None;
                     Self::snapshot_for_thread(&normalized_thread_id, Some(runtime))
                 };
-                Ok(BridgeThreadQueueSendResponse {
+                let result = BridgeThreadQueueSendResponse {
+                    submission_id,
                     disposition: BridgeThreadQueueDisposition::Sent,
                     queue: snapshot,
                     turn_id: Some(turn_id),
-                })
+                };
+                self.remember_submission_result(result.clone()).await;
+                Ok(result)
             }
             Err(error) => {
                 let mut threads = self.threads.write().await;
@@ -2464,6 +2492,20 @@ impl BridgeQueueService {
                     runtime.turn_start_in_flight = false;
                 }
                 Err(error)
+            }
+        }
+    }
+
+    async fn remember_submission_result(&self, result: BridgeThreadQueueSendResponse) {
+        let submission_id = result.submission_id.clone();
+        let mut results = self.submission_results.lock().await;
+        let mut order = self.submission_order.lock().await;
+        if results.insert(submission_id.clone(), result).is_none() {
+            order.push_back(submission_id);
+        }
+        while order.len() > SUBMISSION_DEDUPE_LIMIT {
+            if let Some(oldest) = order.pop_front() {
+                results.remove(&oldest);
             }
         }
     }
@@ -7213,6 +7255,20 @@ struct DismissBridgeUiSurfaceRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct BridgeThreadCreateRequest {
+    submission_id: String,
+    thread_start: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeThreadCreateResponse {
+    submission_id: String,
+    thread: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct BridgeThreadQueueReadRequest {
     thread_id: String,
 }
@@ -7221,6 +7277,7 @@ struct BridgeThreadQueueReadRequest {
 #[serde(rename_all = "camelCase")]
 struct BridgeThreadQueueSendRequest {
     thread_id: String,
+    submission_id: String,
     content: String,
     turn_start: Value,
 }
@@ -7282,6 +7339,7 @@ enum BridgeThreadQueueDisposition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BridgeThreadQueueSendResponse {
+    submission_id: String,
     disposition: BridgeThreadQueueDisposition,
     queue: BridgeThreadQueueState,
     turn_id: Option<String>,
@@ -7320,6 +7378,8 @@ struct BridgeQueueService {
     thread_actors: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
     completion_dispositions: Arc<Mutex<HashMap<u64, QueueCompletionDisposition>>>,
     completion_disposition_notify: Arc<Notify>,
+    submission_results: Arc<Mutex<HashMap<String, BridgeThreadQueueSendResponse>>>,
+    submission_order: Arc<Mutex<VecDeque<String>>>,
     next_queue_item_id: AtomicU64,
 }
 
@@ -7400,6 +7460,9 @@ async fn main() {
         hub,
         backend,
         queue,
+        thread_create_results: Arc::new(Mutex::new(HashMap::new())),
+        thread_create_order: Arc::new(Mutex::new(VecDeque::new())),
+        thread_create_actor: Arc::new(Mutex::new(())),
         thread_list_streams: Arc::new(Mutex::new(HashMap::new())),
         terminal,
         git,
@@ -8648,6 +8711,59 @@ async fn handle_bridge_method(
                 serde_json::from_value(params.unwrap_or_else(|| json!({})))
                     .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
             cancel_thread_list_stream(state, client_id, &request.stream_id).await
+        }
+        "bridge/thread/create" => {
+            let mut request: BridgeThreadCreateRequest =
+                serde_json::from_value(params.unwrap_or_else(|| json!({})))
+                    .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
+            request.submission_id = request.submission_id.trim().to_string();
+            if request.submission_id.is_empty() {
+                return Err(BridgeError::invalid_params(
+                    "submissionId must not be empty",
+                ));
+            }
+            let _create_guard = state.thread_create_actor.lock().await;
+            if let Some(result) = state
+                .thread_create_results
+                .lock()
+                .await
+                .get(&request.submission_id)
+                .cloned()
+            {
+                return serde_json::to_value(result)
+                    .map_err(|error| BridgeError::server(&error.to_string()));
+            }
+            request.thread_start =
+                normalize_forwarded_path_params(Some(request.thread_start), &state.path_policy)?
+                    .ok_or_else(|| {
+                        BridgeError::invalid_params("threadStart payload is required")
+                    })?;
+            let target_engine = state
+                .backend
+                .route_engine_for_method("thread/start", Some(&request.thread_start));
+            let started = state
+                .backend
+                .request_internal("thread/start", Some(request.thread_start))
+                .await
+                .map_err(|error| BridgeError::server(&error))?;
+            let started = normalize_forwarded_result("thread/start", started, target_engine);
+            let response = BridgeThreadCreateResponse {
+                submission_id: request.submission_id.clone(),
+                thread: started
+                    .get("thread")
+                    .cloned()
+                    .ok_or_else(|| BridgeError::server("thread/start did not return thread"))?,
+            };
+            let mut results = state.thread_create_results.lock().await;
+            let mut order = state.thread_create_order.lock().await;
+            results.insert(request.submission_id.clone(), response.clone());
+            order.push_back(request.submission_id);
+            while order.len() > SUBMISSION_DEDUPE_LIMIT {
+                if let Some(oldest) = order.pop_front() {
+                    results.remove(&oldest);
+                }
+            }
+            serde_json::to_value(response).map_err(|error| BridgeError::server(&error.to_string()))
         }
         "bridge/thread/queue/read" => {
             let request: BridgeThreadQueueReadRequest =
@@ -14466,6 +14582,9 @@ mod tests {
             hub,
             backend,
             queue,
+            thread_create_results: Arc::new(Mutex::new(HashMap::new())),
+            thread_create_order: Arc::new(Mutex::new(VecDeque::new())),
+            thread_create_actor: Arc::new(Mutex::new(())),
             thread_list_streams: Arc::new(Mutex::new(HashMap::new())),
             terminal,
             git,
@@ -17665,6 +17784,7 @@ mod tests {
             .queue
             .send_message(BridgeThreadQueueSendRequest {
                 thread_id: "codex:thr_queue".to_string(),
+                submission_id: "submission-queue".to_string(),
                 content: "hello from queue".to_string(),
                 turn_start: json!({
                     "threadId": "codex:thr_queue",
@@ -17702,6 +17822,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bridge_queue_send_deduplicates_submission_id() {
+        let state = build_test_state().await;
+        state.queue.threads.write().await.insert(
+            "codex:thr_dedupe".to_string(),
+            BridgeThreadQueueRuntime {
+                thread_running: true,
+                active_turn_id: Some("turn_live".to_string()),
+                ..BridgeThreadQueueRuntime::default()
+            },
+        );
+        let request = BridgeThreadQueueSendRequest {
+            thread_id: "codex:thr_dedupe".to_string(),
+            submission_id: "submission-dedupe".to_string(),
+            content: "only once".to_string(),
+            turn_start: json!({ "input": [{ "type": "text", "text": "only once" }] }),
+        };
+
+        let first = state
+            .queue
+            .send_message(request.clone())
+            .await
+            .expect("first send succeeds");
+        let retry = state
+            .queue
+            .send_message(request)
+            .await
+            .expect("retry succeeds");
+
+        assert_eq!(first.queue.items[0].id, retry.queue.items[0].id);
+        assert_eq!(
+            state.queue.read_queue("codex:thr_dedupe").await.items.len(),
+            1
+        );
+        shutdown_test_backend(&state.backend).await;
+    }
+
+    #[tokio::test]
     async fn bridge_queue_send_assigns_unique_item_ids() {
         let state = build_test_state().await;
         {
@@ -17720,6 +17877,7 @@ mod tests {
             .queue
             .send_message(BridgeThreadQueueSendRequest {
                 thread_id: "codex:thr_queue_ids".to_string(),
+                submission_id: "submission-first".to_string(),
                 content: "first queued message".to_string(),
                 turn_start: json!({
                     "threadId": "codex:thr_queue_ids",
@@ -17743,6 +17901,7 @@ mod tests {
             .queue
             .send_message(BridgeThreadQueueSendRequest {
                 thread_id: "codex:thr_queue_ids".to_string(),
+                submission_id: "submission-second".to_string(),
                 content: "second queued message".to_string(),
                 turn_start: json!({
                     "threadId": "codex:thr_queue_ids",
@@ -17858,6 +18017,7 @@ mod tests {
             .queue
             .send_message(BridgeThreadQueueSendRequest {
                 thread_id: "codex:thr_cancel".to_string(),
+                submission_id: "submission-cancel".to_string(),
                 content: "cancel me".to_string(),
                 turn_start: json!({
                     "threadId": "codex:thr_cancel",

@@ -18,6 +18,7 @@ interface ContractManifest {
     browserPreviewSession: { sessionId: string; bootstrapPath: string; expiresAt: string };
     truncatedGitDiff: { truncated: boolean; returnedBytes: number; maxBytes: number };
     truncatedFilesystemList: { truncated: boolean; totalEntries: number; maxEntries: number };
+    submission: { submissionId: string; threadId: string; disposition: string };
   };
 }
 
@@ -56,6 +57,10 @@ describe('bridge RPC contract fixtures', () => {
       truncated: true,
       totalEntries: 1001,
       maxEntries: 1000,
+    });
+    expect(manifest.fixtures.submission).toMatchObject({
+      submissionId: expect.stringMatching(/^submission-/),
+      disposition: 'queued',
     });
   });
 

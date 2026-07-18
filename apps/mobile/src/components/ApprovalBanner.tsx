@@ -8,7 +8,7 @@ import { useAppTheme, type AppTheme } from '../theme';
 
 interface ApprovalBannerProps {
   approval: PendingApproval;
-  onResolve: (id: string, decision: ApprovalDecision) => void;
+  onResolve: (id: string, decision: ApprovalDecision) => Promise<void>;
 }
 
 export function ApprovalBanner({ approval, onResolve }: ApprovalBannerProps) {
@@ -17,9 +17,12 @@ export function ApprovalBanner({ approval, onResolve }: ApprovalBannerProps) {
   const styles = useMemo(() => createStyles(theme), [theme]);
   const [resolving, setResolving] = useState<string | null>(null);
 
-  const handleResolve = (decision: ApprovalDecision) => {
-    setResolving(decisionKey(decision));
-    onResolve(approval.id, decision);
+  const handleResolve = async (decision: ApprovalDecision) => {
+    try {
+      await runApprovalResolution(approval.id, decision, onResolve, setResolving);
+    } catch {
+      // The parent surfaces the resolution error; this card only restores retry controls.
+    }
   };
 
   const label = approval.kind === 'commandExecution'
@@ -48,7 +51,7 @@ export function ApprovalBanner({ approval, onResolve }: ApprovalBannerProps) {
       <View style={styles.actions}>
         <Pressable
           style={({ pressed }) => [styles.btn, styles.denyBtn, pressed && styles.btnPressed]}
-          onPress={() => handleResolve('decline')}
+          onPress={() => void handleResolve('decline')}
           disabled={resolving !== null}
         >
           {resolving === 'decline' ? (
@@ -63,7 +66,7 @@ export function ApprovalBanner({ approval, onResolve }: ApprovalBannerProps) {
 
         <Pressable
           style={({ pressed }) => [styles.btn, styles.acceptBtn, pressed && styles.btnPressed]}
-          onPress={() => handleResolve('accept')}
+          onPress={() => void handleResolve('accept')}
           disabled={resolving !== null}
         >
           {resolving === 'accept' ? (
@@ -78,7 +81,7 @@ export function ApprovalBanner({ approval, onResolve }: ApprovalBannerProps) {
 
         <Pressable
           style={({ pressed }) => [styles.btn, styles.acceptBtn, pressed && styles.btnPressed]}
-          onPress={() => handleResolve('acceptForSession')}
+          onPress={() => void handleResolve('acceptForSession')}
           disabled={resolving !== null}
         >
           {resolving === 'acceptForSession' ? (
@@ -100,7 +103,7 @@ export function ApprovalBanner({ approval, onResolve }: ApprovalBannerProps) {
               pressed && styles.btnPressed,
             ]}
             onPress={() =>
-              handleResolve({
+              void handleResolve({
                 acceptWithExecpolicyAmendment: {
                   execpolicy_amendment: approval.proposedExecpolicyAmendment ?? [],
                 },
@@ -133,6 +136,20 @@ function decisionKey(decision: ApprovalDecision): string {
   }
 
   return 'unknown';
+}
+
+export async function runApprovalResolution(
+  id: string,
+  decision: ApprovalDecision,
+  resolve: (id: string, decision: ApprovalDecision) => Promise<void>,
+  setResolving: (value: string | null) => void
+): Promise<void> {
+  setResolving(decisionKey(decision));
+  try {
+    await resolve(id, decision);
+  } finally {
+    setResolving(null);
+  }
 }
 
 const createStyles = (theme: AppTheme) =>

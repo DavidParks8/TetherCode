@@ -4,9 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   CHAT_DRAFTS_VERSION,
   getChatDraftsPath,
-  getDraftScopeKey,
   parseChatDrafts,
 } from '../mainScreenHelpers';
+import { submissionScopeKey, type SubmissionDraftSnapshot } from './submissionController';
 
 export interface DraftStorage {
   read(path: string): Promise<string>;
@@ -40,18 +40,35 @@ export interface DraftController {
   draft: string;
   setDraft: React.Dispatch<React.SetStateAction<string>>;
   clearDraft: () => void;
+  snapshot: () => SubmissionDraftSnapshot;
 }
 
 export function useDraftController(
+  profileId: string,
   chatId: string | null,
   storage: DraftStorage = fileDraftStorage
 ): DraftController {
-  const scopeKey = getDraftScopeKey(chatId);
-  const [draft, setDraft] = useState('');
+  const scopeKey = submissionScopeKey({ profileId, threadId: chatId });
+  const [draft, setDraftState] = useState('');
   const [ownerKey, setOwnerKey] = useState(scopeKey);
   const [loaded, setLoaded] = useState(false);
   const entriesRef = useRef<Record<string, string>>({});
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const draftRef = useRef('');
+  const scopeKeyRef = useRef(scopeKey);
+  const revisionRef = useRef(0);
+  if (scopeKeyRef.current !== scopeKey) {
+    scopeKeyRef.current = scopeKey;
+    revisionRef.current += 1;
+  }
+
+  const setDraft = useCallback<React.Dispatch<React.SetStateAction<string>>>((next) => {
+    const value = typeof next === 'function' ? next(draftRef.current) : next;
+    if (value === draftRef.current) return;
+    draftRef.current = value;
+    revisionRef.current += 1;
+    setDraftState(value);
+  }, []);
 
   const persist = useCallback(
     async (entries: Readonly<Record<string, string>>) => {
@@ -92,8 +109,11 @@ export function useDraftController(
   useEffect(() => {
     if (!loaded) return;
     const nextDraft = entriesRef.current[scopeKey] ?? '';
+    scopeKeyRef.current = scopeKey;
+    draftRef.current = nextDraft;
+    revisionRef.current += 1;
     setOwnerKey(scopeKey);
-    setDraft((current) => (current === nextDraft ? current : nextDraft));
+    setDraftState((current) => (current === nextDraft ? current : nextDraft));
   }, [loaded, scopeKey]);
 
   useEffect(() => {
@@ -120,5 +140,13 @@ export function useDraftController(
     draft,
     setDraft,
     clearDraft: useCallback(() => setDraft(''), []),
+    snapshot: useCallback(
+      () => ({
+        scopeKey: scopeKeyRef.current,
+        value: draftRef.current,
+        revision: revisionRef.current,
+      }),
+      []
+    ),
   };
 }

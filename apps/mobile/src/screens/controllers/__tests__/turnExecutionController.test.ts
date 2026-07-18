@@ -4,8 +4,8 @@ describe('turnExecutionController', () => {
   it('creates a thread, builds its message, and reports the started turn', async () => {
     const created = { id: 'thread-1', cwd: '/repo' };
     const api = {
-      createChat: jest.fn().mockResolvedValue(created),
-      sendChatMessage: jest.fn(async (_id, _message, options) => {
+      createChatIdempotent: jest.fn().mockResolvedValue(created),
+      sendChatMessageIdempotent: jest.fn(async (_id, _message, _submissionId, options) => {
         options.onTurnStarted('turn-1');
         return { ...created, messages: [] };
       }),
@@ -15,6 +15,7 @@ describe('turnExecutionController', () => {
     const controller = new TurnExecutionController(api as never);
 
     await controller.createAndStart({
+      submissionId: 'submission-1',
       create: { cwd: '/repo' },
       message: (chat) => ({ content: 'hello', cwd: chat.cwd }),
       onCreated,
@@ -22,9 +23,10 @@ describe('turnExecutionController', () => {
     });
 
     expect(onCreated).toHaveBeenCalledWith(created);
-    expect(api.sendChatMessage).toHaveBeenCalledWith(
+    expect(api.sendChatMessageIdempotent).toHaveBeenCalledWith(
       'thread-1',
       { content: 'hello', cwd: '/repo' },
+      'submission-1',
       expect.any(Object)
     );
     expect(onTurnStarted).toHaveBeenCalledWith('thread-1', 'turn-1');

@@ -21,6 +21,7 @@ import type {
   BridgeStatus,
   BridgeThreadQueueActionResponse,
   BridgeThreadQueueSendResponse,
+  BridgeThreadCreateResponse,
   BridgeThreadQueueState,
   DismissBridgeUiSurfaceResponse,
   BridgeRuntimeInfo,
@@ -221,6 +222,7 @@ interface TurnInputLocalImage {
 
 interface SendChatMessageOptions {
   onTurnStarted?: (turnId: string) => void;
+  submissionId?: string;
 }
 
 interface PreparedTurnRequest {
@@ -232,6 +234,14 @@ interface PreparedTurnRequest {
 
 interface PrepareTurnRequestOptions {
   skipResume?: boolean;
+  submissionId?: string;
+}
+
+let submissionCounter = 0;
+
+function createSubmissionId(): string {
+  submissionCounter += 1;
+  return `submission-${Date.now().toString(36)}-${submissionCounter.toString(36)}`;
 }
 
 export type SendOrQueueChatMessageResult =
@@ -1037,6 +1047,36 @@ export class HostBridgeApiClient {
     return this.getChat(chatId);
   }
 
+  async createChatIdempotent(body: CreateChatRequest, submissionId: string): Promise<Chat> {
+    const requestedEngine = normalizeChatEngine(body.engine);
+    const requestedCwd = normalizeCwd(body.cwd);
+    const requestedModel = normalizeModel(body.model);
+    const requestedServiceTier = normalizeServiceTier(body.serviceTier);
+    const requestedApprovalPolicy = normalizeApprovalPolicy(body.approvalPolicy) ?? 'untrusted';
+    const started = await this.ws.request<BridgeThreadCreateResponse>('bridge/thread/create', {
+      submissionId,
+      threadStart: {
+        engine: requestedEngine ?? undefined,
+        model: requestedModel ?? null,
+        modelProvider: null,
+        cwd: requestedCwd ?? null,
+        approvalPolicy: requestedApprovalPolicy,
+        sandbox: MOBILE_DEFAULT_SANDBOX,
+        config: toThreadConfig(requestedServiceTier),
+        baseInstructions: null,
+        developerInstructions: MOBILE_DEVELOPER_INSTRUCTIONS,
+        personality: null,
+        ephemeral: null,
+        experimentalRawEvents: true,
+        persistExtendedHistory: true,
+      },
+    });
+    const thread = toRecord(started.thread);
+    const chatId = readString(thread?.id);
+    if (!chatId || !thread) throw new Error('bridge/thread/create did not return a chat');
+    return this.mapChatWithCachedTitle(thread);
+  }
+
   async getChat(id: string, options: ChatReadOptions = {}): Promise<Chat> {
     const threadId = id.trim();
     const cacheTtlMs = Math.max(0, options.cacheTtlMs ?? 0);
@@ -1216,7 +1256,6 @@ export class HostBridgeApiClient {
       'turn/start',
       prepared.turnStartParams
     );
-
     const turnId = turnStart.turn?.id;
     if (!turnId) {
       throw new Error('turn/start did not return turn id');
@@ -1229,6 +1268,20 @@ export class HostBridgeApiClient {
       prepared.mentions,
       prepared.localImages
     );
+  }
+
+  async sendChatMessageIdempotent(
+    id: string,
+    body: SendChatMessageRequest,
+    submissionId: string,
+    options?: Pick<SendChatMessageOptions, 'onTurnStarted'>
+  ): Promise<Chat> {
+    const result = await this.sendOrQueueChatMessage(id, body, { submissionId });
+    if (result.disposition === 'queued') {
+      return this.getChat(id);
+    }
+    options?.onTurnStarted?.(result.turnId);
+    return result.chat;
   }
 
   async sendOrQueueChatMessage(
@@ -1250,6 +1303,7 @@ export class HostBridgeApiClient {
       'bridge/thread/queue/send',
       {
         threadId: id,
+        submissionId: options?.submissionId?.trim() || createSubmissionId(),
         content: prepared.content,
         turnStart: prepared.turnStartParams,
       }

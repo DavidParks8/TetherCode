@@ -98,7 +98,6 @@ export class HostBridgeWsClient {
   private readonly pendingRequests = new Map<string | number, PendingRequest>();
   private readonly recentTurnCompletions = new Map<string, TurnCompletionSnapshot>();
   private readonly pendingEvents = new Map<number, RpcNotification>();
-  private readonly pendingTurnWaits = new Set<string>();
   private readonly authToken: string | null;
   private readonly allowQueryTokenAuth: boolean;
   private readonly baseUrl: string;
@@ -248,55 +247,22 @@ export class HostBridgeWsClient {
       return;
     }
 
-    const waitKey = turnCompletionKey(threadId, turnId);
-    this.pendingTurnWaits.add(waitKey);
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const finish = (result: { ok: true } | { ok: false; error: Error }) => {
-          clearTimeout(timeout);
-          unsubscribe();
-          if (result.ok) {
-            resolve();
-            return;
-          }
-          reject(result.error);
-        };
+    await new Promise<void>((resolve, reject) => {
+      const finish = (result: { ok: true } | { ok: false; error: Error }) => {
+        clearTimeout(timeout);
+        unsubscribe();
+        if (result.ok) {
+          resolve();
+          return;
+        }
+        reject(result.error);
+      };
 
-        const timeout = setTimeout(() => {
-          finish({ ok: false, error: new Error(`turn timed out after ${String(timeoutMs)}ms`) });
-        }, timeoutMs);
+      const timeout = setTimeout(() => {
+        finish({ ok: false, error: new Error(`turn timed out after ${String(timeoutMs)}ms`) });
+      }, timeoutMs);
 
-        const unsubscribe = this.onEvent((event) => {
-          const canUseUnscopedEvent = this.canUseUnscopedTurnEvent(waitKey);
-
-          if (event.method.startsWith('codex/event/')) {
-            const codexEvent = toCodexEventSnapshot(event.method, event.params);
-            if (!codexEvent) {
-              return;
-            }
-
-            const isMatchingThread = codexEvent.threadId === threadId;
-            const isUnscopedMatch = codexEvent.threadId === null && canUseUnscopedEvent;
-            if (!isMatchingThread && !isUnscopedMatch) {
-              return;
-            }
-
-            if (CODEX_TURN_ABORT_EVENT_TYPES.has(codexEvent.type)) {
-              finish({ ok: false, error: new Error('turn aborted') });
-              return;
-            }
-
-            if (CODEX_TURN_FAILURE_EVENT_TYPES.has(codexEvent.type)) {
-              finish({ ok: false, error: new Error(`turn failed (${codexEvent.type})`) });
-              return;
-            }
-
-            if (CODEX_TURN_COMPLETE_EVENT_TYPES.has(codexEvent.type)) {
-              finish({ ok: true });
-              return;
-            }
-          }
-
+      const unsubscribe = this.onEvent((event) => {
           if (event.method !== 'turn/completed') {
             return;
           }
@@ -308,33 +274,10 @@ export class HostBridgeWsClient {
               return;
             }
 
-            if (completion.turnId && completion.turnId !== turnId) {
+            if (completion.turnId !== turnId) {
               return;
             }
-
-            normalizedCompletion = completion.turnId
-              ? completion
-              : {
-                  ...completion,
-                  turnId,
-                };
-          } else if (canUseUnscopedEvent) {
-            const unscopedCompletion = toUnscopedTurnCompletionSnapshot(event.params);
-            if (!unscopedCompletion) {
-              return;
-            }
-
-            if (unscopedCompletion.turnId && unscopedCompletion.turnId !== turnId) {
-              return;
-            }
-
-            normalizedCompletion = {
-              threadId,
-              turnId: unscopedCompletion.turnId ?? turnId,
-              status: unscopedCompletion.status,
-              errorMessage: unscopedCompletion.errorMessage,
-              completedAt: unscopedCompletion.completedAt,
-            };
+            normalizedCompletion = completion;
           }
 
           if (!normalizedCompletion) {
@@ -354,11 +297,8 @@ export class HostBridgeWsClient {
           }
 
           finish({ ok: true });
-        });
       });
-    } finally {
-      this.pendingTurnWaits.delete(waitKey);
-    }
+    });
   }
 
   onEvent(listener: EventListener): () => void {
@@ -902,10 +842,6 @@ export class HostBridgeWsClient {
     }
   }
 
-  private canUseUnscopedTurnEvent(waitKey: string): boolean {
-    return this.pendingTurnWaits.size === 1 && this.pendingTurnWaits.has(waitKey);
-  }
-
   private emitEvent(event: RpcNotification): void {
     for (const listener of this.eventListeners) {
       listener(event);
@@ -1002,57 +938,6 @@ function toTurnCompletionSnapshot(value: unknown): TurnCompletionSnapshot | null
   };
 }
 
-function toUnscopedTurnCompletionSnapshot(
-  value: unknown
-): Omit<TurnCompletionSnapshot, 'threadId'> | null {
-  const params = toRecord(value);
-  if (!params) {
-    return null;
-  }
-
-  const turn = toRecord(params.turn);
-  const turnId =
-    readString(turn?.id) ?? readString(params.turnId) ?? readString(params.turn_id);
-  const status = readString(turn?.status) ?? readString(params.status);
-  const turnError = toRecord(turn?.error) ?? toRecord(params.error);
-  const errorMessage = readString(turnError?.message);
-
-  if (!turnId && !status && !errorMessage) {
-    return null;
-  }
-
-  return {
-    turnId: turnId ?? null,
-    status: status ?? null,
-    errorMessage: errorMessage ?? null,
-    completedAt: Date.now(),
-  };
-}
-
-function toCodexEventSnapshot(
-  method: string,
-  value: unknown
-): { type: string; threadId: string | null } | null {
-  if (!method.startsWith('codex/event/')) {
-    return null;
-  }
-
-  const params = toRecord(value);
-  const msg = toRecord(params?.msg);
-  const rawType = readString(msg?.type) ?? method.replace('codex/event/', '');
-  const type = normalizeCodexEventType(rawType);
-  if (!type) {
-    return null;
-  }
-
-  const threadId = extractNotificationThreadId(params, msg);
-
-  return {
-    type,
-    threadId,
-  };
-}
-
 function extractNotificationThreadId(
   params: Record<string, unknown> | null,
   msgArg?: Record<string, unknown> | null
@@ -1105,29 +990,6 @@ function extractNotificationThreadId(
     null
   );
 }
-
-function normalizeCodexEventType(value: string | null): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const trimmed = value.trim().toLowerCase();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-const CODEX_TURN_COMPLETE_EVENT_TYPES = new Set(['task_complete', 'taskcomplete']);
-const CODEX_TURN_ABORT_EVENT_TYPES = new Set([
-  'turn_aborted',
-  'turnaborted',
-  'task_interrupted',
-  'taskinterrupted',
-]);
-const CODEX_TURN_FAILURE_EVENT_TYPES = new Set([
-  'task_failed',
-  'taskfailed',
-  'turn_failed',
-  'turnfailed',
-]);
 
 function isFailedTurnStatus(status: string | null): boolean {
   return (

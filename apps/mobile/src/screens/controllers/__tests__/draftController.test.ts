@@ -11,6 +11,6 @@ describe('draftController', () => {
   it('removes blank drafts and serializes the current version', () => {
     const entries = updateDraftEntries({ first: 'draft' }, 'first', '  ');
     expect(entries).toEqual({});
-    expect(JSON.parse(serializeDraftEntries(entries))).toEqual({ version: 1, entries: {} });
+    expect(JSON.parse(serializeDraftEntries(entries))).toEqual({ version: 2, entries: {} });
   });
 });

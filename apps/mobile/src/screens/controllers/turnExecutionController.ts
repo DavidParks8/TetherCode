@@ -9,8 +9,8 @@ import type {
 
 type TurnApi = Pick<
   HostBridgeApiClient,
-  | 'createChat'
-  | 'sendChatMessage'
+  | 'createChatIdempotent'
+  | 'sendChatMessageIdempotent'
   | 'sendOrQueueChatMessage'
   | 'interruptTurn'
   | 'interruptLatestTurn'
@@ -19,6 +19,7 @@ type TurnApi = Pick<
 >;
 
 export interface CreateAndStartTurnRequest {
+  submissionId: string;
   create: CreateChatRequest;
   message: SendChatMessageRequest | ((chat: Chat) => SendChatMessageRequest);
   onCreated?: (chat: Chat) => void;
@@ -28,28 +29,30 @@ export interface CreateAndStartTurnRequest {
 export class TurnExecutionController {
   constructor(private readonly api: TurnApi) {}
 
-  create(request: CreateChatRequest): Promise<Chat> {
-    return this.api.createChat(request);
+  create(request: CreateChatRequest, submissionId: string): Promise<Chat> {
+    return this.api.createChatIdempotent(request, submissionId);
   }
 
   send(
     threadId: string,
     message: SendChatMessageRequest,
+    submissionId: string,
     onTurnStarted?: (turnId: string) => void
   ): Promise<Chat> {
-    return this.api.sendChatMessage(
+    return this.api.sendChatMessageIdempotent(
       threadId,
       message,
+      submissionId,
       onTurnStarted ? { onTurnStarted } : undefined
     );
   }
 
   async createAndStart(request: CreateAndStartTurnRequest): Promise<Chat> {
-    const created = await this.create(request.create);
+    const created = await this.create(request.create, request.submissionId);
     request.onCreated?.(created);
     const message =
       typeof request.message === 'function' ? request.message(created) : request.message;
-    return this.send(created.id, message, (turnId) =>
+    return this.send(created.id, message, request.submissionId, (turnId) =>
       request.onTurnStarted?.(created.id, turnId)
     );
   }
@@ -57,9 +60,10 @@ export class TurnExecutionController {
   sendOrQueue(
     threadId: string,
     message: SendChatMessageRequest,
-    skipResume: boolean
+    skipResume: boolean,
+    submissionId: string
   ): Promise<SendOrQueueChatMessageResult> {
-    return this.api.sendOrQueueChatMessage(threadId, message, { skipResume });
+    return this.api.sendOrQueueChatMessage(threadId, message, { skipResume, submissionId });
   }
 
   async interrupt(threadId: string, turnId?: string | null): Promise<string | null> {

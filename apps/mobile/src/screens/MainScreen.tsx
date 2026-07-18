@@ -233,6 +233,10 @@ import {
   useChatSynchronization,
 } from './controllers/chatSyncController';
 import { useDraftController } from './controllers/draftController';
+import {
+  SubmissionController,
+  type ComposerSubmission,
+} from './controllers/submissionController';
 import { TurnExecutionController } from './controllers/turnExecutionController';
 import { MainScreenPersistenceController } from './controllers/mainScreenPersistenceController';
 
@@ -246,6 +250,7 @@ interface MainScreenProps {
   ws: HostBridgeWsClient;
   bridgeUrl: string;
   bridgeToken?: string | null;
+  bridgeProfileId: string;
   onOpenDrawer: () => void;
   onOpenGit: (chat: Chat) => void;
   onOpenLocalPreview?: (targetUrl: string) => void;
@@ -284,6 +289,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       ws,
       bridgeUrl,
       bridgeToken = null,
+      bridgeProfileId,
       onOpenDrawer,
       onOpenGit,
       onOpenLocalPreview: onOpenLocalPreviewHandler,
@@ -311,6 +317,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const approvalController = useMemo(() => new ApprovalController(api), [api]);
     const agentThreadsController = useMemo(() => new AgentThreadsController(api), [api]);
     const persistenceController = useMemo(() => new MainScreenPersistenceController(), []);
+    const submissionController = useMemo(() => new SubmissionController(), []);
     const initialPendingSnapshot =
       pendingOpenChatId &&
       pendingOpenChatSnapshot?.id === pendingOpenChatId &&
@@ -330,7 +337,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const openingChatStartedAtRef = useRef<number>(
       initialPendingSnapshot || !pendingOpenChatId ? 0 : Date.now()
     );
-    const { draft, setDraft } = useDraftController(selectedChatId);
+    const draftController = useDraftController(bridgeProfileId, selectedChatId);
+    const { draft, setDraft } = draftController;
     const [sending, setSending] = useState(false);
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -4004,6 +4012,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
           setSelectedCollaborationMode('plan');
           if (!selectedChatId) {
+            const planSubmission = submissionController.begin(
+              { ...draftController.snapshot(), value: argText },
+              { mentions: [], localImages: [] }
+            );
             let createdChatId: string | null = null;
             let adoptedCreatedChat = false;
             const isCreatedChatVisible = () =>
@@ -4019,6 +4031,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             };
 
             setDraft('');
+            submissionController.markCleared(planSubmission, draftController.snapshot().revision);
             try {
               setCreating(true);
               setActiveTurnId(null);
@@ -4040,7 +4053,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 effort: activeEffort ?? undefined,
                 serviceTier: activeServiceTier ?? undefined,
                 approvalPolicy: activeApprovalPolicy,
-              });
+              }, planSubmission.id);
               createdChatId = created.id;
               onLastUsedThreadSettingsChange?.(
                 activeChatEngine,
@@ -4081,7 +4094,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 approvalPolicy: activeApprovalPolicy,
                 collaborationMode: 'plan',
                 agent: null,
-              }, (turnId) => registerTurnStarted(created.id, turnId));
+              }, planSubmission.id, (turnId) => registerTurnStarted(created.id, turnId));
               const resolvedUpdated =
                 mergeChatWithPendingOptimisticMessages(updated);
               const autoEnabledPlan =
@@ -4109,7 +4122,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 });
                 clearRunWatchdog();
               }
+              submissionController.succeed(planSubmission);
             } catch (err) {
+              if (submissionController.fail(planSubmission, draftController.snapshot())) {
+                setDraft(planSubmission.draft);
+              }
               if (createdChatId) {
                 discardOptimisticUserMessage(createdChatId, optimisticMessage.id);
               }
@@ -4131,6 +4148,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             createdAt: new Date().toISOString(),
           };
           const targetChatId = selectedChatId;
+          const planSubmission = submissionController.begin(
+            { ...draftController.snapshot(), value: argText },
+            { mentions: [], localImages: [] }
+          );
 
           try {
             setSending(true);
@@ -4149,6 +4170,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             });
             bumpRunWatchdog();
             setDraft('');
+            submissionController.markCleared(planSubmission, draftController.snapshot().revision);
             queueOptimisticUserMessage(targetChatId, optimisticMessage);
             setSelectedChat((prev) => {
               const baseChat =
@@ -4183,7 +4205,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               approvalPolicy: activeApprovalPolicy,
               collaborationMode: 'plan',
               agent: null,
-            }, (turnId) => registerTurnStarted(targetChatId, turnId));
+            }, planSubmission.id, (turnId) => registerTurnStarted(targetChatId, turnId));
             const resolvedUpdated =
               mergeChatWithPendingOptimisticMessages(updated);
             rememberChatModelPreference(
@@ -4201,7 +4223,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               });
               clearRunWatchdog();
             }
+            submissionController.succeed(planSubmission);
           } catch (err) {
+            if (submissionController.fail(planSubmission, draftController.snapshot())) {
+              setDraft(planSubmission.draft);
+            }
             discardOptimisticUserMessage(targetChatId, optimisticMessage.id);
             if (selectedChatIdRef.current === targetChatId) {
               handleTurnFailure(err);
@@ -4956,7 +4982,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     }, [scheduleAgentThreadsRefresh, ws]);
 
     const createChat = useCallback(async () => {
-      const content = draft.trim();
+      const draftSnapshot = draftController.snapshot();
+      const content = draftSnapshot.value.trim();
       if (!content) return;
 
       if (await handleSlashCommand(content)) {
@@ -4968,6 +4995,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         toMentionInput(path, preferredStartCwd)
       );
       const turnLocalImages = pendingLocalImagePaths.map((path) => ({ path }));
+      const submission = submissionController.begin(draftSnapshot, {
+        mentions: pendingMentionPaths,
+        localImages: pendingLocalImagePaths,
+      });
       const optimisticContent = toOptimisticUserContent(content, turnMentions, turnLocalImages);
 
       const optimisticMessage: ChatTranscriptMessage = {
@@ -4977,7 +5008,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         createdAt: new Date().toISOString(),
       };
 
+      attachmentController.beginSubmission();
       setDraft('');
+      submissionController.markCleared(submission, draftController.snapshot().revision);
 
       let createdChatId: string | null = null;
       let adoptedCreatedChat = false;
@@ -5001,6 +5034,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           title: 'Creating chat',
         });
         const updated = await turnExecutionController.createAndStart({
+          submissionId: submission.id,
           create: {
             engine: activeChatEngine,
             cwd: preferredStartCwd ?? undefined,
@@ -5063,9 +5097,13 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           selectedEffort ?? activeEffort,
           activeServiceTier
         );
+        submissionController.succeed(submission);
+        if (!isStillVisible) {
+          attachmentController.finishSubmission(false);
+        }
         if (isStillVisible) {
           setSelectedChat(resolvedUpdated);
-          attachmentController.clearPending();
+          attachmentController.finishSubmission(true);
           setError(null);
           if (resolvedUpdated.status === 'complete') {
             setActivity({
@@ -5094,6 +5132,14 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           }
         }
       } catch (err) {
+        const shouldRestoreDraft = submissionController.fail(
+          submission,
+          draftController.snapshot()
+        );
+        attachmentController.finishSubmission(false, shouldRestoreDraft);
+        if (shouldRestoreDraft) {
+          setDraft(submission.draft);
+        }
         if (createdChatId) {
           discardOptimisticUserMessage(createdChatId, optimisticMessage.id);
         }
@@ -5109,6 +5155,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       turnExecutionController,
       attachmentController,
       draft,
+      draftController,
       activeEffort,
       activeChatEngine,
       activeModelId,
@@ -5130,6 +5177,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       queueOptimisticUserMessage,
       rememberChatModelPreference,
       scrollToBottomReliable,
+      submissionController,
     ]);
 
     const sendMessageContent = useCallback(
@@ -5143,6 +5191,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           clearComposer?: boolean;
           preservePlan?: boolean;
           suppressPlanModeAutoEnable?: boolean;
+          submission?: ComposerSubmission;
         }
       ) => {
         const content = rawContent.trim();
@@ -5166,6 +5215,15 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           pendingMentionPaths.map((path) => toMentionInput(path, selectedChat?.cwd));
         const turnLocalImages =
           options?.localImages ?? pendingLocalImagePaths.map((path) => ({ path }));
+        const submission =
+          options?.submission ??
+          submissionController.begin(
+            { ...draftController.snapshot(), value: rawContent },
+            {
+              mentions: turnMentions.map((mention) => mention.path),
+              localImages: turnLocalImages.map((image) => image.path),
+            }
+          );
         const selectedThreadSnapshot = threadRuntimeSnapshotsRef.current[targetChatId] ?? null;
         const goalObjective =
           activeChatEngine === 'codex' ? parseGoalSlashObjective(content) : null;
@@ -5274,7 +5332,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           });
           bumpRunWatchdog();
           if (shouldClearComposer) {
+            attachmentController.beginSubmission();
             setDraft('');
+            submissionController.markCleared(submission, draftController.snapshot().revision);
           }
           if (optimisticGoalSurface) {
             replaceGoalSurfaces(optimisticGoalSurface);
@@ -5321,7 +5381,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               collaborationMode: resolvedCollaborationMode,
               agent: selectedHarnessAgent ?? undefined,
             },
-            likelyQueuesLocally
+            likelyQueuesLocally,
+            submission.id
           );
 
           discardOptimisticQueuedMessage(targetChatId, optimisticQueuedMessage?.id);
@@ -5334,9 +5395,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           );
 
           const isStillSelectedForResult = selectedChatIdRef.current === targetChatId;
-          if (shouldClearComposer && isStillSelectedForResult) {
-            attachmentController.clearPending();
+          if (shouldClearComposer) {
+            attachmentController.finishSubmission(isStillSelectedForResult);
           }
+          submissionController.succeed(submission);
 
           if (isStillSelectedForResult) {
             setError(null);
@@ -5412,6 +5474,16 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             }
           }
         } catch (err) {
+          if (shouldClearComposer) {
+            const shouldRestoreDraft = submissionController.fail(
+              submission,
+              draftController.snapshot()
+            );
+            attachmentController.finishSubmission(false, shouldRestoreDraft);
+            if (shouldRestoreDraft) {
+              setDraft(submission.draft);
+            }
+          }
           restoreGoalSurfaces();
           clearOptimisticSentMessage();
           discardOptimisticQueuedMessage(targetChatId, optimisticQueuedMessage?.id);
@@ -5434,7 +5506,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         activeApprovalPolicy,
         activeServiceTier,
         api,
+        attachmentController,
         activeBridgeUiSurfaces,
+        draftController,
         cacheThreadPlan,
         cacheThreadQueueState,
         handleSlashCommand,
@@ -5458,6 +5532,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         replaceThreadBridgeUiSurfaces,
         rememberChatModelPreference,
         scrollToBottomReliable,
+        submissionController,
       ]
     );
 
@@ -5467,7 +5542,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     }, [sendMessageContent]);
 
     const sendMessage = useCallback(async () => {
-      const content = draft.trim();
+      const draftSnapshot = draftController.snapshot();
+      const content = draftSnapshot.value.trim();
       if (!content) {
         return;
       }
@@ -5482,11 +5558,19 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         return;
       }
 
-      await sendMessageContent(content, { allowSlashCommands: false });
+      const submission = submissionController.begin(draftSnapshot, {
+        mentions: pendingMentionPaths,
+        localImages: pendingLocalImagePaths,
+      });
+      await sendMessageContent(content, { allowSlashCommands: false, submission });
     }, [
       draft,
+      draftController,
       handleSlashCommand,
       sendMessageContent,
+      submissionController,
+      pendingMentionPaths,
+      pendingLocalImagePaths,
       uploadingAttachment,
     ]);
 
@@ -6641,6 +6725,13 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             readString(params?.turnId) ??
             readString(params?.turn_id) ??
             null;
+          const knownActiveTurnId =
+            threadId === currentId
+              ? activeTurnIdRef.current
+              : threadRuntimeSnapshotsRef.current[threadId]?.activeTurnId ?? null;
+          if (!completedTurnId || (knownActiveTurnId && completedTurnId !== knownActiveTurnId)) {
+            return;
+          }
           const planTurnId = planItemTurnIdByThreadRef.current[threadId] ?? null;
           const promptTurnId = completedTurnId ?? planTurnId;
           const shouldPromptPlanImplementation =
@@ -6706,9 +6797,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           setUserInputDrafts({});
           setUserInputError(null);
           setResolvingUserInput(false);
-          if (!completedTurnId || completedTurnId === activeTurnIdRef.current) {
-            setActiveTurnId(null);
-          }
+          setActiveTurnId(null);
           setSelectedChat((prev) => {
             if (!prev || prev.id !== threadId) {
               return prev;
@@ -7189,7 +7278,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     });
 
     const handleResolveApproval = useCallback(
-      async (id: string, decision: ApprovalDecision) => {
+      async (id: string, decision: ApprovalDecision): Promise<void> => {
         try {
           await approvalController.resolveApproval(id, decision);
           if (selectedChatId) {
@@ -7198,6 +7287,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           setPendingApproval(null);
         } catch (err) {
           setError((err as Error).message);
+          throw err;
         }
       },
       [approvalController, cacheThreadPendingApproval, selectedChatId]
