@@ -1,13 +1,13 @@
 import 'react-native-gesture-handler';
 
 import { useFonts } from 'expo-font';
-import * as FileSystem from 'expo-file-system/legacy';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   AppState,
   ActivityIndicator,
   BackHandler,
   Keyboard,
+  Pressable,
   StatusBar,
   StyleSheet,
   Text,
@@ -40,41 +40,25 @@ import {
   updateChatSnapshotCache,
   type ChatSnapshotCache,
 } from './src/chatSnapshotCache';
-import {
-  APP_SETTINGS_VERSION,
-  DEFAULT_WORKSPACE_CHAT_LIMIT,
-  parseAppSettings,
-  type WorkspaceChatLimit,
-} from './src/appSettings';
 import type {
-  ApprovalMode,
   ApprovalDecision,
   Chat,
   ChatEngine,
   CollaborationMode,
-  EngineDefaultSettingsMap,
   ReasoningEffort,
   ServiceTier,
 } from './src/api/types';
 import { HostBridgeWsClient } from './src/api/ws';
+import { createAppStateStore, type AppSettingsState } from './src/appState';
+import { createAppStatePersistence } from './src/appStatePersistence';
 import { normalizeBridgeUrlInput } from './src/bridgeUrl';
 import {
   APP_FONT_ASSETS,
   DEFAULT_FONT_PREFERENCE,
-  normalizeFontPreference,
-  type FontPreference,
 } from './src/fonts';
 import {
-  clearBridgeProfileStore,
   getActiveBridgeProfile,
-  loadBridgeProfileStore,
-  removeBridgeProfile,
-  renameBridgeProfile,
-  saveBridgeProfileStore,
-  setActiveBridgeProfile,
-  type BridgeProfile,
   type BridgeProfileDraft,
-  upsertBridgeProfile,
 } from './src/bridgeProfiles';
 import { env } from './src/config';
 import { DrawerContent } from './src/navigation/DrawerContent';
@@ -111,8 +95,6 @@ import {
   AppThemeProvider,
   createAppTheme,
   resolveThemeMode,
-  type AppearancePreference,
-  type DarkUiPalette,
 } from './src/theme';
 
 type AppScreen = 'Main' | 'ChatGit' | 'Browser' | 'Settings' | 'Privacy' | 'Terms';
@@ -140,15 +122,38 @@ const DRAWER_MAX_SHADOW_RADIUS = 26;
 const DRAWER_MAX_ELEVATION = 18;
 const APP_PREFETCH_DELAY_MS = 0;
 const APP_PREFETCH_CHAT_LIMIT = 5;
-const APP_SETTINGS_FILE = 'clawdex-app-settings.json';
 const CHAT_SNAPSHOT_PERSIST_DELAY_MS = 250;
 const AUTO_STORE_REVIEW_RETRY_MS = 24 * 60 * 60 * 1000;
 
 export default function App() {
   const systemColorScheme = useColorScheme();
-  const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const [bridgeProfiles, setBridgeProfiles] = useState<BridgeProfile[]>([]);
-  const [activeBridgeProfileId, setActiveBridgeProfileId] = useState<string | null>(null);
+  const appStateStore = useMemo(
+    () => createAppStateStore(createAppStatePersistence()),
+    []
+  );
+  const appStateSnapshot = useSyncExternalStore(
+    appStateStore.subscribe,
+    appStateStore.getSnapshot,
+    appStateStore.getSnapshot
+  );
+  const settingsLoaded = appStateSnapshot.loaded;
+  const {
+    settings: {
+      defaultStartCwd,
+      defaultChatEngine,
+      defaultEngineSettings,
+      approvalMode,
+      showToolCalls,
+      workspaceChatLimit,
+      appearancePreference,
+      darkUiPalette,
+      fontPreference,
+      recentBrowserTargetUrls,
+    },
+    bridgeProfiles: currentBridgeProfileStore,
+  } = appStateSnapshot.data;
+  const { activeProfileId: activeBridgeProfileId, profiles: bridgeProfiles } =
+    currentBridgeProfileStore;
   const [onboardingMode, setOnboardingMode] = useState<OnboardingMode>('initial');
   const [onboardingReturnScreen, setOnboardingReturnScreen] =
     useState<AppScreen>('Settings');
@@ -181,13 +186,6 @@ export default function App() {
         : null,
     [ws]
   );
-  const currentBridgeProfileStore = useMemo(
-    () => ({
-      activeProfileId: activeBridgeProfileId,
-      profiles: bridgeProfiles,
-    }),
-    [activeBridgeProfileId, bridgeProfiles]
-  );
   const mainRef = useRef<MainScreenHandle>(null);
   const browserRef = useRef<BrowserScreenHandle>(null);
   const pushSyncedApiRef = useRef<HostBridgeApiClient | null>(null);
@@ -209,23 +207,6 @@ export default function App() {
   const [chatSnapshotCache, setChatSnapshotCache] = useState<ChatSnapshotCache | null>(null);
   const [settingsAllowsDrawerGesture, setSettingsAllowsDrawerGesture] = useState(true);
   const [drawerCapturesTouches, setDrawerCapturesTouches] = useState(false);
-  const [defaultStartCwd, setDefaultStartCwd] = useState<string | null>(null);
-  const [defaultChatEngine, setDefaultChatEngine] = useState<ChatEngine>('codex');
-  const [defaultEngineSettings, setDefaultEngineSettings] = useState<EngineDefaultSettingsMap>(
-    createEmptyEngineDefaultSettingsMap
-  );
-  const [approvalMode, setApprovalMode] = useState<ApprovalMode>('yolo');
-  const [showToolCalls, setShowToolCalls] = useState(true);
-  const [workspaceChatLimit, setWorkspaceChatLimit] = useState<WorkspaceChatLimit>(
-    DEFAULT_WORKSPACE_CHAT_LIMIT
-  );
-  const [appearancePreference, setAppearancePreference] =
-    useState<AppearancePreference>('system');
-  const [darkUiPalette, setDarkUiPalette] = useState<DarkUiPalette>('classic');
-  const [fontPreference, setFontPreference] = useState<FontPreference>(
-    DEFAULT_FONT_PREFERENCE
-  );
-  const [recentBrowserTargetUrls, setRecentBrowserTargetUrls] = useState<string[]>([]);
   const [pendingBrowserTargetUrl, setPendingBrowserTargetUrl] = useState<string | null>(null);
   const [, setBridgeConnected] = useState(() => Boolean(ws?.isConnected));
   const [appLifecycleState, setAppLifecycleState] = useState<AppStateStatus>(
@@ -731,96 +712,16 @@ export default function App() {
     storeReviewStateLoaded,
   ]);
 
-  const saveAppSettings = useCallback(
-    async (
-      nextDefaultStartCwd: string | null,
-      nextDefaultChatEngine: ChatEngine,
-      nextDefaultEngineSettings: EngineDefaultSettingsMap,
-      nextApprovalMode: ApprovalMode,
-      nextShowToolCalls: boolean,
-      nextWorkspaceChatLimit: WorkspaceChatLimit,
-      nextAppearancePreference: AppearancePreference,
-      nextDarkUiPalette: DarkUiPalette,
-      nextFontPreference: FontPreference,
-      nextRecentBrowserTargetUrls: string[]
-    ) => {
-      const settingsPath = getAppSettingsPath();
-      if (!settingsPath) {
-        return;
-      }
-
-      const payload = JSON.stringify({
-        version: APP_SETTINGS_VERSION,
-        defaultStartCwd: nextDefaultStartCwd,
-        lastUsedChatEngine: nextDefaultChatEngine,
-        lastUsedEngineSettings: nextDefaultEngineSettings,
-        approvalMode: nextApprovalMode,
-        showToolCalls: nextShowToolCalls,
-        workspaceChatLimit: nextWorkspaceChatLimit,
-        appearancePreference: nextAppearancePreference,
-        darkUiPalette: nextDarkUiPalette,
-        fontPreference: nextFontPreference,
-        recentBrowserTargetUrls: nextRecentBrowserTargetUrls,
-      });
-
-      try {
-        await FileSystem.writeAsStringAsync(settingsPath, payload);
-      } catch {
-        // Best effort persistence only.
-      }
-    },
-    []
-  );
-
   useEffect(() => {
     let cancelled = false;
 
-    const resetToDefaults = () => {
-      setDefaultStartCwd(null);
-      setDefaultChatEngine('codex');
-      setDefaultEngineSettings(createEmptyEngineDefaultSettingsMap());
-      setApprovalMode('yolo');
-      setShowToolCalls(true);
-      setWorkspaceChatLimit(DEFAULT_WORKSPACE_CHAT_LIMIT);
-      setAppearancePreference('system');
-      setDarkUiPalette('classic');
-      setFontPreference(DEFAULT_FONT_PREFERENCE);
-      setRecentBrowserTargetUrls([]);
-    };
-
     const loadSettings = async () => {
-      const settingsPath = getAppSettingsPath();
-      let raw = '';
       try {
-        if (settingsPath) {
-          raw = await FileSystem.readAsStringAsync(settingsPath);
-        }
-      } catch {
-        raw = '';
-      }
-
-      const parsed = parseAppSettings(raw);
-
-      try {
-        let profileStore = await loadBridgeProfileStore();
-        if (
-          profileStore.profiles.length === 0 &&
-          parsed.bridgeUrl &&
-          parsed.bridgeToken
-        ) {
-          profileStore = upsertBridgeProfile(profileStore, {
-            name: null,
-            bridgeUrl: parsed.bridgeUrl,
-            bridgeToken: parsed.bridgeToken,
-            activate: true,
-          }).store;
-          await saveBridgeProfileStore(profileStore);
-        }
-
+        await appStateStore.initialize();
         if (cancelled) {
           return;
         }
-
+        const profileStore = appStateStore.getSnapshot().data.bridgeProfiles;
         const activeProfile = getActiveBridgeProfile(profileStore);
         const snapshotCache = activeProfile
           ? await loadChatSnapshotCache(activeProfile.id)
@@ -833,48 +734,13 @@ export default function App() {
             (entry) => entry.chat.id === snapshotCache.selectedChatId
           )?.chat ?? null;
 
-        setBridgeProfiles(profileStore.profiles);
-        setActiveBridgeProfileId(profileStore.activeProfileId);
         setChatSnapshotCache(snapshotCache);
         setSelectedChatId(selectedSnapshot?.id ?? null);
         setActiveChat(selectedSnapshot);
         setPendingMainChatId(selectedSnapshot?.id ?? null);
         setPendingMainChatSnapshot(selectedSnapshot);
-        setDefaultStartCwd(parsed.defaultStartCwd);
-        setDefaultChatEngine(parsed.defaultChatEngine);
-        setDefaultEngineSettings(parsed.defaultEngineSettings);
-        setApprovalMode(parsed.approvalMode);
-        setShowToolCalls(parsed.showToolCalls);
-        setWorkspaceChatLimit(parsed.workspaceChatLimit);
-        setAppearancePreference(parsed.appearancePreference);
-        setDarkUiPalette(parsed.darkUiPalette);
-        setFontPreference(parsed.fontPreference);
-        setRecentBrowserTargetUrls(parsed.recentBrowserTargetUrls);
-
-        if (parsed.bridgeUrl || parsed.bridgeToken) {
-          void saveAppSettings(
-            parsed.defaultStartCwd,
-            parsed.defaultChatEngine,
-            parsed.defaultEngineSettings,
-            parsed.approvalMode,
-            parsed.showToolCalls,
-            parsed.workspaceChatLimit,
-            parsed.appearancePreference,
-            parsed.darkUiPalette,
-            parsed.fontPreference,
-            parsed.recentBrowserTargetUrls
-          );
-        }
       } catch {
-        if (!cancelled) {
-          resetToDefaults();
-          setBridgeProfiles([]);
-          setActiveBridgeProfileId(null);
-        }
-      } finally {
-        if (!cancelled) {
-          setSettingsLoaded(true);
-        }
+        // The typed persistence error remains available in the app-state snapshot.
       }
     };
 
@@ -882,7 +748,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [appStateStore]);
 
   useEffect(() => {
     if (!api || !chatSnapshotCache || chatSnapshotCache.profileId !== activeBridgeProfile?.id) {
@@ -1331,292 +1197,23 @@ export default function App() {
       serviceTier: ServiceTier | null,
       collaborationMode: CollaborationMode
     ) => {
-      const normalizedEngine = normalizeChatEngine(engine) ?? 'codex';
-      const normalizedModelId = normalizeModelId(modelId);
-      const normalizedEffort = normalizeReasoningEffort(effort);
-      const nextDefaultEngineSettings = {
-        ...defaultEngineSettings,
-        [normalizedEngine]: {
-          modelId: normalizedModelId,
-          effort: normalizedEffort,
-          serviceTier: serviceTier === 'fast' ? 'fast' : null,
-          collaborationMode:
-            collaborationMode === 'plan' ||
-            (collaborationMode === 'ask' && normalizedEngine === 'cursor')
-              ? collaborationMode
-              : 'default',
-        },
-      } satisfies EngineDefaultSettingsMap;
-      setDefaultChatEngine(normalizedEngine);
-      setDefaultEngineSettings(nextDefaultEngineSettings);
-      void saveAppSettings(
-        defaultStartCwd,
-        normalizedEngine,
-        nextDefaultEngineSettings,
-        approvalMode,
-        showToolCalls,
-        workspaceChatLimit,
-        appearancePreference,
-        darkUiPalette,
-        fontPreference,
-        recentBrowserTargetUrls
-      );
+      appStateStore.dispatch({
+        type: 'settings/remember-thread',
+        engine,
+        modelId,
+        effort,
+        serviceTier,
+        collaborationMode,
+      });
     },
-    [
-      approvalMode,
-      defaultEngineSettings,
-      defaultStartCwd,
-      recentBrowserTargetUrls,
-      saveAppSettings,
-      showToolCalls,
-      workspaceChatLimit,
-      appearancePreference,
-      darkUiPalette,
-      fontPreference,
-    ]
+    [appStateStore]
   );
 
-  const handleApprovalModeChange = useCallback(
-    (nextMode: ApprovalMode) => {
-      const normalizedMode = normalizeApprovalMode(nextMode);
-      setApprovalMode(normalizedMode);
-      void saveAppSettings(
-        defaultStartCwd,
-        defaultChatEngine,
-        defaultEngineSettings,
-        normalizedMode,
-        showToolCalls,
-        workspaceChatLimit,
-        appearancePreference,
-        darkUiPalette,
-        fontPreference,
-        recentBrowserTargetUrls
-      );
+  const updateSettings = useCallback(
+    (patch: Partial<AppSettingsState>) => {
+      appStateStore.dispatch({ type: 'settings/update', patch });
     },
-    [
-      defaultChatEngine,
-      defaultEngineSettings,
-      defaultStartCwd,
-      recentBrowserTargetUrls,
-      saveAppSettings,
-      showToolCalls,
-      workspaceChatLimit,
-      appearancePreference,
-      darkUiPalette,
-      fontPreference,
-    ]
-  );
-
-  const handleShowToolCallsChange = useCallback(
-    (nextValue: boolean) => {
-      setShowToolCalls(nextValue);
-      void saveAppSettings(
-        defaultStartCwd,
-        defaultChatEngine,
-        defaultEngineSettings,
-        approvalMode,
-        nextValue,
-        workspaceChatLimit,
-        appearancePreference,
-        darkUiPalette,
-        fontPreference,
-        recentBrowserTargetUrls
-      );
-    },
-    [
-      approvalMode,
-      defaultChatEngine,
-      defaultEngineSettings,
-      defaultStartCwd,
-      recentBrowserTargetUrls,
-      saveAppSettings,
-      workspaceChatLimit,
-      appearancePreference,
-      fontPreference,
-    ]
-  );
-
-  const handleDefaultStartCwdChange = useCallback(
-    (nextCwd: string | null) => {
-      const normalizedDefaultStartCwd = normalizeDefaultStartCwd(nextCwd);
-      setDefaultStartCwd(normalizedDefaultStartCwd);
-      void saveAppSettings(
-        normalizedDefaultStartCwd,
-        defaultChatEngine,
-        defaultEngineSettings,
-        approvalMode,
-        showToolCalls,
-        workspaceChatLimit,
-        appearancePreference,
-        darkUiPalette,
-        fontPreference,
-        recentBrowserTargetUrls
-      );
-    },
-    [
-      approvalMode,
-      defaultChatEngine,
-      defaultEngineSettings,
-      recentBrowserTargetUrls,
-      saveAppSettings,
-      showToolCalls,
-      workspaceChatLimit,
-      appearancePreference,
-      darkUiPalette,
-      fontPreference,
-    ]
-  );
-
-  const handleAppearancePreferenceChange = useCallback(
-    (nextPreference: AppearancePreference) => {
-      setAppearancePreference(nextPreference);
-      void saveAppSettings(
-        defaultStartCwd,
-        defaultChatEngine,
-        defaultEngineSettings,
-        approvalMode,
-        showToolCalls,
-        workspaceChatLimit,
-        nextPreference,
-        darkUiPalette,
-        fontPreference,
-        recentBrowserTargetUrls
-      );
-    },
-    [
-      approvalMode,
-      defaultChatEngine,
-      defaultEngineSettings,
-      defaultStartCwd,
-      darkUiPalette,
-      recentBrowserTargetUrls,
-      saveAppSettings,
-      showToolCalls,
-      workspaceChatLimit,
-      fontPreference,
-    ]
-  );
-
-  const handleDarkUiPaletteChange = useCallback(
-    (nextPalette: DarkUiPalette) => {
-      const normalized = nextPalette === 'grey' ? 'grey' : 'classic';
-      setDarkUiPalette(normalized);
-      void saveAppSettings(
-        defaultStartCwd,
-        defaultChatEngine,
-        defaultEngineSettings,
-        approvalMode,
-        showToolCalls,
-        workspaceChatLimit,
-        appearancePreference,
-        normalized,
-        fontPreference,
-        recentBrowserTargetUrls
-      );
-    },
-    [
-      approvalMode,
-      appearancePreference,
-      defaultChatEngine,
-      defaultEngineSettings,
-      defaultStartCwd,
-      fontPreference,
-      recentBrowserTargetUrls,
-      saveAppSettings,
-      showToolCalls,
-      workspaceChatLimit,
-    ]
-  );
-
-  const handleFontPreferenceChange = useCallback(
-    (nextPreference: FontPreference) => {
-      const normalizedPreference = normalizeFontPreference(nextPreference);
-      setFontPreference(normalizedPreference);
-      void saveAppSettings(
-        defaultStartCwd,
-        defaultChatEngine,
-        defaultEngineSettings,
-        approvalMode,
-        showToolCalls,
-        workspaceChatLimit,
-        appearancePreference,
-        darkUiPalette,
-        normalizedPreference,
-        recentBrowserTargetUrls
-      );
-    },
-    [
-      approvalMode,
-      appearancePreference,
-      darkUiPalette,
-      defaultChatEngine,
-      defaultEngineSettings,
-      defaultStartCwd,
-      recentBrowserTargetUrls,
-      saveAppSettings,
-      showToolCalls,
-      workspaceChatLimit,
-    ]
-  );
-
-  const handleRecentBrowserTargetUrlsChange = useCallback(
-    (nextTargets: string[]) => {
-      setRecentBrowserTargetUrls(nextTargets);
-      void saveAppSettings(
-        defaultStartCwd,
-        defaultChatEngine,
-        defaultEngineSettings,
-        approvalMode,
-        showToolCalls,
-        workspaceChatLimit,
-        appearancePreference,
-        darkUiPalette,
-        fontPreference,
-        nextTargets
-      );
-    },
-    [
-      approvalMode,
-      appearancePreference,
-      darkUiPalette,
-      defaultChatEngine,
-      defaultEngineSettings,
-      defaultStartCwd,
-      fontPreference,
-      saveAppSettings,
-      showToolCalls,
-      workspaceChatLimit,
-    ]
-  );
-
-  const handleWorkspaceChatLimitChange = useCallback(
-    (nextLimit: WorkspaceChatLimit) => {
-      setWorkspaceChatLimit(nextLimit);
-      void saveAppSettings(
-        defaultStartCwd,
-        defaultChatEngine,
-        defaultEngineSettings,
-        approvalMode,
-        showToolCalls,
-        nextLimit,
-        appearancePreference,
-        darkUiPalette,
-        fontPreference,
-        recentBrowserTargetUrls
-      );
-    },
-    [
-      approvalMode,
-      appearancePreference,
-      darkUiPalette,
-      defaultChatEngine,
-      defaultEngineSettings,
-      defaultStartCwd,
-      fontPreference,
-      recentBrowserTargetUrls,
-      saveAppSettings,
-      showToolCalls,
-    ]
+    [appStateStore]
   );
 
   const openBrowser = useCallback(
@@ -1674,13 +1271,14 @@ export default function App() {
         editedProfile &&
           (editedProfile.bridgeUrl !== normalized || editedProfile.bridgeToken !== normalizedToken)
       );
-      const { store: nextStore } = upsertBridgeProfile(currentBridgeProfileStore, nextDraft);
-      await saveBridgeProfileStore(nextStore);
+      const nextState = await appStateStore.dispatchDurable({
+        type: 'profiles/save',
+        draft: nextDraft,
+      });
+      const nextStore = nextState.bridgeProfiles;
       if (bridgeIdentityChanged && nextStore.activeProfileId) {
         await deleteChatSnapshotCache(nextStore.activeProfileId);
       }
-      setBridgeProfiles(nextStore.profiles);
-      setActiveBridgeProfileId(nextStore.activeProfileId);
       resetBridgeSessionState();
       const nextCache = nextStore.activeProfileId && !bridgeIdentityChanged
         ? await loadChatSnapshotCache(nextStore.activeProfileId)
@@ -1692,40 +1290,18 @@ export default function App() {
       setActiveChat(selectedSnapshot);
       setPendingMainChatId(selectedSnapshot?.id ?? null);
       setPendingMainChatSnapshot(selectedSnapshot);
-      void saveAppSettings(
-        defaultStartCwd,
-        defaultChatEngine,
-        defaultEngineSettings,
-        approvalMode,
-        showToolCalls,
-        workspaceChatLimit,
-        appearancePreference,
-        darkUiPalette,
-        fontPreference,
-        recentBrowserTargetUrls
-      );
       setCurrentScreen(onboardingMode === 'initial' ? 'Main' : onboardingReturnScreen);
       setOnboardingMode('edit');
       closeDrawer();
     },
     [
       activeBridgeProfile?.id,
-      approvalMode,
+      appStateStore,
       closeDrawer,
       currentBridgeProfileStore,
-      defaultChatEngine,
-      defaultEngineSettings,
-      defaultStartCwd,
-      fontPreference,
       onboardingMode,
       onboardingReturnScreen,
-      recentBrowserTargetUrls,
       resetBridgeSessionState,
-      saveAppSettings,
-      showToolCalls,
-      workspaceChatLimit,
-      appearancePreference,
-      darkUiPalette,
     ]
   );
 
@@ -1758,13 +1334,13 @@ export default function App() {
 
   const handleSwitchBridgeProfile = useCallback(
     async (profileId: string) => {
-      const nextStore = setActiveBridgeProfile(currentBridgeProfileStore, profileId);
-      await saveBridgeProfileStore(nextStore);
       const nextCache = await loadChatSnapshotCache(profileId);
+      await appStateStore.dispatchDurable({
+        type: 'profiles/switch',
+        profileId,
+      });
       const selectedSnapshot =
         nextCache.entries.find((entry) => entry.chat.id === nextCache.selectedChatId)?.chat ?? null;
-      setBridgeProfiles(nextStore.profiles);
-      setActiveBridgeProfileId(nextStore.activeProfileId);
       resetBridgeSessionState();
       setChatSnapshotCache(nextCache);
       setSelectedChatId(selectedSnapshot?.id ?? null);
@@ -1772,27 +1348,29 @@ export default function App() {
       setPendingMainChatId(selectedSnapshot?.id ?? null);
       setPendingMainChatSnapshot(selectedSnapshot);
     },
-    [currentBridgeProfileStore, resetBridgeSessionState]
+    [appStateStore, resetBridgeSessionState]
   );
 
   const handleRenameBridgeProfile = useCallback(
     async (profileId: string, nextName: string) => {
-      const nextStore = renameBridgeProfile(currentBridgeProfileStore, profileId, nextName);
-      await saveBridgeProfileStore(nextStore);
-      setBridgeProfiles(nextStore.profiles);
-      setActiveBridgeProfileId(nextStore.activeProfileId);
+      await appStateStore.dispatchDurable({
+        type: 'profiles/rename',
+        profileId,
+        name: nextName,
+      });
     },
-    [currentBridgeProfileStore]
+    [appStateStore]
   );
 
   const handleDeleteBridgeProfile = useCallback(
     async (profileId: string) => {
       const deletingActiveProfile = activeBridgeProfileId === profileId;
-      const nextStore = removeBridgeProfile(currentBridgeProfileStore, profileId);
-      await saveBridgeProfileStore(nextStore);
+      const nextState = await appStateStore.dispatchDurable({
+        type: 'profiles/remove',
+        profileId,
+      });
+      const nextStore = nextState.bridgeProfiles;
       await deleteChatSnapshotCache(profileId);
-      setBridgeProfiles(nextStore.profiles);
-      setActiveBridgeProfileId(nextStore.activeProfileId);
 
       if (deletingActiveProfile) {
         resetBridgeSessionState();
@@ -1815,20 +1393,18 @@ export default function App() {
         closeDrawer();
       }
     },
-    [activeBridgeProfileId, closeDrawer, currentBridgeProfileStore, resetBridgeSessionState]
+    [activeBridgeProfileId, appStateStore, closeDrawer, resetBridgeSessionState]
   );
 
   const handleClearSavedBridges = useCallback(async () => {
+    await appStateStore.dispatchDurable({ type: 'profiles/clear' });
     await Promise.all(bridgeProfiles.map((profile) => deleteChatSnapshotCache(profile.id)));
-    await clearBridgeProfileStore();
-    setBridgeProfiles([]);
-    setActiveBridgeProfileId(null);
     resetBridgeSessionState();
     setOnboardingMode('initial');
     setOnboardingReturnScreen('Main');
     setCurrentScreen('Onboarding');
     closeDrawer();
-  }, [bridgeProfiles, closeDrawer, resetBridgeSessionState]);
+  }, [appStateStore, bridgeProfiles, closeDrawer, resetBridgeSessionState]);
 
   const handleCancelOnboarding = useCallback(() => {
     setCurrentScreen(onboardingReturnScreen);
@@ -1960,6 +1536,39 @@ export default function App() {
     );
   }
 
+  if (
+    appStateSnapshot.persistenceError &&
+    appStateSnapshot.persistenceError.operation !== 'write'
+  ) {
+    return (
+      <AppThemeProvider theme={theme}>
+        <GestureHandlerRootView style={styles.root}>
+          <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+            <StatusBar
+              barStyle={theme.statusBarStyle}
+              backgroundColor={theme.colors.bgMain}
+            />
+            <View style={styles.persistenceRecoveryRoot}>
+              <Text style={styles.persistenceRecoveryTitle}>Could not load saved app state</Text>
+              <Text selectable style={styles.persistenceRecoveryMessage}>
+                {appStateSnapshot.persistenceError.message}
+              </Text>
+              <Pressable
+                onPress={() => void appStateStore.retryPersistence()}
+                style={({ pressed }) => [
+                  styles.persistenceRecoveryButton,
+                  pressed && styles.persistenceRecoveryButtonPressed,
+                ]}
+              >
+                <Text style={styles.persistenceRecoveryButtonText}>Retry</Text>
+              </Pressable>
+            </View>
+          </SafeAreaProvider>
+        </GestureHandlerRootView>
+      </AppThemeProvider>
+    );
+  }
+
   if (!bridgeUrl || !api || !ws || currentScreen === 'Onboarding') {
     const mode: OnboardingMode = bridgeUrl ? onboardingMode : 'initial';
     const shouldUseSavedBridgeCredentials = mode === 'edit' || mode === 'reconnect';
@@ -2030,7 +1639,7 @@ export default function App() {
             onLastUsedThreadSettingsChange={handleLastUsedThreadSettingsChange}
             approvalMode={approvalMode}
             showToolCalls={showToolCalls}
-            onDefaultStartCwdChange={handleDefaultStartCwdChange}
+            onDefaultStartCwdChange={(value) => updateSettings({ defaultStartCwd: value })}
             onChatContextChange={handleChatContextChange}
             onChatOpeningStateChange={setMainOpeningChatId}
             pendingOpenChatId={pendingMainChatId}
@@ -2050,17 +1659,21 @@ export default function App() {
             bridgeProfileName={activeBridgeProfile?.name ?? 'Current bridge'}
             bridgeProfiles={bridgeProfiles}
             approvalMode={approvalMode}
-            onApprovalModeChange={handleApprovalModeChange}
+            onApprovalModeChange={(value) => updateSettings({ approvalMode: value })}
             showToolCalls={showToolCalls}
-            onShowToolCallsChange={handleShowToolCallsChange}
+            onShowToolCallsChange={(value) => updateSettings({ showToolCalls: value })}
             workspaceChatLimit={workspaceChatLimit}
-            onWorkspaceChatLimitChange={handleWorkspaceChatLimitChange}
+            onWorkspaceChatLimitChange={(value) => updateSettings({ workspaceChatLimit: value })}
             appearancePreference={appearancePreference}
             darkUiPalette={darkUiPalette}
-            onAppearancePreferenceChange={handleAppearancePreferenceChange}
-            onDarkUiPaletteChange={handleDarkUiPaletteChange}
+            onAppearancePreferenceChange={(value) =>
+              updateSettings({ appearancePreference: value })
+            }
+            onDarkUiPaletteChange={(value) => updateSettings({ darkUiPalette: value })}
             fontPreference={fontPreference}
-            onFontPreferenceChange={handleFontPreferenceChange}
+            onFontPreferenceChange={(value) => updateSettings({ fontPreference: value })}
+            persistenceError={appStateSnapshot.persistenceError}
+            onRetryPersistence={() => appStateStore.retryPersistence()}
             onEditBridgeProfile={handleEditBridgeProfile}
             onAddBridgeProfile={handleAddBridgeProfile}
             onSwitchBridgeProfile={handleSwitchBridgeProfile}
@@ -2081,7 +1694,9 @@ export default function App() {
             bridgeUrl={bridgeUrl}
             onOpenDrawer={handleNavigationToggle}
             recentTargetUrls={recentBrowserTargetUrls}
-            onRecentTargetUrlsChange={handleRecentBrowserTargetUrlsChange}
+            onRecentTargetUrlsChange={(value) =>
+              updateSettings({ recentBrowserTargetUrls: value })
+            }
             pendingTargetUrl={pendingBrowserTargetUrl}
             onPendingTargetHandled={() => setPendingBrowserTargetUrl(null)}
           />
@@ -2119,7 +1734,7 @@ export default function App() {
             onLastUsedThreadSettingsChange={handleLastUsedThreadSettingsChange}
             approvalMode={approvalMode}
             showToolCalls={showToolCalls}
-            onDefaultStartCwdChange={handleDefaultStartCwdChange}
+            onDefaultStartCwdChange={(value) => updateSettings({ defaultStartCwd: value })}
             onChatContextChange={handleChatContextChange}
             onChatOpeningStateChange={setMainOpeningChatId}
             pendingOpenChatId={pendingMainChatId}
@@ -2238,15 +1853,6 @@ export default function App() {
   );
 }
 
-function getAppSettingsPath(): string | null {
-  const base = FileSystem.documentDirectory;
-  if (typeof base !== 'string' || base.trim().length === 0) {
-    return null;
-  }
-
-  return `${base}${APP_SETTINGS_FILE}`;
-}
-
 function normalizeBridgeToken(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null;
@@ -2254,78 +1860,6 @@ function normalizeBridgeToken(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
-}
-
-function normalizeDefaultStartCwd(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function normalizeModelId(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function normalizeChatEngine(value: unknown): ChatEngine | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  if (normalized === 'codex' || normalized === 'opencode' || normalized === 'cursor') {
-    return normalized;
-  }
-
-  return null;
-}
-
-function createEmptyEngineDefaultSettingsMap(): EngineDefaultSettingsMap {
-  return {
-    codex: {
-      modelId: null,
-      effort: null,
-    },
-    opencode: {
-      modelId: null,
-      effort: null,
-    },
-    cursor: {
-      modelId: null,
-      effort: null,
-    },
-  };
-}
-
-function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  if (
-    normalized === 'none' ||
-    normalized === 'minimal' ||
-    normalized === 'low' ||
-    normalized === 'medium' ||
-    normalized === 'high' ||
-    normalized === 'xhigh'
-  ) {
-    return normalized;
-  }
-
-  return null;
-}
-
-function normalizeApprovalMode(value: unknown): ApprovalMode {
-  return value === 'yolo' ? 'yolo' : 'normal';
 }
 
 function getDrawerWidth(screenWidth: number): number {
@@ -2409,6 +1943,41 @@ const createStyles = (theme: ReturnType<typeof createAppTheme>) =>
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: theme.colors.bgMain,
+    },
+    persistenceRecoveryRoot: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: theme.spacing.md,
+      padding: theme.spacing.xl,
+      backgroundColor: theme.colors.bgMain,
+    },
+    persistenceRecoveryTitle: {
+      ...theme.typography.headline,
+      color: theme.colors.textPrimary,
+      textAlign: 'center',
+    },
+    persistenceRecoveryMessage: {
+      ...theme.typography.body,
+      maxWidth: 440,
+      color: theme.colors.textSecondary,
+      textAlign: 'center',
+    },
+    persistenceRecoveryButton: {
+      minWidth: 120,
+      alignItems: 'center',
+      paddingVertical: theme.spacing.sm,
+      paddingHorizontal: theme.spacing.lg,
+      borderRadius: theme.radius.md,
+      backgroundColor: theme.colors.accent,
+    },
+    persistenceRecoveryButtonPressed: {
+      backgroundColor: theme.colors.accentPressed,
+    },
+    persistenceRecoveryButtonText: {
+      ...theme.typography.body,
+      color: theme.colors.accentText,
+      fontWeight: '700',
     },
     screen: {
       flex: 1,

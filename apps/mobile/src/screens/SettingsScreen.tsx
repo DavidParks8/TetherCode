@@ -40,6 +40,7 @@ import type {
   PlanType,
 } from '../api/types';
 import type { HostBridgeWsClient } from '../api/ws';
+import type { AppStatePersistenceError } from '../appState';
 import clawdexMark from '../../assets/brand/mark.png';
 import type { BridgeProfile } from '../bridgeProfiles';
 import { BridgeProfileManagerSheet } from '../components/bridge-profile-manager-sheet';
@@ -117,6 +118,8 @@ interface SettingsScreenProps {
   onRenameBridgeProfile?: (profileId: string, nextName: string) => void | Promise<void>;
   onDeleteBridgeProfile?: (profileId: string) => void | Promise<void>;
   onClearSavedBridges?: () => void | Promise<void>;
+  persistenceError?: AppStatePersistenceError | null;
+  onRetryPersistence?: () => void | Promise<void>;
   onOpenDrawer: () => void;
   onDrawerGestureEnabledChange?: (enabled: boolean) => void;
   onOpenPrivacy: () => void;
@@ -166,6 +169,8 @@ export function SettingsScreen({
   onRenameBridgeProfile,
   onDeleteBridgeProfile,
   onClearSavedBridges,
+  persistenceError = null,
+  onRetryPersistence,
   onOpenDrawer,
   onDrawerGestureEnabledChange,
   onOpenPrivacy,
@@ -1959,6 +1964,27 @@ export function SettingsScreen({
           scrollIndicatorInsets={{ bottom: theme.spacing.xl + insets.bottom }}
         >
           <Animated.View style={[styles.routeContent, routeContentAnimatedStyle]}>
+            {persistenceError ? (
+              <View style={styles.persistenceErrorBanner}>
+                <View style={styles.persistenceErrorCopy}>
+                  <Ionicons name="alert-circle-outline" size={16} color={colors.error} />
+                  <Text selectable style={styles.persistenceErrorText}>
+                    {persistenceError.message}
+                  </Text>
+                </View>
+                {onRetryPersistence ? (
+                  <Pressable
+                    onPress={() => void onRetryPersistence()}
+                    style={({ pressed }) => [
+                      styles.persistenceRetryButton,
+                      pressed && styles.bridgeResetBtnPressed,
+                    ]}
+                  >
+                    <Text style={styles.persistenceRetryText}>Retry save</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
             {renderBodyContent()}
           </Animated.View>
         </ScrollView>
@@ -2401,6 +2427,37 @@ const createStyles = (theme: AppTheme) => {
     bridgeResetBtnText: {
       ...theme.typography.caption,
       color: theme.colors.error,
+      fontWeight: '700',
+    },
+    persistenceErrorBanner: {
+      gap: theme.spacing.sm,
+      marginBottom: theme.spacing.md,
+      padding: theme.spacing.md,
+      borderRadius: theme.radius.md,
+      borderWidth: 1,
+      borderColor: theme.colors.errorBorder,
+      backgroundColor: theme.colors.errorBg,
+    },
+    persistenceErrorCopy: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: theme.spacing.sm,
+    },
+    persistenceErrorText: {
+      ...theme.typography.caption,
+      flex: 1,
+      color: theme.colors.error,
+    },
+    persistenceRetryButton: {
+      alignSelf: 'flex-start',
+      paddingVertical: theme.spacing.xs,
+      paddingHorizontal: theme.spacing.sm,
+      borderRadius: theme.radius.sm,
+      backgroundColor: theme.colors.error,
+    },
+    persistenceRetryText: {
+      ...theme.typography.caption,
+      color: theme.colors.white,
       fontWeight: '700',
     },
     row: {
