@@ -605,9 +605,18 @@ async fn app_server_bridge_handles_requests_responses_notifications_and_timeouts
             Some(json!({ "tool": "x" })),
         )
         .await;
+
+    // Set up a cached auth bundle so handle_server_request for chatgptAuthTokens/refresh
+    // exercises the `if let Some(auth)` true branch at line 4102.
+    cache_bridge_chatgpt_auth(BridgeChatGptAuthBundle {
+        access_token: "test-access".to_string(),
+        account_id: "test-account".to_string(),
+        plan_type: Some("plus".to_string()), // Some plan_type exercises line 4109
+    });
     bridge
         .handle_server_request(ACCOUNT_CHATGPT_TOKENS_REFRESH_METHOD, json!(91), None)
         .await;
+    clear_cached_bridge_chatgpt_auth();
     bridge
         .handle_server_request("unsupported/server/request", json!(92), None)
         .await;
@@ -2353,4 +2362,90 @@ async fn runtime_backend_resolve_with_pending_approvals_covers_some_result_branc
 
     stop_app_server_sink(&cursor).await;
     stop_opencode_backend(&opencode).await;
+}
+
+#[tokio::test]
+async fn rollout_live_sync_with_sessions_root_covers_spawn_discovery_and_poll_branches() {
+    // Create a temporary sessions root with rollout files to exercise spawn_rollout_live_sync.
+    let home = env::temp_dir().join(format!("clawdex-codex-home-{}", Uuid::new_v4()));
+    let sessions_root = home.join("sessions");
+    fs::create_dir_all(&sessions_root)
+        .await
+        .expect("create sessions root");
+
+    // Write a valid rollout file.
+    let rollout = sessions_root.join("rollout-test-session.jsonl");
+    let meta = serde_json::json!({
+        "type": "session_meta",
+        "payload": { "id": "test-session", "originator": "codex_cli_rs" }
+    });
+    fs::write(&rollout, format!("{meta}\n"))
+        .await
+        .expect("write rollout");
+
+    // Set CODEX_HOME so resolve_codex_sessions_root returns our directory.
+    std::env::set_var("CODEX_HOME", &home);
+
+    let hub = Arc::new(ClientHub::with_replay_capacity(16));
+    let metrics = Arc::new(OperationalMetrics::new());
+
+    // spawn_rollout_live_sync is the function we want to exercise.
+    spawn_rollout_live_sync(hub.clone(), metrics.clone());
+
+    // Wait for the background task to run at least one poll cycle (900ms interval).
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+
+    std::env::remove_var("CODEX_HOME");
+
+    // Verify live sync metrics were updated.
+    let snapshot = metrics.live_sync_snapshot();
+    assert!(
+        snapshot.poll_runs > 0,
+        "rollout poll should have run at least once"
+    );
+
+    let _ = fs::remove_dir_all(home).await;
+}
+
+#[tokio::test]
+async fn transient_thread_read_error_triggers_retry_in_request_internal() {
+    let stub = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("test_app_server_stub.py");
+    if !stub.exists() {
+        return;
+    }
+    let stub_path = stub.to_string_lossy().to_string();
+    let hub = Arc::new(ClientHub::with_replay_capacity(8));
+    let metrics = Arc::new(OperationalMetrics::new());
+
+    // Start a bridge with STUB_TRANSIENT_ERROR_COUNT=2 — the stub will return
+    // transient errors for the first 2 thread/read requests, then succeed.
+    // This exercises the retry loop at lines 3727-3729 in request_internal.
+    let codex = {
+        let mut cmd = tokio::process::Command::new(&stub_path);
+        cmd.arg("app-server")
+            .arg("--listen")
+            .arg("stdio://")
+            .env("STUB_TRANSIENT_ERROR_COUNT", "2")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        AppServerBridge::start_with_command(cmd, BridgeRuntimeEngine::Codex, hub, metrics)
+            .await
+            .expect("start stub bridge for transient error test")
+    };
+
+    // thread/read should succeed after retries.
+    let result = codex
+        .request_internal("thread/read", Some(json!({ "threadId": "test" })))
+        .await;
+    assert!(
+        result.is_ok(),
+        "thread/read should succeed after transient retries: {:?}",
+        result
+    );
+
+    codex.request_shutdown().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 }

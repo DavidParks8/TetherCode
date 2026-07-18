@@ -511,6 +511,12 @@ async fn completion_disposition_waiter_is_notified_and_storage_is_bounded() {
     assert_eq!(dispositions.len(), QUEUE_COMPLETION_DISPOSITION_LIMIT);
     assert!(!dispositions.contains_key(&1));
     drop(dispositions);
+
+    // Test the timeout path: wait for a disposition that is never recorded.
+    // This takes ~2 seconds (QUEUE_COMPLETION_DISPOSITION_WAIT_MS = 2000ms).
+    let timeout_result = queue.wait_for_completion_disposition(9999).await;
+    assert!(timeout_result.is_none(), "should return None on timeout");
+
     fixture.close().await;
 }
 
@@ -1960,6 +1966,32 @@ async fn queue_notification_handler_covers_dispatch_triggers_and_status_transiti
         })
         .await;
 
+    // Seed a thread blocked ONLY by an approval (no user input) with queued items.
+    // When the approval is resolved, should_dispatch becomes true, exercising
+    // the lines 3099/3101 true branches in the bridge/approval.resolved handler.
+    {
+        let mut threads = queue.threads.write().await;
+        let mut runtime = BridgeThreadQueueRuntime::default();
+        runtime
+            .pending_approval_ids
+            .insert("approval-only".to_string());
+        // NO pending_user_input_ids — this is key.
+        runtime.items.push_back(BridgeQueuedMessageEntry {
+            id: "msg-approval-only".to_string(),
+            created_at: "now".to_string(),
+            content: "queued content".to_string(),
+            turn_start: json!({}),
+        });
+        threads.insert("thread-approval-only".to_string(), runtime);
+    }
+    queue
+        .handle_notification(HubNotification {
+            event_id: 107,
+            method: "bridge/approval.resolved".to_string(),
+            params: json!({ "threadId": "thread-approval-only", "id": "approval-only" }),
+        })
+        .await;
+
     fixture.close().await;
 }
 
@@ -2498,6 +2530,16 @@ async fn queue_send_dedupe_limits_dispatch_failure_and_completion_fallbacks() {
     );
     queue.drain_thread_queue("turn-in-flight".to_string()).await;
     assert_eq!(queue.threads.read().await["turn-in-flight"].items.len(), 1);
+    // Also call send_message on this thread — it exercises runtime_has_blockers via
+    // runtime_is_blocked_or_occupied in the should_queue check.
+    let _ = queue
+        .send_message(BridgeThreadQueueSendRequest {
+            thread_id: "turn-in-flight".to_string(),
+            submission_id: "turn-in-flight-send".to_string(),
+            content: "queued content".to_string(),
+            turn_start: json!({ "input": [] }),
+        })
+        .await;
 
     // Seed a thread with action_in_flight but no thread_running or turn_start.
     // This exercises the third condition in runtime_has_blockers (line 2963).
@@ -2512,10 +2554,16 @@ async fn queue_send_dedupe_limits_dispatch_failure_and_completion_fallbacks() {
     queue
         .drain_thread_queue("action-in-flight".to_string())
         .await;
-    assert_eq!(
-        queue.threads.read().await["action-in-flight"].items.len(),
-        1
-    );
+    // Also call send_message to exercise runtime_has_blockers at line 2963.
+    let _ = queue
+        .send_message(BridgeThreadQueueSendRequest {
+            thread_id: "action-in-flight".to_string(),
+            submission_id: "action-in-flight-send".to_string(),
+            content: "queued content".to_string(),
+            turn_start: json!({ "input": [] }),
+        })
+        .await;
+    assert!(queue.threads.read().await["action-in-flight"].items.len() >= 1);
 
     // Direct send_message calls to cover internal validation paths not reached
     // through the bridge handler (which has its own pre-validation layer).

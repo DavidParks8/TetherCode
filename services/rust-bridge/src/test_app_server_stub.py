@@ -74,6 +74,11 @@ def main():
         return
 
     # App-server stdio JSON-RPC mode.
+    # Check STUB_TRANSIENT_ERROR env var: if set, return a transient thread/read error.
+    import os
+    transient_count = int(os.environ.get("STUB_TRANSIENT_ERROR_COUNT", "0"))
+    transient_seen = 0
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -87,8 +92,15 @@ def main():
         if req_id is None:
             continue  # notification — no response
         if method:
-            # Server-to-client request: respond with empty result.
-            sys.stdout.write(json.dumps({"id": req_id, "result": {}}) + "\n")
+            # If STUB_TRANSIENT_ERROR_COUNT is set and this is thread/read,
+            # return the transient error a few times before succeeding.
+            if method == "thread/read" and transient_seen < transient_count:
+                transient_seen += 1
+                err_msg = "failed to read thread: thread-store internal error: rollout is empty"
+                sys.stdout.write(json.dumps({"id": req_id, "error": {"code": -32000, "message": err_msg}}) + "\n")
+            else:
+                # Server-to-client request: respond with empty result.
+                sys.stdout.write(json.dumps({"id": req_id, "result": {}}) + "\n")
             sys.stdout.flush()
         # Ignore responses (no-method messages).
 
