@@ -261,6 +261,39 @@ describe('ChatMessage Cursor rendering', () => {
   });
 });
 
+describe('ChatMessage command rows', () => {
+  const theme = createAppTheme('dark');
+
+  it('renders long command titles in horizontal scroll viewports without ellipsis', () => {
+    const messages: ApiChatMessage[] = [
+      {
+        id: 'tool_command',
+        role: 'system',
+        systemKind: 'tool',
+        content: '• Ran npm test -- --runInBand src/components/__tests__/ChatMessage.test.tsx',
+        createdAt: '2026-04-17T00:00:00.000Z',
+      },
+    ];
+
+    let rendered: ReactTestRenderer | undefined;
+    act(() => {
+      rendered = renderer.create(
+        <AppThemeProvider theme={theme}>
+          <ToolActivityGroup messages={messages} />
+        </AppThemeProvider>
+      );
+    });
+    const tree = expectValue(rendered);
+    const viewport = tree.root.findByProps({ testID: 'tool-command-scroll' });
+    const horizontalScroll = viewport.findByType(ScrollView);
+    const commandText = horizontalScroll.findByType(Text);
+
+    expect(horizontalScroll.props.horizontal).toBe(true);
+    expect(commandText.props.numberOfLines).toBeUndefined();
+    expect(flattenRenderedText(commandText.props.children)).toContain('ChatMessage.test.tsx');
+  });
+});
+
 function expectValue<T>(value: T | undefined): T {
   if (value === undefined) {
     throw new Error('Expected value to be set');

@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Fragment, memo, useCallback, useMemo, useState, type ReactElement } from 'react';
 import {
   Image,
@@ -69,6 +70,13 @@ interface ComputerUseTimelineProps {
   entries: ToolGroupEntry[];
   bridgeUrl: string | null;
   bridgeToken: string | null;
+}
+
+interface ScrollableRowTextProps {
+  children: string;
+  style: TextProps['style'];
+  backgroundColor: string;
+  testID?: string;
 }
 
 type MessageBlock =
@@ -677,9 +685,19 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
                       color={rowError ? theme.colors.statusError : theme.colors.textMuted}
                       style={styles.toolGroupPreviewIcon}
                     />
-                    <Text style={styles.toolGroupRowText} numberOfLines={1}>
-                      {rowTitle}
-                    </Text>
+                    {rowVisual.useMonospaceTitle ? (
+                      <ScrollableRowText
+                        style={styles.toolGroupRowText}
+                        backgroundColor={theme.colors.bgItem}
+                        testID="tool-command-scroll"
+                      >
+                        {rowTitle}
+                      </ScrollableRowText>
+                    ) : (
+                      <Text style={styles.toolGroupRowText} numberOfLines={1}>
+                        {rowTitle}
+                      </Text>
+                    )}
                   </View>
                   {previewImage ? (
                     <View style={styles.toolGroupPreviewImageClip}>
@@ -722,15 +740,25 @@ export const ToolActivityGroup = memo(function ToolActivityGroupComponent({
                         rowError ? theme.colors.statusError : theme.colors.statusRunning
                       }
                     />
-                    <Text
-                      style={[
-                        styles.toolGroupEntryTitle,
-                        rowVisual.useMonospaceTitle && styles.toolGroupEntryTitleMono,
-                      ]}
-                      numberOfLines={entryExpanded ? 3 : 1}
-                    >
-                      {rowTitle}
-                    </Text>
+                    {rowVisual.useMonospaceTitle && !entryExpanded ? (
+                      <ScrollableRowText
+                        style={[styles.toolGroupEntryTitle, styles.toolGroupEntryTitleMono]}
+                        backgroundColor={theme.colors.bgItem}
+                        testID="tool-command-scroll"
+                      >
+                        {rowTitle}
+                      </ScrollableRowText>
+                    ) : (
+                      <Text
+                        style={[
+                          styles.toolGroupEntryTitle,
+                          rowVisual.useMonospaceTitle && styles.toolGroupEntryTitleMono,
+                        ]}
+                        numberOfLines={entryExpanded ? 3 : 1}
+                      >
+                        {rowTitle}
+                      </Text>
+                    )}
                     {hasDetails ? (
                       <Ionicons
                         name={entryExpanded ? 'chevron-up' : 'chevron-down'}
@@ -971,12 +999,22 @@ function CursorActivityMessage({
                   ) : null}
                 </View>
                 {!expanded && preview ? (
-                  <SelectableMessageText
-                    style={styles.cursorActivityPreview}
-                    numberOfLines={1}
-                  >
-                    {preview}
-                  </SelectableMessageText>
+                  visual.kind === 'terminal' ? (
+                    <ScrollableRowText
+                      style={styles.cursorActivityPreview}
+                      backgroundColor={theme.colors.bgMain}
+                      testID="tool-command-scroll"
+                    >
+                      {preview}
+                    </ScrollableRowText>
+                  ) : (
+                    <SelectableMessageText
+                      style={styles.cursorActivityPreview}
+                      numberOfLines={1}
+                    >
+                      {preview}
+                    </SelectableMessageText>
+                  )
                 ) : null}
                 {expanded ? (
                   <View style={styles.cursorActivityDetails}>
@@ -1095,6 +1133,70 @@ function ComputerUseTimeline({
           })}
         </View>
       </View>
+    </View>
+  );
+}
+
+function ScrollableRowText({
+  children,
+  style,
+  backgroundColor,
+  testID,
+}: ScrollableRowTextProps) {
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const [showLeftFade, setShowLeftFade] = useState(false);
+  const [showRightFade, setShowRightFade] = useState(false);
+  const [viewportWidth, setViewportWidth] = useState(0);
+  const [contentWidth, setContentWidth] = useState(0);
+
+  const updateFades = useCallback(
+    (offsetX: number, nextViewportWidth = viewportWidth, nextContentWidth = contentWidth) => {
+      const maxOffset = Math.max(0, nextContentWidth - nextViewportWidth);
+      setShowLeftFade(offsetX > 1);
+      setShowRightFade(maxOffset > 1 && offsetX < maxOffset - 1);
+    },
+    [contentWidth, viewportWidth]
+  );
+
+  return (
+    <View style={styles.scrollableRowTextViewport} testID={testID}>
+      <ScrollView
+        horizontal
+        bounces={false}
+        nestedScrollEnabled
+        directionalLockEnabled
+        showsHorizontalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onLayout={(event) => {
+          const width = event.nativeEvent.layout.width;
+          setViewportWidth(width);
+          updateFades(0, width, contentWidth);
+        }}
+        onContentSizeChange={(width) => {
+          setContentWidth(width);
+          updateFades(0, viewportWidth, width);
+        }}
+        onScroll={(event) => {
+          updateFades(event.nativeEvent.contentOffset.x);
+        }}
+      >
+        <Text style={[style, styles.scrollableRowText]}>{children}</Text>
+      </ScrollView>
+      {showLeftFade ? (
+        <LinearGradient
+          pointerEvents="none"
+          colors={[backgroundColor, theme.colors.transparent]}
+          style={[styles.scrollableRowTextFade, styles.scrollableRowTextFadeLeft]}
+        />
+      ) : null}
+      {showRightFade ? (
+        <LinearGradient
+          pointerEvents="none"
+          colors={[theme.colors.transparent, backgroundColor]}
+          style={[styles.scrollableRowTextFade, styles.scrollableRowTextFadeRight]}
+        />
+      ) : null}
     </View>
   );
 }
@@ -1821,6 +1923,28 @@ const createStyles = (theme: AppTheme) => {
     lineHeight: 16,
     flex: 1,
     fontFamily: theme.fonts.monoRegular,
+  },
+  scrollableRowTextViewport: {
+    flex: 1,
+    minWidth: 0,
+    overflow: 'hidden',
+  },
+  scrollableRowText: {
+    flex: 0,
+    flexShrink: 0,
+    paddingRight: theme.spacing.lg,
+  },
+  scrollableRowTextFade: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 24,
+  },
+  scrollableRowTextFadeLeft: {
+    left: 0,
+  },
+  scrollableRowTextFadeRight: {
+    right: 0,
   },
   toolGroupMoreText: {
     ...theme.typography.caption,

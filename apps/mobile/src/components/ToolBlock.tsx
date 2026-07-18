@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useMemo } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useMemo, useState } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { useAppTheme, type AppTheme } from '../theme';
 
@@ -30,13 +31,42 @@ export function ToolBlock({
     : status === 'complete'
       ? colors.statusComplete
       : colors.statusError;
+  const [contentWidth, setContentWidth] = useState(0);
+  const [viewportWidth, setViewportWidth] = useState(0);
+  const [offsetX, setOffsetX] = useState(0);
+  const maxOffset = Math.max(0, contentWidth - viewportWidth);
 
   return (
     <View style={styles.container}>
       <Ionicons name={icon} size={14} color={colors.textSecondary} />
-      <Text style={styles.command} numberOfLines={1}>
-        {command}
-      </Text>
+      <View style={styles.commandViewport}>
+        <ScrollView
+          horizontal
+          bounces={false}
+          directionalLockEnabled
+          showsHorizontalScrollIndicator={false}
+          scrollEventThrottle={16}
+          onLayout={(event) => setViewportWidth(event.nativeEvent.layout.width)}
+          onContentSizeChange={(width) => setContentWidth(width)}
+          onScroll={(event) => setOffsetX(event.nativeEvent.contentOffset.x)}
+        >
+          <Text style={styles.command}>{command}</Text>
+        </ScrollView>
+        {offsetX > 1 ? (
+          <LinearGradient
+            pointerEvents="none"
+            colors={[colors.toolBlockBg, colors.transparent]}
+            style={[styles.commandFade, styles.commandFadeLeft]}
+          />
+        ) : null}
+        {maxOffset > 1 && offsetX < maxOffset - 1 ? (
+          <LinearGradient
+            pointerEvents="none"
+            colors={[colors.transparent, colors.toolBlockBg]}
+            style={[styles.commandFade, styles.commandFadeRight]}
+          />
+        ) : null}
+      </View>
       {status === 'running' ? (
         <ActivityIndicator size="small" color={statusColor} />
       ) : statusIcon ? (
@@ -60,11 +90,28 @@ const createStyles = (theme: AppTheme) =>
       paddingHorizontal: theme.spacing.sm,
       paddingVertical: theme.spacing.xs,
     },
-    command: {
+    commandViewport: {
       flex: 1,
+      minWidth: 0,
+      overflow: 'hidden',
+    },
+    command: {
       ...theme.typography.mono,
       fontSize: 12,
       color: theme.colors.textPrimary,
       lineHeight: 18,
+      paddingRight: theme.spacing.lg,
+    },
+    commandFade: {
+      position: 'absolute',
+      top: 0,
+      bottom: 0,
+      width: 24,
+    },
+    commandFadeLeft: {
+      left: 0,
+    },
+    commandFadeRight: {
+      right: 0,
     },
   });
