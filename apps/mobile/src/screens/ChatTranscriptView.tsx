@@ -19,7 +19,7 @@ import {
   View,
 } from 'react-native';
 
-import type { Chat, ChatMessage as ApiChatMessage } from '../api/types';
+import type { Chat } from '../api/types';
 import { ChatMessage, ToolActivityGroup } from '../components/ChatMessage';
 import { useAppTheme } from '../theme';
 import {
@@ -27,18 +27,15 @@ import {
   CHAT_AUTO_LOAD_OLDER_TOP_THRESHOLD_PX,
   CHAT_MESSAGE_PAGE_SIZE,
   LARGE_CHAT_MESSAGE_COUNT_THRESHOLD,
-  filterReasoningMessagesForEngine,
   findInlineChoiceSet,
   getInitialVisibleMessageStartIndex,
 } from './mainScreenHelpers';
 import { createStyles } from './mainScreenStyles';
-import { trimInheritedParentMessages } from './subAgentTranscript';
 import {
   buildTranscriptDisplayItems,
-  getVisibleTranscriptMessages,
-  syncVisibleSubAgentStatuses,
   type TranscriptDisplayItem,
 } from './transcriptMessages';
+import { projectTranscript } from './controllers/transcriptProjectionController';
 
 export interface ChatTranscriptViewProps {
   chat: Chat;
@@ -91,42 +88,18 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
   const autoLoadOlderCheckpointRef = useRef<number | null>(null);
   const visibleMessageCountRef = useRef(0);
 
-  const transcriptView = useMemo(() => {
-    const childVisibleMessages = getVisibleTranscriptMessages(
-      filterReasoningMessagesForEngine(chat.messages, chat.engine),
-      showToolCalls
-    );
-    if (!chat.parentThreadId || !parentChat) {
-      return {
-        messages: childVisibleMessages,
-        hiddenInheritedMessageCount: 0,
-      };
-    }
-
-    const parentVisibleMessages = getVisibleTranscriptMessages(
-      filterReasoningMessagesForEngine(parentChat.messages, parentChat.engine),
-      showToolCalls
-    );
-    return trimInheritedParentMessages(parentVisibleMessages, childVisibleMessages, chat.id);
-  }, [chat.messages, chat.parentThreadId, parentChat, showToolCalls]);
-  const visibleMessages = useMemo(() => {
-    const synced = syncVisibleSubAgentStatuses(transcriptView.messages, agentThreadStatusById);
-    const liveText = liveAssistantText?.trim();
-    if (!liveText) {
-      return synced;
-    }
-    const latestAssistant = [...synced].reverse().find((message) => message.role === 'assistant');
-    if (latestAssistant?.content.trim().endsWith(liveText)) {
-      return synced;
-    }
-    const liveMessage: ApiChatMessage = {
-      id: `live-assistant-${chat.id}`,
-      role: 'assistant',
-      content: liveText,
-      createdAt: new Date().toISOString(),
-    };
-    return [...synced, liveMessage];
-  }, [agentThreadStatusById, chat.id, liveAssistantText, transcriptView.messages]);
+  const transcriptView = useMemo(
+    () =>
+      projectTranscript({
+        chat,
+        parentChat,
+        showToolCalls,
+        threadStatuses: agentThreadStatusById,
+        liveAssistantText,
+      }),
+    [agentThreadStatusById, chat, liveAssistantText, parentChat, showToolCalls]
+  );
+  const visibleMessages = transcriptView.messages;
   const [visibleStartIndex, setVisibleStartIndex] = useState(() =>
     getInitialVisibleMessageStartIndex(visibleMessages.length)
   );

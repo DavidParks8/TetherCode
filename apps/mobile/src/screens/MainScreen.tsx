@@ -1,7 +1,4 @@
 import { Ionicons } from '@expo/vector-icons';
-import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system/legacy';
-import * as ImagePicker from 'expo-image-picker';
 import {
   forwardRef,
   useCallback,
@@ -90,7 +87,6 @@ import {
   formatModelOptionLabel,
 } from '../modelOptions';
 import {
-  collectRelatedAgentThreads,
   describeAgentThreadSource,
   findMatchingAgentThread,
   resolveAgentActivitySummary,
@@ -116,32 +112,23 @@ import {
   type IdleTaskHandle,
   scheduleIdleTask,
   type PendingPlanImplementationPrompt,
-  type AttachmentMenuAction,
   type WorkspacePickerPurpose,
   type ThreadContextUsage,
   type ThreadRuntimeSnapshot,
-  type ComposerAttachmentChip,
   type PendingOptimisticUserMessage,
   type PendingOptimisticQueuedMessage,
   type AutoScrollState,
   RUN_WATCHDOG_MS,
-  WORKSPACE_FAVORITES_VERSION,
   WORKSPACE_FAVORITES_LIMIT,
   ACTIVE_CHAT_SYNC_INTERVAL_MS,
   IDLE_CHAT_SYNC_INTERVAL_MS,
-  BACKGROUND_CHAT_SYNC_INTERVAL_MS,
   AGENT_THREADS_SYNC_INTERVAL_MS,
   AGENT_THREADS_IDLE_SYNC_INTERVAL_MS,
   AGENT_THREADS_BACKGROUND_SYNC_INTERVAL_MS,
-  AGENT_THREADS_LIST_LIMIT,
   APP_FOCUS_DISCONNECT_GRACE_MS,
   ACTIVITY_DETAIL_HOLD_MS,
   GENERIC_RUNNING_ACTIVITY_DELAY_MS,
   GENERIC_RUNNING_ACTIVITY_TITLES,
-  CHAT_DRAFTS_VERSION,
-  CHAT_MODEL_PREFERENCES_VERSION,
-  CHAT_PLAN_SNAPSHOTS_VERSION,
-  CHAT_BRIDGE_UI_SURFACES_VERSION,
   STREAMING_SCROLL_THROTTLE_MS,
   PLAN_IMPLEMENTATION_TITLE,
   PLAN_IMPLEMENTATION_YES,
@@ -169,10 +156,8 @@ import {
   toCodexTurnPlanUpdate,
   toPendingUserInputRequest,
   buildUserInputDrafts,
-  normalizeQuestionAnswers,
   normalizeWorkspacePath,
   getWorkspaceBrowseCacheKey,
-  normalizeAttachmentPath,
   normalizeCloneDirectoryName,
   deriveCloneDirectoryName,
   formatGitCloneFailureMessage,
@@ -183,10 +168,7 @@ import {
   normalizeChatMessageMatchContent,
   reconcileChatWithPendingOptimisticMessages,
   toPathBasename,
-  toAttachmentPathSuggestions,
   parseMentionQuery,
-  replaceActiveMentionQueryWithSelection,
-  draftContainsMentionLabel,
   mergeChatEngines,
   normalizeModelId,
   normalizeReasoningEffort,
@@ -195,18 +177,7 @@ import {
   resolveSelectedServiceTier,
   shouldSurfaceChatLoadError,
   toApprovalPolicyForMode,
-  getChatModelPreferencesPath,
-  getChatDraftsPath,
-  getChatPlanSnapshotsPath,
-  getChatBridgeUiSurfacesPath,
-  getWorkspaceFavoritesPath,
-  parseWorkspaceFavoritePaths,
-  parseChatDrafts,
   parseBridgeThreadQueueState,
-  getDraftScopeKey,
-  parseChatModelPreferences,
-  parseChatPlanSnapshots,
-  parseChatBridgeUiSurfaces,
   formatCollaborationModeLabel,
   isBridgeConnectionErrorMessage,
   buildRateLimitAlertFromMessages,
@@ -244,7 +215,6 @@ import {
   isChatSummaryLikelyRunning,
   isChatLikelyRunning,
   hasRecentUnansweredUserTurn,
-  didAssistantMessageProgress,
   extractFirstBoldSnippet,
   toReasoningActivityDetail,
   toPendingApproval,
@@ -254,6 +224,17 @@ import {
   upsertBridgeUiSurfaceList,
   removeBridgeUiSurfaceFromList
 } from './mainScreenHelpers';
+import { useAttachmentController } from './controllers/attachmentController';
+import { ApprovalController, buildUserInputAnswers } from './controllers/approvalController';
+import { AgentThreadsController } from './controllers/agentThreadsController';
+import {
+  ChatSyncController,
+  type ChatSyncAssessment,
+  useChatSynchronization,
+} from './controllers/chatSyncController';
+import { useDraftController } from './controllers/draftController';
+import { TurnExecutionController } from './controllers/turnExecutionController';
+import { MainScreenPersistenceController } from './controllers/mainScreenPersistenceController';
 
 export interface MainScreenHandle {
   openChat: (id: string, optimisticChat?: Chat | null) => void;
@@ -325,6 +306,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const theme = useAppTheme();
     const { height: windowHeight } = useWindowDimensions();
     const styles = useMemo(() => createStyles(theme), [theme]);
+    const chatSyncController = useMemo(() => new ChatSyncController(api), [api]);
+    const turnExecutionController = useMemo(() => new TurnExecutionController(api), [api]);
+    const approvalController = useMemo(() => new ApprovalController(api), [api]);
+    const agentThreadsController = useMemo(() => new AgentThreadsController(api), [api]);
+    const persistenceController = useMemo(() => new MainScreenPersistenceController(), []);
     const initialPendingSnapshot =
       pendingOpenChatId &&
       pendingOpenChatSnapshot?.id === pendingOpenChatId &&
@@ -344,10 +330,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const openingChatStartedAtRef = useRef<number>(
       initialPendingSnapshot || !pendingOpenChatId ? 0 : Date.now()
     );
-    const initialDraftScopeKey = getDraftScopeKey(initialPendingSnapshot?.id ?? pendingOpenChatId);
-    const [draft, setDraft] = useState('');
-    const [draftOwnerKey, setDraftOwnerKey] = useState(initialDraftScopeKey);
-    const [chatDraftsLoaded, setChatDraftsLoaded] = useState(false);
+    const { draft, setDraft } = useDraftController(selectedChatId);
     const [sending, setSending] = useState(false);
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -380,21 +363,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [renameModalVisible, setRenameModalVisible] = useState(false);
     const [renameDraft, setRenameDraft] = useState('');
     const [renaming, setRenaming] = useState(false);
-    const [attachmentModalVisible, setAttachmentModalVisible] = useState(false);
-    const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
-    const [attachmentPathDraft, setAttachmentPathDraft] = useState('');
-    const [pendingAttachmentMenuAction, setPendingAttachmentMenuAction] =
-      useState<AttachmentMenuAction>(null);
-    const [pendingMentionPaths, setPendingMentionPaths] = useState<string[]>([]);
-    const [pendingLocalImagePaths, setPendingLocalImagePaths] = useState<string[]>([]);
-    const [attachmentFileCandidates, setAttachmentFileCandidates] = useState<string[]>([]);
-    const [loadingAttachmentFileCandidates, setLoadingAttachmentFileCandidates] =
-      useState(false);
-    const attachmentFileCandidatesCacheRef = useRef<Record<string, string[]>>({});
-    const attachmentFileCandidatesInFlightRef = useRef<Record<string, Promise<string[]>>>({});
-    const attachmentWorkspaceRef = useRef<string | null>(null);
-    const [attachmentPickerBusy, setAttachmentPickerBusy] = useState(false);
-    const [uploadingAttachment, setUploadingAttachment] = useState(false);
     const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
     const [stoppingTurn, setStoppingTurn] = useState(false);
     const [workspaceModalVisible, setWorkspaceModalVisible] = useState(false);
@@ -485,9 +453,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     creatingRef.current = creating;
     const stoppingTurnRef = useRef(stoppingTurn);
     stoppingTurnRef.current = stoppingTurn;
-    const attachmentPickerInProgressRef = useRef(false);
-    const chatDraftsRef = useRef<Record<string, string>>({});
-    const draftPersistenceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const heldActivityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const genericRunningActivityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const foregroundAgentRefreshHandleRef = useRef<IdleTaskHandle | null>(null);
@@ -762,7 +727,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       null
     );
     const preferredStartCwd = normalizeWorkspacePath(defaultStartCwd);
-    const draftScopeKey = getDraftScopeKey(selectedChatId);
     const persistedDefaultChatEngine = resolveChatEngine(defaultChatEngine ?? 'codex');
     const availableNewChatEngines = mergeChatEngines(
       bridgeCapabilities?.availableEngines ?? [],
@@ -816,7 +780,34 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         : 'default';
     const activeApprovalPolicy = toApprovalPolicyForMode(approvalMode);
     const attachmentWorkspace = selectedChat?.cwd ?? preferredStartCwd ?? null;
-    attachmentWorkspaceRef.current = attachmentWorkspace;
+    const attachmentController = useAttachmentController({
+      api,
+      chat: selectedChat,
+      workspace: attachmentWorkspace,
+      draft,
+      setDraft,
+      setError,
+    });
+    const {
+      attachmentModalVisible,
+      attachmentMenuVisible,
+      attachmentPathDraft,
+      setAttachmentPathDraft,
+      pendingMentionPaths,
+      pendingLocalImagePaths,
+      loadingFileCandidates: loadingAttachmentFileCandidates,
+      pickerBusy: attachmentPickerBusy,
+      uploading: uploadingAttachment,
+      composerAttachments,
+      pathSuggestions: attachmentPathSuggestions,
+      openMenu: openAttachmentMenu,
+      closePathModal: closeAttachmentModal,
+      submitPath: submitAttachmentPath,
+      selectPathSuggestion: selectAttachmentSuggestion,
+      selectMentionSuggestion,
+      removeComposerAttachment,
+      removeMentionPath: removePendingMentionPath,
+    } = attachmentController;
     const slashQuery = parseSlashQuery(draft);
     const slashSuggestions =
       slashQuery !== null
@@ -826,29 +817,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           )
         : [];
     const mentionQuery = parseMentionQuery(draft);
-    const mentionPathSuggestions = useMemo(
-      () =>
-        mentionQuery !== null
-          ? toAttachmentPathSuggestions(
-              attachmentFileCandidates,
-              mentionQuery,
-              pendingMentionPaths
-            )
-          : [],
-      [attachmentFileCandidates, mentionQuery, pendingMentionPaths]
-    );
+    const mentionPathSuggestions =
+      mentionQuery !== null ? attachmentController.mentionSuggestions(mentionQuery) : [];
     const slashSuggestionsMaxHeight = Math.max(
       148,
       Math.min(300, Math.floor(windowHeight * 0.34))
-    );
-    const attachmentPathSuggestions = useMemo(
-      () =>
-        toAttachmentPathSuggestions(
-          attachmentFileCandidates,
-          attachmentPathDraft,
-          pendingMentionPaths
-        ),
-      [attachmentFileCandidates, attachmentPathDraft, pendingMentionPaths]
     );
 
     useEffect(() => {
@@ -1034,17 +1007,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       };
     }, [api, selectedChat?.id, selectedChat?.parentThreadId]);
 
-    const composerAttachments = useMemo(() => {
-      const next: ComposerAttachmentChip[] = [];
-      for (const path of pendingLocalImagePaths) {
-        next.push({
-          id: `image:${path}`,
-          label: `image · ${toPathBasename(path)}`,
-        });
-      }
-      return next;
-    }, [pendingLocalImagePaths]);
-
     const scheduleRunWatchdogExpiry = useCallback((deadlineMs: number) => {
       const existingTimer = runWatchdogTimerRef.current;
       if (existingTimer) {
@@ -1150,99 +1112,21 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     );
 
     const saveChatModelPreferences = useCallback(
-      async (nextPreferences: Record<string, ChatModelPreference>) => {
-        const preferencesPath = getChatModelPreferencesPath();
-        if (!preferencesPath) {
-          return;
-        }
-
-        const payload = JSON.stringify({
-          version: CHAT_MODEL_PREFERENCES_VERSION,
-          entries: nextPreferences,
-        });
-
-        try {
-          await FileSystem.writeAsStringAsync(preferencesPath, payload);
-        } catch {
-          // Best effort persistence only.
-        }
-      },
-      []
-    );
-
-    const saveChatDrafts = useCallback(async (nextDrafts: Record<string, string>) => {
-      const draftsPath = getChatDraftsPath();
-      if (!draftsPath) {
-        return;
-      }
-
-      const payload = JSON.stringify({
-        version: CHAT_DRAFTS_VERSION,
-        entries: nextDrafts,
-      });
-
-      try {
-        await FileSystem.writeAsStringAsync(draftsPath, payload);
-      } catch {
-        // Best effort persistence only.
-      }
-    }, []);
-
-    const scheduleChatDraftsPersist = useCallback(
-      (nextDrafts: Record<string, string>) => {
-        const existingTimer = draftPersistenceTimeoutRef.current;
-        if (existingTimer) {
-          clearTimeout(existingTimer);
-        }
-
-        draftPersistenceTimeoutRef.current = setTimeout(() => {
-          draftPersistenceTimeoutRef.current = null;
-          void saveChatDrafts(nextDrafts);
-        }, 180);
-      },
-      [saveChatDrafts]
+      (nextPreferences: Record<string, ChatModelPreference>) =>
+        persistenceController.saveModelPreferences(nextPreferences),
+      [persistenceController]
     );
 
     const saveChatPlanSnapshots = useCallback(
-      async (nextSnapshots: Record<string, ActivePlanState>) => {
-        const snapshotsPath = getChatPlanSnapshotsPath();
-        if (!snapshotsPath) {
-          return;
-        }
-
-        const payload = JSON.stringify({
-          version: CHAT_PLAN_SNAPSHOTS_VERSION,
-          entries: nextSnapshots,
-        });
-
-        try {
-          await FileSystem.writeAsStringAsync(snapshotsPath, payload);
-        } catch {
-          // Best effort persistence only.
-        }
-      },
-      []
+      (nextSnapshots: Record<string, ActivePlanState>) =>
+        persistenceController.savePlanSnapshots(nextSnapshots),
+      [persistenceController]
     );
 
     const saveBridgeUiSurfaceSnapshots = useCallback(
-      async (nextSnapshots: Record<string, BridgeUiSurface[]>) => {
-        const snapshotsPath = getChatBridgeUiSurfacesPath();
-        if (!snapshotsPath) {
-          return;
-        }
-
-        const payload = JSON.stringify({
-          version: CHAT_BRIDGE_UI_SURFACES_VERSION,
-          entries: nextSnapshots,
-        });
-
-        try {
-          await FileSystem.writeAsStringAsync(snapshotsPath, payload);
-        } catch {
-          // Best effort persistence only.
-        }
-      },
-      []
+      (nextSnapshots: Record<string, BridgeUiSurface[]>) =>
+        persistenceController.saveBridgeUiSurfaces(nextSnapshots),
+      [persistenceController]
     );
 
     const scheduleBridgeUiSurfaceSnapshotsPersist = useCallback(
@@ -1260,50 +1144,24 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       [saveBridgeUiSurfaceSnapshots]
     );
 
-    const saveWorkspaceFavorites = useCallback(async (paths: string[]) => {
-      const favoritesPath = getWorkspaceFavoritesPath();
-      if (!favoritesPath) {
-        return;
-      }
-
-      const payload = JSON.stringify({
-        version: WORKSPACE_FAVORITES_VERSION,
-        paths,
-      });
-
-      try {
-        await FileSystem.writeAsStringAsync(favoritesPath, payload);
-      } catch {
-        // Best effort persistence only.
-      }
-    }, []);
+    const saveWorkspaceFavorites = useCallback(
+      (paths: string[]) => persistenceController.saveWorkspaceFavorites(paths),
+      [persistenceController]
+    );
 
     useEffect(() => {
       let cancelled = false;
 
       const load = async () => {
-        const favoritesPath = getWorkspaceFavoritesPath();
-        if (!favoritesPath) {
-          return;
-        }
-
-        try {
-          const raw = await FileSystem.readAsStringAsync(favoritesPath);
-          if (!cancelled) {
-            setFavoriteWorkspacePaths(parseWorkspaceFavoritePaths(raw));
-          }
-        } catch {
-          if (!cancelled) {
-            setFavoriteWorkspacePaths([]);
-          }
-        }
+        const paths = await persistenceController.loadWorkspaceFavorites();
+        if (!cancelled) setFavoriteWorkspacePaths(paths);
       };
 
       void load();
       return () => {
         cancelled = true;
       };
-    }, []);
+    }, [persistenceController]);
 
     const toggleWorkspaceFavorite = useCallback(
       (path: string | null | undefined) => {
@@ -1326,86 +1184,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       },
       [saveWorkspaceFavorites]
     );
-
-    useEffect(() => {
-      let cancelled = false;
-
-      const load = async () => {
-        const draftsPath = getChatDraftsPath();
-        if (!draftsPath) {
-          if (!cancelled) {
-            setChatDraftsLoaded(true);
-          }
-          return;
-        }
-
-        try {
-          const raw = await FileSystem.readAsStringAsync(draftsPath);
-          if (cancelled) {
-            return;
-          }
-
-          chatDraftsRef.current = parseChatDrafts(raw);
-        } catch {
-          if (!cancelled) {
-            chatDraftsRef.current = {};
-          }
-        } finally {
-          if (!cancelled) {
-            setChatDraftsLoaded(true);
-          }
-        }
-      };
-
-      void load();
-      return () => {
-        cancelled = true;
-      };
-    }, []);
-
-    useEffect(() => {
-      if (!chatDraftsLoaded) {
-        return;
-      }
-
-      const resolvedOwnerKey = draftOwnerKey === draftScopeKey ? draftOwnerKey : draftScopeKey;
-      const nextDraft = chatDraftsRef.current[resolvedOwnerKey] ?? '';
-      if (draftOwnerKey !== draftScopeKey) {
-        setDraftOwnerKey(draftScopeKey);
-      }
-      setDraft((previous) => (previous === nextDraft ? previous : nextDraft));
-    }, [chatDraftsLoaded, draftOwnerKey, draftScopeKey]);
-
-    useEffect(() => {
-      if (!chatDraftsLoaded) {
-        return;
-      }
-
-      const previousDraft = chatDraftsRef.current[draftOwnerKey] ?? '';
-      if (previousDraft === draft) {
-        return;
-      }
-
-      const nextDrafts = { ...chatDraftsRef.current };
-      if (draft.trim().length > 0) {
-        nextDrafts[draftOwnerKey] = draft;
-      } else {
-        delete nextDrafts[draftOwnerKey];
-      }
-      chatDraftsRef.current = nextDrafts;
-      scheduleChatDraftsPersist(nextDrafts);
-    }, [chatDraftsLoaded, draft, draftOwnerKey, scheduleChatDraftsPersist]);
-
-    useEffect(() => {
-      return () => {
-        const existingTimer = draftPersistenceTimeoutRef.current;
-        if (existingTimer) {
-          clearTimeout(existingTimer);
-          draftPersistenceTimeoutRef.current = null;
-        }
-        void saveChatDrafts(chatDraftsRef.current);
-      };
-    }, [saveChatDrafts]);
 
     useEffect(() => {
       return () => {
@@ -1524,28 +1302,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       let cancelled = false;
 
       const load = async () => {
-        const preferencesPath = getChatModelPreferencesPath();
-        if (!preferencesPath) {
-          if (!cancelled) {
-            setChatModelPreferencesLoaded(true);
-          }
-          return;
-        }
-
-        try {
-          const raw = await FileSystem.readAsStringAsync(preferencesPath);
-          if (cancelled) {
-            return;
-          }
-          chatModelPreferencesRef.current = parseChatModelPreferences(raw);
-        } catch {
-          if (!cancelled) {
-            chatModelPreferencesRef.current = {};
-          }
-        } finally {
-          if (!cancelled) {
-            setChatModelPreferencesLoaded(true);
-          }
+        const preferences = await persistenceController.loadModelPreferences();
+        if (!cancelled) {
+          chatModelPreferencesRef.current = preferences;
+          setChatModelPreferencesLoaded(true);
         }
       };
 
@@ -1553,7 +1313,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       return () => {
         cancelled = true;
       };
-    }, []);
+    }, [persistenceController]);
 
     useEffect(() => {
       if (bridgeCapabilities?.supportsByEngine?.codex?.fastMode !== true) {
@@ -2023,62 +1783,29 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       let cancelled = false;
 
       const load = async () => {
-        const snapshotsPath = getChatPlanSnapshotsPath();
-        if (!snapshotsPath) {
-          if (!cancelled) {
-            setChatPlanSnapshotsLoaded(true);
-          }
-          return;
+        const snapshots = await persistenceController.loadPlanSnapshots();
+        if (cancelled) return;
+        chatPlanSnapshotsRef.current = snapshots;
+        for (const [threadId, plan] of Object.entries(snapshots)) {
+          upsertThreadRuntimeSnapshot(threadId, () => ({ plan }));
         }
-
-        try {
-          const raw = await FileSystem.readAsStringAsync(snapshotsPath);
-          if (cancelled) {
-            return;
-          }
-
-          const parsedSnapshots = parseChatPlanSnapshots(raw);
-          chatPlanSnapshotsRef.current = parsedSnapshots;
-          for (const [threadId, plan] of Object.entries(parsedSnapshots)) {
-            upsertThreadRuntimeSnapshot(threadId, () => ({ plan }));
-          }
-          if (chatIdRef.current) {
-            applyThreadRuntimeSnapshot(chatIdRef.current);
-          }
-        } catch {
-          if (!cancelled) {
-            chatPlanSnapshotsRef.current = {};
-          }
-        } finally {
-          if (!cancelled) {
-            setChatPlanSnapshotsLoaded(true);
-          }
-        }
+        if (chatIdRef.current) applyThreadRuntimeSnapshot(chatIdRef.current);
+        setChatPlanSnapshotsLoaded(true);
       };
 
       void load();
       return () => {
         cancelled = true;
       };
-    }, [applyThreadRuntimeSnapshot, upsertThreadRuntimeSnapshot]);
+    }, [applyThreadRuntimeSnapshot, persistenceController, upsertThreadRuntimeSnapshot]);
 
     useEffect(() => {
       let cancelled = false;
 
       const load = async () => {
-        const snapshotsPath = getChatBridgeUiSurfacesPath();
-        if (!snapshotsPath) {
-          return;
-        }
-
-        try {
-          const raw = await FileSystem.readAsStringAsync(snapshotsPath);
-          if (cancelled) {
-            return;
-          }
-
-          const parsedSnapshots = parseChatBridgeUiSurfaces(raw);
-          const nextSnapshots = { ...parsedSnapshots };
+          const persisted = await persistenceController.loadBridgeUiSurfaces();
+          if (cancelled) return;
+          const nextSnapshots = { ...persisted };
           for (const [threadId, surfaces] of Object.entries(
             bridgeUiSurfaceSnapshotsRef.current
           )) {
@@ -2100,24 +1827,18 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           if (chatIdRef.current) {
             applyThreadRuntimeSnapshot(chatIdRef.current);
           }
-        } catch {
-          if (!cancelled && Object.keys(bridgeUiSurfaceSnapshotsRef.current).length === 0) {
-            bridgeUiSurfaceSnapshotsRef.current = {};
-          }
-        }
       };
 
       void load();
       return () => {
         cancelled = true;
       };
-    }, [applyThreadRuntimeSnapshot, upsertThreadRuntimeSnapshot]);
+    }, [applyThreadRuntimeSnapshot, persistenceController, upsertThreadRuntimeSnapshot]);
 
     const refreshPendingApprovalsForThread = useCallback(
       async (threadId: string) => {
         try {
-          const approvals = await api.listApprovals();
-          const match = approvals.find((entry) => entry.threadId === threadId) ?? null;
+          const match = await approvalController.findForThread(threadId);
           cacheThreadPendingApproval(threadId, match);
           if (chatIdRef.current === threadId) {
             setPendingApproval(match);
@@ -2133,7 +1854,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           // Best effort hydration for externally-started turns.
         }
       },
-      [api, cacheThreadPendingApproval]
+      [approvalController, cacheThreadPendingApproval]
     );
 
     const cacheCodexRuntimeForThread = useCallback(
@@ -2635,14 +2356,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       setRenameModalVisible(false);
       setRenameDraft('');
       setRenaming(false);
-      setAttachmentModalVisible(false);
-      setAttachmentMenuVisible(false);
-      setAttachmentPathDraft('');
-      setPendingMentionPaths([]);
-      setPendingLocalImagePaths([]);
-      setAttachmentFileCandidates([]);
-      setLoadingAttachmentFileCandidates(false);
-      setUploadingAttachment(false);
+      attachmentController.clear();
       setActiveTurnId(null);
       setStoppingTurn(false);
       setWorkspaceModalVisible(false);
@@ -2889,24 +2603,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
 
         try {
-          const [listedChats, loadedThreadIds] = await Promise.all([
-            api.listChats({
-              includeSubAgents: true,
-              limit: AGENT_THREADS_LIST_LIMIT,
-            }),
-            api.listLoadedChatIds().catch(() => []),
-          ]);
-          const listedChatIds = new Set(listedChats.map((chat) => chat.id));
-          const missingLoadedIds = loadedThreadIds.filter((threadId) => !listedChatIds.has(threadId));
-          const loadedOnlyChats = await api.getChatSummaries(missingLoadedIds);
-          const chats = [
-            ...listedChats,
-            ...loadedOnlyChats,
-          ];
-          const focusChat =
-            chats.find((chat) => chat.id === activeChatId) ??
-            (selectedChatRef.current?.id === activeChatId ? selectedChatRef.current : null);
-          const related = collectRelatedAgentThreads(chats, focusChat);
+          const related = await agentThreadsController.loadRelated(
+            activeChatId,
+            selectedChatRef.current?.id === activeChatId ? selectedChatRef.current : null
+          );
 
           if (agentThreadsRequestRef.current !== requestId) {
             return related;
@@ -2933,7 +2633,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           }
         }
       },
-      [api]
+      [agentThreadsController]
     );
 
     const scheduleAgentThreadsRefresh = useCallback(
@@ -3341,363 +3041,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       setError(null);
     }, [defaultEngineSettings, selectedChatId]);
 
-    const fetchAttachmentFileCandidates = useCallback(
-      async (workspace: string): Promise<string[]> => {
-        try {
-          const response = await api.execTerminal({
-            command: 'git ls-files --cached --others --exclude-standard',
-            cwd: workspace,
-            timeoutMs: 15_000,
-          });
-          if (response.code !== 0) {
-            return [];
-          }
-
-          return response.stdout
-            .split('\n')
-            .map((line) => line.trim())
-            .filter((line) => line.length > 0)
-            .slice(0, 8_000);
-        } catch {
-          return [];
-        }
-      },
-      [api]
-    );
-
-    const loadAttachmentFileCandidates = useCallback(
-      async (workspaceOverride?: string | null) => {
-        const workspace = normalizeWorkspacePath(workspaceOverride ?? attachmentWorkspace);
-        if (!workspace) {
-          if (!attachmentWorkspaceRef.current) {
-            setAttachmentFileCandidates([]);
-            setLoadingAttachmentFileCandidates(false);
-          }
-          return [];
-        }
-
-        const cached = attachmentFileCandidatesCacheRef.current[workspace];
-        if (cached) {
-          if (attachmentWorkspaceRef.current === workspace) {
-            setAttachmentFileCandidates(cached);
-            setLoadingAttachmentFileCandidates(false);
-          }
-          return cached;
-        }
-
-        let inFlight = attachmentFileCandidatesInFlightRef.current[workspace];
-        if (!inFlight) {
-          inFlight = fetchAttachmentFileCandidates(workspace).then((lines) => {
-            attachmentFileCandidatesCacheRef.current[workspace] = lines;
-            delete attachmentFileCandidatesInFlightRef.current[workspace];
-            return lines;
-          });
-          attachmentFileCandidatesInFlightRef.current[workspace] = inFlight;
-        }
-
-        if (attachmentWorkspaceRef.current === workspace) {
-          setLoadingAttachmentFileCandidates(true);
-        }
-
-        const lines = await inFlight;
-        if (attachmentWorkspaceRef.current === workspace) {
-          setAttachmentFileCandidates(lines);
-          setLoadingAttachmentFileCandidates(false);
-        }
-        return lines;
-      },
-      [attachmentWorkspace, fetchAttachmentFileCandidates]
-    );
-
-    const openAttachmentPathModal = useCallback(() => {
-      if (attachmentPickerInProgressRef.current) {
-        return;
-      }
-      setAttachmentPathDraft('');
-      setAttachmentModalVisible(true);
-      setError(null);
-      void loadAttachmentFileCandidates();
-    }, [
-      loadAttachmentFileCandidates,
-    ]);
-
-    useEffect(() => {
-      if (mentionQuery === null || !attachmentWorkspace) {
-        return;
-      }
-
-      void loadAttachmentFileCandidates(attachmentWorkspace);
-    }, [
-      attachmentWorkspace,
-      loadAttachmentFileCandidates,
-      mentionQuery,
-    ]);
-
-    const closeAttachmentModal = useCallback(() => {
-      setAttachmentModalVisible(false);
-      setAttachmentPathDraft('');
-    }, []);
-
-    const removePendingMentionPath = useCallback((path: string) => {
-      setPendingMentionPaths((prev) => prev.filter((entry) => entry !== path));
-    }, []);
-
-    const removePendingLocalImagePath = useCallback((path: string) => {
-      setPendingLocalImagePaths((prev) => prev.filter((entry) => entry !== path));
-    }, []);
-
-    const removeComposerAttachment = useCallback(
-      (attachmentId: string) => {
-        if (attachmentId.startsWith('file:')) {
-          removePendingMentionPath(attachmentId.slice('file:'.length));
-          return;
-        }
-        if (attachmentId.startsWith('image:')) {
-          removePendingLocalImagePath(attachmentId.slice('image:'.length));
-        }
-      },
-      [removePendingLocalImagePath, removePendingMentionPath]
-    );
-
-    const addPendingMentionPath = useCallback((rawPath: string): boolean => {
-      const normalized = normalizeAttachmentPath(rawPath);
-      if (!normalized) {
-        setError('Enter a file path to attach');
-        return false;
-      }
-
-      setPendingMentionPaths((prev) => {
-        const dedupeKey = normalized.toLowerCase();
-        if (prev.some((entry) => entry.toLowerCase() === dedupeKey)) {
-          return prev;
-        }
-        return [...prev, normalized];
-      });
-      setError(null);
-      return true;
-    }, []);
-
-    const addPendingLocalImagePath = useCallback((rawPath: string): boolean => {
-      const normalized = normalizeAttachmentPath(rawPath);
-      if (!normalized) {
-        setError('Image path is invalid');
-        return false;
-      }
-
-      setPendingLocalImagePaths((prev) => {
-        const dedupeKey = normalized.toLowerCase();
-        if (prev.some((entry) => entry.toLowerCase() === dedupeKey)) {
-          return prev;
-        }
-        return [...prev, normalized];
-      });
-      setError(null);
-      return true;
-    }, []);
-
-    const uploadMobileAttachment = useCallback(
-      async ({
-        uri,
-        fileName,
-        mimeType,
-        kind,
-        dataBase64,
-      }: {
-        uri: string;
-        fileName?: string;
-        mimeType?: string;
-        kind: 'file' | 'image';
-        dataBase64?: string;
-      }) => {
-        const normalizedUri = normalizeAttachmentPath(uri);
-        if (!normalizedUri) {
-          setError('Unable to read attachment from this device');
-          return;
-        }
-
-        setUploadingAttachment(true);
-        try {
-          const base64 =
-            dataBase64 ??
-            (await FileSystem.readAsStringAsync(normalizedUri, {
-              encoding: FileSystem.EncodingType.Base64,
-            }));
-          if (!base64.trim()) {
-            throw new Error('Attachment is empty');
-          }
-
-          const uploaded = await api.uploadAttachment({
-            dataBase64: base64,
-            fileName,
-            mimeType,
-            threadId: selectedChatId ?? undefined,
-            kind,
-          });
-
-          if (uploaded.kind === 'image') {
-            addPendingLocalImagePath(uploaded.path);
-          } else {
-            addPendingMentionPath(uploaded.path);
-          }
-          setError(null);
-        } catch (err) {
-          setError((err as Error).message);
-        } finally {
-          setUploadingAttachment(false);
-        }
-      },
-      [addPendingLocalImagePath, addPendingMentionPath, api, selectedChatId]
-    );
-
-    const runAttachmentPicker = useCallback(
-      async (picker: () => Promise<void>) => {
-        if (attachmentPickerInProgressRef.current) {
-          return;
-        }
-
-        attachmentPickerInProgressRef.current = true;
-        setAttachmentPickerBusy(true);
-        try {
-          await picker();
-        } catch (err) {
-          setError((err as Error).message);
-        } finally {
-          attachmentPickerInProgressRef.current = false;
-          setAttachmentPickerBusy(false);
-        }
-      },
-      []
-    );
-
-    const pickFileFromDevice = useCallback(async () => {
-      await runAttachmentPicker(async () => {
-        const result = await DocumentPicker.getDocumentAsync({
-          type: '*/*',
-          copyToCacheDirectory: true,
-          multiple: false,
-        });
-        if (result.canceled || !result.assets[0]) {
-          return;
-        }
-
-        const file = result.assets[0];
-        await uploadMobileAttachment({
-          uri: file.uri,
-          fileName: file.name,
-          mimeType: file.mimeType ?? undefined,
-          kind: 'file',
-        });
-      });
-    }, [runAttachmentPicker, uploadMobileAttachment]);
-
-    const pickImageFromDevice = useCallback(async () => {
-      await runAttachmentPicker(async () => {
-        if (Platform.OS !== 'ios') {
-          const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-          if (!permission.granted) {
-            setError('Photo library permission is required to attach images');
-            return;
-          }
-        }
-
-        const result = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ['images'] as ImagePicker.MediaType[],
-          quality: 1,
-          base64: true,
-          allowsMultipleSelection: false,
-        });
-        if (result.canceled || !result.assets[0]) {
-          return;
-        }
-
-        const image = result.assets[0];
-        await uploadMobileAttachment({
-          uri: image.uri,
-          fileName: image.fileName ?? undefined,
-          mimeType: image.mimeType ?? undefined,
-          kind: 'image',
-          dataBase64: image.base64 ?? undefined,
-        });
-      });
-    }, [runAttachmentPicker, uploadMobileAttachment]);
-
-    const captureImageFromCamera = useCallback(async () => {
-      await runAttachmentPicker(async () => {
-        const permission = await ImagePicker.requestCameraPermissionsAsync();
-        if (!permission.granted) {
-          setError('Camera permission is required to take a photo');
-          return;
-        }
-
-        const result = await ImagePicker.launchCameraAsync({
-          mediaTypes: ['images'] as ImagePicker.MediaType[],
-          quality: 1,
-          base64: true,
-          allowsEditing: false,
-        });
-        if (result.canceled || !result.assets[0]) {
-          return;
-        }
-
-        const image = result.assets[0];
-        await uploadMobileAttachment({
-          uri: image.uri,
-          fileName: image.fileName ?? 'camera-photo.jpg',
-          mimeType: image.mimeType ?? 'image/jpeg',
-          kind: 'image',
-          dataBase64: image.base64 ?? undefined,
-        });
-      });
-    }, [runAttachmentPicker, uploadMobileAttachment]);
-
-    const openAttachmentMenu = useCallback(() => {
-      if (attachmentPickerInProgressRef.current || uploadingAttachment) {
-        return;
-      }
-      setAttachmentMenuVisible(true);
-    }, [uploadingAttachment]);
-
-    const submitAttachmentPath = useCallback(() => {
-      if (!addPendingMentionPath(attachmentPathDraft)) {
-        return;
-      }
-
-      setAttachmentPathDraft('');
-      setAttachmentModalVisible(false);
-    }, [addPendingMentionPath, attachmentPathDraft]);
-
-    const selectAttachmentSuggestion = useCallback(
-      (path: string) => {
-        if (!addPendingMentionPath(path)) {
-          return;
-        }
-
-        setAttachmentPathDraft('');
-        setAttachmentModalVisible(false);
-      },
-      [addPendingMentionPath]
-    );
-
-    const selectMentionSuggestion = useCallback(
-      (path: string) => {
-        if (!addPendingMentionPath(path)) {
-          return;
-        }
-
-        setDraft((current) =>
-          replaceActiveMentionQueryWithSelection(current, toPathBasename(path))
-        );
-      },
-      [addPendingMentionPath]
-    );
-
-    useEffect(() => {
-      setPendingMentionPaths((prev) => {
-        const next = prev.filter((path) => draftContainsMentionLabel(draft, toPathBasename(path)));
-        return next.length === prev.length ? prev : next;
-      });
-    }, [draft]);
-
     useEffect(() => {
       if (ws.isConnected) {
         void refreshModelOptions();
@@ -3708,74 +3051,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
       });
     }, [refreshModelOptions, ws]);
-
-    useEffect(() => {
-      const workspace = normalizeWorkspacePath(attachmentWorkspace);
-      if (!workspace) {
-        setAttachmentFileCandidates([]);
-        setLoadingAttachmentFileCandidates(false);
-        return;
-      }
-
-      const cached = attachmentFileCandidatesCacheRef.current[workspace];
-      setAttachmentFileCandidates(cached ?? []);
-      setLoadingAttachmentFileCandidates(false);
-      if (!cached) {
-        void loadAttachmentFileCandidates(workspace);
-      }
-    }, [attachmentWorkspace, loadAttachmentFileCandidates]);
-
-    useEffect(() => {
-      if (attachmentMenuVisible || pendingAttachmentMenuAction === null) {
-        return;
-      }
-
-      let cancelled = false;
-      let timeoutId: ReturnType<typeof setTimeout> | null = null;
-      const idleHandle = scheduleIdleTask(() => {
-        timeoutId = setTimeout(() => {
-          if (cancelled) {
-            return;
-          }
-          const action = pendingAttachmentMenuAction;
-          setPendingAttachmentMenuAction(null);
-
-          if (action === 'workspace-path') {
-            openAttachmentPathModal();
-            return;
-          }
-
-          if (action === 'phone-file') {
-            void pickFileFromDevice();
-            return;
-          }
-
-          if (action === 'phone-image') {
-            void pickImageFromDevice();
-            return;
-          }
-
-          if (action === 'phone-camera') {
-            void captureImageFromCamera();
-          }
-        }, 180);
-      });
-
-      return () => {
-        cancelled = true;
-        idleHandle.cancel();
-        if (timeoutId !== null) {
-          clearTimeout(timeoutId);
-        }
-      };
-    }, [
-      attachmentMenuVisible,
-      captureImageFromCamera,
-      openAttachmentPathModal,
-      pendingAttachmentMenuAction,
-      pickFileFromDevice,
-      pickImageFromDevice,
-    ]);
 
     const openRenameModal = useCallback(() => {
       if (!selectedChat) {
@@ -3850,8 +3125,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           icon: 'folder-open-outline',
           disabled: attachmentControlsDisabled,
           onPress: () => {
-            setAttachmentMenuVisible(false);
-            setPendingAttachmentMenuAction('workspace-path');
+            attachmentController.requestMenuAction('workspace-path');
           },
         },
         {
@@ -3861,8 +3135,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           icon: 'document-outline',
           disabled: attachmentControlsDisabled,
           onPress: () => {
-            setAttachmentMenuVisible(false);
-            setPendingAttachmentMenuAction('phone-file');
+            attachmentController.requestMenuAction('phone-file');
           },
         },
         {
@@ -3872,8 +3145,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           icon: 'image-outline',
           disabled: attachmentControlsDisabled,
           onPress: () => {
-            setAttachmentMenuVisible(false);
-            setPendingAttachmentMenuAction('phone-image');
+            attachmentController.requestMenuAction('phone-image');
           },
         },
         {
@@ -3883,18 +3155,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           icon: 'camera-outline',
           disabled: attachmentControlsDisabled,
           onPress: () => {
-            setAttachmentMenuVisible(false);
-            setPendingAttachmentMenuAction('phone-camera');
+            attachmentController.requestMenuAction('phone-camera');
           },
         },
       ],
-      [
-        attachmentControlsDisabled,
-        captureImageFromCamera,
-        openAttachmentPathModal,
-        pickFileFromDevice,
-        pickImageFromDevice,
-      ]
+      [attachmentController, attachmentControlsDisabled]
     );
 
     const chatTitleMenuOptions = useMemo<SelectionSheetOption[]>(
@@ -4472,7 +3737,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const interruptActiveTurn = useCallback(
       async (threadId: string, turnId: string) => {
         try {
-          await api.interruptTurn(threadId, turnId);
+          await turnExecutionController.interrupt(threadId, turnId);
           setError(null);
           setActivity({
             tone: 'running',
@@ -4490,13 +3755,13 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           stopRequestedRef.current = false;
         }
       },
-      [api]
+      [turnExecutionController]
     );
 
     const interruptLatestTurn = useCallback(
       async (threadId: string) => {
         try {
-          const interruptedTurnId = await api.interruptLatestTurn(threadId);
+          const interruptedTurnId = await turnExecutionController.interrupt(threadId);
           if (interruptedTurnId) {
             setActiveTurnId(interruptedTurnId);
             setError(null);
@@ -4525,7 +3790,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           stopRequestedRef.current = false;
         }
       },
-      [api]
+      [turnExecutionController]
     );
 
     const registerTurnStarted = useCallback(
@@ -4768,7 +4033,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 tone: 'running',
                 title: 'Creating chat',
               });
-              const created = await api.createChat({
+              const created = await turnExecutionController.create({
                 engine: activeChatEngine,
                 cwd: preferredStartCwd ?? undefined,
                 model: activeModelId ?? undefined,
@@ -4807,7 +4072,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 bumpRunWatchdog();
               }
 
-              const updated = await api.sendChatMessage(created.id, {
+              const updated = await turnExecutionController.send(created.id, {
                 content: argText,
                 cwd: created.cwd ?? preferredStartCwd ?? undefined,
                 model: activeModelId ?? undefined,
@@ -4816,9 +4081,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 approvalPolicy: activeApprovalPolicy,
                 collaborationMode: 'plan',
                 agent: null,
-              }, {
-                onTurnStarted: (turnId) => registerTurnStarted(created.id, turnId),
-              });
+              }, (turnId) => registerTurnStarted(created.id, turnId));
               const resolvedUpdated =
                 mergeChatWithPendingOptimisticMessages(updated);
               const autoEnabledPlan =
@@ -4911,7 +4174,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               };
             });
             scrollToBottomReliable(true);
-            const updated = await api.sendChatMessage(targetChatId, {
+            const updated = await turnExecutionController.send(targetChatId, {
               content: argText,
               cwd: selectedChat?.cwd,
               model: activeModelId ?? undefined,
@@ -4920,9 +4183,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               approvalPolicy: activeApprovalPolicy,
               collaborationMode: 'plan',
               agent: null,
-            }, {
-              onTurnStarted: (turnId) => registerTurnStarted(targetChatId, turnId),
-            });
+            }, (turnId) => registerTurnStarted(targetChatId, turnId));
             const resolvedUpdated =
               mergeChatWithPendingOptimisticMessages(updated);
             rememberChatModelPreference(
@@ -5199,15 +4460,15 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         loadChatRequestRef.current = requestId;
         let loadedSuccessfully = false;
         try {
-          void api
-            .readThreadQueue(chatId)
+          void chatSyncController
+            .readQueue(chatId)
             .then((queueState) => {
               if (requestId === loadChatRequestRef.current) {
                 cacheThreadQueueState(chatId, queueState);
               }
             })
             .catch(() => {});
-          const loadedChat = await api.getChat(chatId, { forceRefresh: true });
+          const loadedChat = await chatSyncController.load(chatId);
           const chat = mergeChatWithPendingOptimisticMessages(loadedChat);
           if (requestId !== loadChatRequestRef.current) {
             return;
@@ -5331,7 +4592,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
       },
       [
-        api,
+        chatSyncController,
         applyThreadRuntimeSnapshot,
         bumpRunWatchdog,
         cacheThreadQueueState,
@@ -5381,11 +4642,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         setUserInputDrafts({});
         setUserInputError(null);
         setResolvingUserInput(false);
-        setAttachmentModalVisible(false);
+      attachmentController.closePathModal();
         setAgentThreadMenuVisible(false);
-        setAttachmentPathDraft('');
-        setPendingMentionPaths([]);
-        setPendingLocalImagePaths([]);
         setActivePlan(null);
         setActiveTurnId(null);
         setStoppingTurn(false);
@@ -5436,23 +4694,14 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
 
         try {
-          const chat = await api.getChat(threadId, { forceRefresh: true });
+          const { chat, parent } = await agentThreadsController.loadDetail(threadId);
           if (agentDetailRequestRef.current !== requestId) {
             return;
           }
           setAgentDetailChat((previous) =>
             previous?.id === chat.id ? resolveEquivalentChat(previous, chat) : chat
           );
-          if (chat.parentThreadId) {
-            const parent =
-              api.peekChat(chat.parentThreadId) ??
-              (await api.getChat(chat.parentThreadId).catch(() => null));
-            if (agentDetailRequestRef.current === requestId) {
-              setAgentDetailParentChat(parent);
-            }
-          } else {
-            setAgentDetailParentChat(null);
-          }
+          setAgentDetailParentChat(parent);
           setAgentDetailError(null);
         } catch (err) {
           if (agentDetailRequestRef.current === requestId) {
@@ -5464,7 +4713,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           }
         }
       },
-      [api]
+      [agentThreadsController]
     );
 
     const openAgentDetail = useCallback(
@@ -5751,49 +5000,16 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           tone: 'running',
           title: 'Creating chat',
         });
-        const created = await api.createChat({
-          engine: activeChatEngine,
-          cwd: preferredStartCwd ?? undefined,
-          model: activeModelId ?? undefined,
-          effort: activeEffort ?? undefined,
-          serviceTier: activeServiceTier ?? undefined,
-          approvalPolicy: activeApprovalPolicy,
-        });
-        createdChatId = created.id;
-        onLastUsedThreadSettingsChange?.(
-          activeChatEngine,
-          activeModelId,
-          activeEffort,
-          activeServiceTier,
-          selectedCollaborationMode
-        );
-
-        queueOptimisticUserMessage(created.id, optimisticMessage, {
-          baseChat: created,
-        });
-        if (selectedChatIdRef.current === null) {
-          adoptedCreatedChat = true;
-          setSelectedChatId(created.id);
-          setSelectedChat({
-            ...created,
-            status: 'running',
-            updatedAt: new Date().toISOString(),
-            statusUpdatedAt: new Date().toISOString(),
-            lastMessagePreview: content.slice(0, 50),
-            messages: [...created.messages, optimisticMessage],
-          });
-          scrollToBottomReliable(true);
-
-          setActivity({
-            tone: 'running',
-            title: 'Working',
-          });
-          bumpRunWatchdog();
-        }
-
-        const updated = await api.sendChatMessage(
-          created.id,
-          {
+        const updated = await turnExecutionController.createAndStart({
+          create: {
+            engine: activeChatEngine,
+            cwd: preferredStartCwd ?? undefined,
+            model: activeModelId ?? undefined,
+            effort: activeEffort ?? undefined,
+            serviceTier: activeServiceTier ?? undefined,
+            approvalPolicy: activeApprovalPolicy,
+          },
+          message: (created) => ({
             content,
             mentions: turnMentions,
             localImages: turnLocalImages,
@@ -5804,11 +5020,35 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             approvalPolicy: activeApprovalPolicy,
             collaborationMode: selectedCollaborationMode,
             agent: selectedHarnessAgent ?? undefined,
+          }),
+          onCreated: (created) => {
+            createdChatId = created.id;
+            onLastUsedThreadSettingsChange?.(
+              activeChatEngine,
+              activeModelId,
+              activeEffort,
+              activeServiceTier,
+              selectedCollaborationMode
+            );
+            queueOptimisticUserMessage(created.id, optimisticMessage, { baseChat: created });
+            if (selectedChatIdRef.current === null) {
+              adoptedCreatedChat = true;
+              setSelectedChatId(created.id);
+              setSelectedChat({
+                ...created,
+                status: 'running',
+                updatedAt: new Date().toISOString(),
+                statusUpdatedAt: new Date().toISOString(),
+                lastMessagePreview: content.slice(0, 50),
+                messages: [...created.messages, optimisticMessage],
+              });
+              scrollToBottomReliable(true);
+              setActivity({ tone: 'running', title: 'Working' });
+              bumpRunWatchdog();
+            }
           },
-          {
-            onTurnStarted: (turnId) => registerTurnStarted(created.id, turnId),
-          }
-        );
+          onTurnStarted: registerTurnStarted,
+        });
         const resolvedUpdated =
           mergeChatWithPendingOptimisticMessages(updated);
         const autoEnabledPlan =
@@ -5818,15 +5058,14 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           setSelectedCollaborationMode('plan');
         }
         rememberChatModelPreference(
-          created.id,
+          createdChatId,
           activeModelId,
           selectedEffort ?? activeEffort,
           activeServiceTier
         );
         if (isStillVisible) {
           setSelectedChat(resolvedUpdated);
-          setPendingMentionPaths([]);
-          setPendingLocalImagePaths([]);
+          attachmentController.clearPending();
           setError(null);
           if (resolvedUpdated.status === 'complete') {
             setActivity({
@@ -5867,7 +5106,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
       }
     }, [
-      api,
+      turnExecutionController,
+      attachmentController,
       draft,
       activeEffort,
       activeChatEngine,
@@ -6067,7 +5307,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             scrollToBottomReliable(true);
           }
 
-          const result = await api.sendOrQueueChatMessage(
+          const result = await turnExecutionController.sendOrQueue(
             targetChatId,
             {
               content,
@@ -6081,9 +5321,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               collaborationMode: resolvedCollaborationMode,
               agent: selectedHarnessAgent ?? undefined,
             },
-            {
-              skipResume: likelyQueuesLocally,
-            }
+            likelyQueuesLocally
           );
 
           discardOptimisticQueuedMessage(targetChatId, optimisticQueuedMessage?.id);
@@ -6097,8 +5335,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
           const isStillSelectedForResult = selectedChatIdRef.current === targetChatId;
           if (shouldClearComposer && isStillSelectedForResult) {
-            setPendingMentionPaths([]);
-            setPendingLocalImagePaths([]);
+            attachmentController.clearPending();
           }
 
           if (isStillSelectedForResult) {
@@ -6274,7 +5511,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         bumpRunWatchdog();
         setQueueActionItemId(nextQueuedMessage.id);
         setQueueActionKind('steer');
-        const response = await api.steerQueuedThreadMessage(threadId, nextQueuedMessage.id);
+        const response = await turnExecutionController.steer(threadId, nextQueuedMessage.id);
         cacheThreadQueueState(threadId, response.queue);
         scrollToBottomReliable(true);
         setActivity({
@@ -6291,7 +5528,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         setQueueActionKind((previous) => (previous === 'steer' ? null : previous));
       }
     }, [
-      api,
+      turnExecutionController,
       bumpRunWatchdog,
       cacheThreadQueueState,
       pendingApproval?.id,
@@ -6311,7 +5548,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         setError(null);
         setQueueActionItemId(normalizedMessageId);
         setQueueActionKind('cancel');
-        const response = await api.cancelQueuedThreadMessage(threadId, normalizedMessageId);
+        const response = await turnExecutionController.cancelQueued(threadId, normalizedMessageId);
         cacheThreadQueueState(threadId, response.queue);
       } catch (err) {
         setError((err as Error).message);
@@ -6323,7 +5560,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       }
     }, [
       selectedChatId,
-      api,
+      turnExecutionController,
       cacheThreadQueueState,
     ]);
 
@@ -7863,56 +7100,19 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       upsertThreadRuntimeSnapshot,
     ]);
 
-    useEffect(() => {
-      if (!selectedChatId) {
-        return;
-      }
+    const applySynchronizedChat = useCallback((latest: Chat, assessment: ChatSyncAssessment) => {
+      const targetChatId = latest.id;
+      if (selectedChatIdRef.current !== targetChatId) return;
       const hasPendingApproval = Boolean(pendingApproval?.id);
       const hasPendingUserInput = Boolean(pendingUserInputRequest?.id);
-      let stopped = false;
-      let timer: ReturnType<typeof setTimeout> | null = null;
-
-      const syncChat = async () => {
-        if (sending || creating) {
-          return;
-        }
-
-        const targetChatId = selectedChatId;
-
-        try {
-          const latest = await api.getChat(targetChatId);
-          // Ignore late poll responses after the user has already switched chats.
-          if (stopped || selectedChatIdRef.current !== targetChatId) {
-            return;
-          }
-          const resolvedLatest = mergeChatWithPendingOptimisticMessages(latest);
-          setSelectedChat((prev) => {
-            if (!prev || prev.id !== resolvedLatest.id) {
-              return resolvedLatest;
-            }
-            return resolveEquivalentChat(prev, resolvedLatest);
-          });
-
-          const currentSelectedChat = selectedChatRef.current;
-          const hasTerminalStatus =
-            resolvedLatest.status === 'complete' || resolvedLatest.status === 'error';
-          const hasAssistantProgress =
-            !hasTerminalStatus &&
-            didAssistantMessageProgress(currentSelectedChat, resolvedLatest);
-          const hasPendingUserMessage =
-            !hasTerminalStatus && hasRecentUnansweredUserTurn(resolvedLatest);
-          const shouldRunFromChat =
-            isChatLikelyRunning(resolvedLatest) ||
-            hasAssistantProgress ||
-            hasPendingUserMessage;
-          const shouldRunFromWatchdog =
-            !hasTerminalStatus && runWatchdogUntilRef.current > Date.now();
-          const shouldShowRunning = shouldRunFromChat || shouldRunFromWatchdog;
-          const shouldRefreshWatchdog = shouldRunFromChat;
-          const watchdogDurationMs =
-            hasAssistantProgress && !isChatLikelyRunning(resolvedLatest)
-              ? Math.floor(RUN_WATCHDOG_MS / 4)
-              : RUN_WATCHDOG_MS;
+      const resolvedLatest = mergeChatWithPendingOptimisticMessages(latest);
+      setSelectedChat((prev) => {
+        if (!prev || prev.id !== resolvedLatest.id) return resolvedLatest;
+        return resolveEquivalentChat(prev, resolvedLatest);
+      });
+          const shouldShowRunning = assessment.shouldShowRunning;
+          const shouldRefreshWatchdog = assessment.shouldRefreshWatchdog;
+          const watchdogDurationMs = assessment.watchdogDurationMs;
 
           if (shouldShowRunning && !hasPendingApproval && !hasPendingUserInput) {
             setActivity((prev) => {
@@ -7920,7 +7120,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               // completion. When the server explicitly reports running, trust it
               // (handles externally-started turns like CLI).
               if (
-                !shouldRunFromChat &&
+                !shouldRefreshWatchdog &&
                 (prev.tone === 'complete' || prev.tone === 'error')
               ) {
                 return prev;
@@ -7967,45 +7167,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               };
             });
           }
-        } catch {
-          // Polling is best-effort; keep the current view if refresh fails.
-        }
-      };
-
-	      const scheduleNextSync = () => {
-	        if (stopped) {
-	          return;
-	        }
-	        const appIsActive = appStateRef.current === 'active';
-	        const shouldPollFast =
-	          appIsActive &&
-	          (Boolean(activeTurnIdRef.current) || runWatchdogUntilRef.current > Date.now());
-	        const intervalMs = !appIsActive
-	          ? BACKGROUND_CHAT_SYNC_INTERVAL_MS
-	          : shouldPollFast
-	          ? ACTIVE_CHAT_SYNC_INTERVAL_MS
-	          : IDLE_CHAT_SYNC_INTERVAL_MS;
-	        timer = setTimeout(() => {
-          void syncChat().finally(() => {
-            scheduleNextSync();
-          });
-        }, intervalMs);
-      };
-
-      void syncChat();
-      scheduleNextSync();
-
-      return () => {
-        stopped = true;
-        if (timer) {
-          clearTimeout(timer);
-        }
-      };
     }, [
-      api,
-      selectedChatId,
-      sending,
-      creating,
       pendingApproval?.id,
       pendingUserInputRequest?.id,
       bumpRunWatchdog,
@@ -8013,10 +7175,23 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       mergeChatWithPendingOptimisticMessages,
     ]);
 
+    useChatSynchronization({
+      controller: chatSyncController,
+      threadId: selectedChatId,
+      paused: sending || creating,
+      getPrevious: () => selectedChatRef.current,
+      isWatchdogActive: () => runWatchdogUntilRef.current > Date.now(),
+      isAppActive: () => appStateRef.current === 'active',
+      isTurnActive: () =>
+        appStateRef.current === 'active' &&
+        (Boolean(activeTurnIdRef.current) || runWatchdogUntilRef.current > Date.now()),
+      onSnapshot: applySynchronizedChat,
+    });
+
     const handleResolveApproval = useCallback(
       async (id: string, decision: ApprovalDecision) => {
         try {
-          await api.resolveApproval(id, decision);
+          await approvalController.resolveApproval(id, decision);
           if (selectedChatId) {
             cacheThreadPendingApproval(selectedChatId, null);
           }
@@ -8025,7 +7200,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           setError((err as Error).message);
         }
       },
-      [api, cacheThreadPendingApproval, selectedChatId]
+      [approvalController, cacheThreadPendingApproval, selectedChatId]
     );
 
     const setUserInputDraft = useCallback((questionId: string, value: string) => {
@@ -8041,21 +7216,22 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         return;
       }
 
-      const answers: Record<string, { answers: string[] }> = {};
-      for (const question of pendingUserInputRequest.questions) {
-        const raw = (userInputDrafts[question.id] ?? '').trim();
-        const normalizedAnswers = normalizeQuestionAnswers(raw);
-        if (normalizedAnswers.length === 0) {
-          setUserInputError(`Please answer "${question.header}"`);
-          return;
-        }
-
-        answers[question.id] = { answers: normalizedAnswers };
+      const validation = buildUserInputAnswers(pendingUserInputRequest, userInputDrafts);
+      if ('error' in validation) {
+        setUserInputError(validation.error);
+        return;
       }
 
       setResolvingUserInput(true);
       try {
-        await api.resolveUserInput(pendingUserInputRequest.id, { answers });
+        const resolutionError = await approvalController.resolveUserInput(
+          pendingUserInputRequest,
+          userInputDrafts
+        );
+        if (resolutionError) {
+          setUserInputError(resolutionError);
+          return;
+        }
         cacheThreadPendingUserInputRequest(pendingUserInputRequest.threadId, null);
         setPendingUserInputRequest(null);
         setUserInputDrafts({});
@@ -8071,7 +7247,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         setResolvingUserInput(false);
       }
     }, [
-      api,
+      approvalController,
       bumpRunWatchdog,
       cacheThreadPendingUserInputRequest,
       pendingUserInputRequest,
@@ -9306,7 +8482,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           subtitle="Bring in a workspace path, a file, a saved image, or a fresh photo."
           options={attachmentMenuOptions}
           presentation="expanded"
-          onClose={() => setAttachmentMenuVisible(false)}
+          onClose={attachmentController.closeMenu}
         />
 
         <SelectionSheet
