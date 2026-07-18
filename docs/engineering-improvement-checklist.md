@@ -1,6 +1,6 @@
 # Engineering Improvement Checklist
 
-Last updated: July 17, 2026
+Last updated: July 18, 2026
 
 ## Purpose
 
@@ -33,7 +33,7 @@ Historical plans under `docs/plans/` are not the source of truth for this work.
 - [x] **9. Make health and capabilities truthful under partial failure.** Report per-engine lifecycle, restart count, pending requests, and degradation; return healthy engines when an optional engine fails. Acceptance: `/health`, status, capabilities, and aggregate lists reflect backend death and recovery.
 - [x] **10. Replace shared queue coordination with per-thread actors.** Give each thread one serialized owner for active turn, approvals, user input, queued messages, and dispatch. Acceptance: concurrent sends start exactly one turn and queue subsequent messages deterministically.
 - [x] **11. Reconcile thread actors after lag and restart.** Validate completion turn IDs, recover state from snapshots after notification lag, bound queue size, and define queue persistence/restart behavior. Acceptance: stale completion or dropped notification cannot dispatch over an active turn.
-- [ ] **12. Split remaining Rust bridge domains into modules.** Extract auth/config, RPC routing/contracts, replay, live sync, push, preview, attachments, and health from `main.rs` without behavior changes. Acceptance: module boundaries have narrow interfaces and existing Rust checks pass.
+- [x] **12. Split remaining Rust bridge domains into modules.** Extract auth/config, RPC routing/contracts, replay, live sync, push, preview, attachments, and health from `main.rs` without behavior changes. Acceptance: module boundaries have narrow interfaces and existing Rust checks pass.
 
 ## Milestone 3: Host Security And Resource Policy
 
@@ -78,3 +78,4 @@ Record notable decisions or intentionally deferred acceptance criteria here when
 - Item 9: Health/status now report `ok`, `degraded`, or `unhealthy` with per-engine lifecycle, restart, pending-request, and error details. `/health` returns 503 only when no configured engine is ready; capabilities exclude non-ready engines and onboarding accepts degraded private bridges.
 - Item 10: Each thread queue now has one mutex-backed actor owner. Send, steer, cancel, and automatic dispatch operations serialize through that owner, making occupancy inspection and turn reservation atomic per thread.
 - Item 11: Queue actors validate completion turn IDs, reconcile authoritative execution/blocker state after notification lag, fail closed when reconciliation fails, and cap each thread at 100 queued messages. Queues survive backend replacement within one bridge process but are intentionally not persisted across a full bridge restart.
+- Item 12: Rust bridge configuration/auth, RPC parsing and forwarding contracts, replay storage, rollout discovery policy, push registry/policy, preview session/discovery state, attachment persistence, and health DTO/aggregation now live in focused modules. Cross-domain transport orchestration remains in `main.rs`; the extracted modules expose only crate-local data and service interfaces.

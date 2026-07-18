@@ -3,7 +3,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     env,
-    hash::{Hash, Hasher},
     io::{SeekFrom, Write},
     path::{Component, Path, PathBuf},
     process::Stdio,
@@ -33,7 +32,7 @@ use axum::{
 };
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
-use futures_util::{stream, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client as HttpClient, Method as HttpMethod, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -53,10 +52,53 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
+mod attachments;
 mod backend_runtime;
+mod config;
+mod health;
+mod live_sync;
+mod preview;
+mod push;
+mod replay;
+mod rpc;
 mod services;
 
+#[cfg(test)]
+use attachments::{
+    build_attachment_file_name, decode_base64_payload, estimate_base64_decoded_size,
+    infer_extension_from_mime, normalize_attachment_kind, sanitize_filename, sanitize_path_segment,
+};
+use attachments::{
+    infer_image_content_type_from_path, resolve_local_image_path, save_uploaded_attachment,
+    AttachmentUploadRequest,
+};
 use backend_runtime::{BackendLifecycleState, BackendRuntimeSnapshot, BackendRuntimeStatus};
+#[cfg(test)]
+use config::{
+    constant_time_eq, legacy_default_enabled_engines, parse_enabled_bridge_engines_csv,
+    resolve_bridge_workdir, WebSocketResourceLimits, DEFAULT_WS_GLOBAL_IN_FLIGHT,
+    DEFAULT_WS_MAX_FRAME_BYTES, DEFAULT_WS_MAX_MESSAGE_BYTES, DEFAULT_WS_PER_CLIENT_IN_FLIGHT,
+};
+use config::{parse_bridge_runtime_engine, BridgeConfig};
+use health::{bridge_status, BridgeDeviceConnection, BridgeEngineStatus, BridgeStatus};
+use live_sync::{
+    discover_recent_rollout_files, hash_rollout_line, resolve_codex_sessions_root,
+    rollout_originator_allowed, should_run_rollout_discovery_tick, ROLLOUT_LIVE_SYNC_MAX_FILE_AGE,
+};
+#[cfg(test)]
+use preview::{browser_preview_label_for_port, parse_listening_socket_port};
+use preview::{
+    normalize_browser_preview_target_url, BrowserPreviewResolvedSession, BrowserPreviewService,
+    BROWSER_PREVIEW_SESSION_TTL,
+};
+#[cfg(test)]
+use push::PushRegistry;
+use push::{
+    parse_push_event_preferences, push_thread_is_top_level, token_suffix, truncate_chars,
+    PushEventPreferences, PushRegistryStore,
+};
+use replay::NotificationReplay;
+use rpc::{is_forwarded_method, parse_client_request_id, parse_request, RpcRequestParseError};
 
 const APPROVAL_COMMAND_METHOD: &str = "item/commandExecution/requestApproval";
 const APPROVAL_FILE_METHOD: &str = "item/fileChange/requestApproval";
@@ -67,17 +109,11 @@ const REQUEST_USER_INPUT_METHOD_ALT: &str = "tool/requestUserInput";
 const DYNAMIC_TOOL_CALL_METHOD: &str = "item/tool/call";
 const ACCOUNT_CHATGPT_TOKENS_REFRESH_METHOD: &str = "account/chatgptAuthTokens/refresh";
 const BRIDGE_CHATGPT_AUTH_CACHE_FILE_NAME: &str = "chatgpt-auth.json";
-const MOBILE_ATTACHMENTS_DIR: &str = ".clawdex-mobile-attachments";
-const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 const BRIDGE_PROTOCOL_VERSION: u32 = 1;
 const NOTIFICATION_REPLAY_BUFFER_SIZE: usize = 2_000;
 const NOTIFICATION_REPLAY_MAX_LIMIT: usize = 1_000;
 const INTERNAL_NOTIFICATION_CHANNEL_CAPACITY: usize = 1_024;
 const WS_CLIENT_QUEUE_CAPACITY: usize = 256;
-const DEFAULT_WS_MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
-const DEFAULT_WS_MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
-const DEFAULT_WS_PER_CLIENT_IN_FLIGHT: usize = 16;
-const DEFAULT_WS_GLOBAL_IN_FLIGHT: usize = 128;
 const RPC_SERVER_OVERLOADED: i64 = -32005;
 const BRIDGE_THREAD_LIST_CURSOR_PREFIX: &str = "bridge:";
 const THREAD_LIST_STREAM_BATCH_METHOD: &str = "bridge/thread/list/stream/batch";
@@ -90,8 +126,6 @@ const APP_SERVER_TRANSIENT_THREAD_READ_RETRY_DELAYS_MS: [u64; 5] = [50, 100, 200
 const APP_SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const ROLLOUT_LIVE_SYNC_POLL_INTERVAL_MS: u64 = 900;
 const ROLLOUT_LIVE_SYNC_DISCOVERY_INTERVAL_TICKS: u64 = 1;
-const ROLLOUT_LIVE_SYNC_MAX_TRACKED_FILES: usize = 64;
-const ROLLOUT_LIVE_SYNC_MAX_FILE_AGE: Duration = Duration::from_secs(60 * 60 * 24 * 2);
 const ROLLOUT_LIVE_SYNC_INITIAL_TAIL_BYTES: u64 = 64 * 1024;
 const ROLLOUT_LIVE_SYNC_DEDUP_CAPACITY: usize = 8_192;
 const OPENCODE_HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -101,11 +135,8 @@ const BROWSER_PREVIEW_COOKIE_NAME: &str = "clawdex_preview";
 const BROWSER_PREVIEW_VIEWPORT_COOKIE_NAME: &str = "clawdex_preview_vp";
 const BROWSER_PREVIEW_PROXY_PREFIX: &str = "/__clawdex_proxy__";
 const BROWSER_PREVIEW_RUNTIME_SCRIPT_PATH: &str = "/__clawdex_preview_runtime__.js";
-const BROWSER_PREVIEW_SESSION_TTL: Duration = Duration::from_secs(60 * 60 * 12);
-const BROWSER_PREVIEW_MAX_SESSIONS: usize = 12;
 const BROWSER_PREVIEW_HTTP_BODY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 const BROWSER_PREVIEW_HTML_REWRITE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
-const BROWSER_PREVIEW_DISCOVERY_HTTP_TIMEOUT: Duration = Duration::from_millis(500);
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const GITHUB_API_URL: &str = "https://api.github.com";
 const GITHUB_HOST: &str = "github.com";
@@ -113,235 +144,6 @@ const GITHUB_CREDENTIALS_DIR_NAME: &str = ".clawdex";
 const GITHUB_CREDENTIALS_FILE_NAME: &str = "github-credentials";
 const GITHUB_GIT_CONFIG_FILE_NAME: &str = "github-git-auth.gitconfig";
 const CURSOR_API_BASE_URL: &str = "https://api.cursor.com";
-
-#[derive(Clone)]
-struct BridgeConfig {
-    host: String,
-    port: u16,
-    preview_port: u16,
-    connect_url: Option<String>,
-    preview_connect_url: Option<String>,
-    workdir: PathBuf,
-    cli_bin: String,
-    opencode_cli_bin: String,
-    cursor_app_server_bin: String,
-    active_engine: BridgeRuntimeEngine,
-    enabled_engines: Vec<BridgeRuntimeEngine>,
-    opencode_host: String,
-    opencode_port: u16,
-    opencode_server_username: String,
-    opencode_server_password: Option<String>,
-    auth_token: Option<String>,
-    auth_enabled: bool,
-    allow_insecure_no_auth: bool,
-    allow_query_token_auth: bool,
-    allow_outside_root_cwd: bool,
-    disable_terminal_exec: bool,
-    terminal_allowed_commands: HashSet<String>,
-    show_pairing_qr: bool,
-    ws_limits: WebSocketResourceLimits,
-}
-
-#[derive(Debug, Clone)]
-struct WebSocketResourceLimits {
-    max_frame_bytes: usize,
-    max_message_bytes: usize,
-    per_client_in_flight: usize,
-    global_in_flight: usize,
-}
-
-impl BridgeConfig {
-    fn from_env() -> Result<Self, String> {
-        let host = env::var("BRIDGE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let port = env::var("BRIDGE_PORT")
-            .ok()
-            .and_then(|v| v.parse::<u16>().ok())
-            .unwrap_or(8787);
-        let preview_port = env::var("BRIDGE_PREVIEW_PORT")
-            .ok()
-            .and_then(|v| v.parse::<u16>().ok())
-            .unwrap_or_else(|| port.checked_add(1).unwrap_or(8788));
-        if preview_port == port {
-            return Err("BRIDGE_PREVIEW_PORT must differ from BRIDGE_PORT".to_string());
-        }
-        let connect_url = parse_connect_url_env("BRIDGE_CONNECT_URL")?;
-        let preview_connect_url = parse_connect_url_env("BRIDGE_PREVIEW_CONNECT_URL")?;
-
-        let configured_workdir = env::var("BRIDGE_WORKDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let workdir = resolve_bridge_workdir(configured_workdir)?;
-
-        let cli_bin = env::var("CODEX_CLI_BIN").unwrap_or_else(|_| "codex".to_string());
-        let opencode_cli_bin =
-            env::var("OPENCODE_CLI_BIN").unwrap_or_else(|_| "opencode".to_string());
-        let cursor_app_server_bin =
-            env::var("CURSOR_APP_SERVER_BIN").unwrap_or_else(|_| "cursor-app-server".to_string());
-        let requested_active_engine = match env::var("BRIDGE_ACTIVE_ENGINE") {
-            Ok(raw) => parse_bridge_runtime_engine(raw.trim())
-                .ok_or_else(|| format!("unsupported BRIDGE_ACTIVE_ENGINE value: {raw}"))?,
-            Err(_) => BridgeRuntimeEngine::Codex,
-        };
-        let enabled_engines = parse_enabled_bridge_engines_env()?
-            .unwrap_or_else(|| legacy_default_enabled_engines(requested_active_engine));
-        let active_engine = if enabled_engines.contains(&requested_active_engine) {
-            requested_active_engine
-        } else {
-            enabled_engines[0]
-        };
-        let opencode_host =
-            env::var("BRIDGE_OPENCODE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let opencode_port = env::var("BRIDGE_OPENCODE_PORT")
-            .ok()
-            .and_then(|v| v.parse::<u16>().ok())
-            .unwrap_or(4090);
-        let auth_token = env::var("BRIDGE_AUTH_TOKEN")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
-        let opencode_server_username = env::var("BRIDGE_OPENCODE_SERVER_USERNAME")
-            .or_else(|_| env::var("OPENCODE_SERVER_USERNAME"))
-            .unwrap_or_else(|_| "opencode".to_string())
-            .trim()
-            .to_string();
-        let opencode_server_password = env::var("BRIDGE_OPENCODE_SERVER_PASSWORD")
-            .or_else(|_| env::var("OPENCODE_SERVER_PASSWORD"))
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .or_else(|| auth_token.clone());
-
-        let allow_insecure_no_auth = parse_bool_env("BRIDGE_ALLOW_INSECURE_NO_AUTH");
-        if auth_token.is_none() && !allow_insecure_no_auth {
-            return Err(
-                "BRIDGE_AUTH_TOKEN is required. Set BRIDGE_ALLOW_INSECURE_NO_AUTH=true only for local development."
-                    .to_string(),
-            );
-        }
-
-        let auth_enabled = auth_token.is_some();
-        let allow_query_token_auth = parse_bool_env("BRIDGE_ALLOW_QUERY_TOKEN_AUTH");
-        let allow_outside_root_cwd =
-            parse_bool_env_with_default("BRIDGE_ALLOW_OUTSIDE_ROOT_CWD", true);
-        let disable_terminal_exec = parse_bool_env("BRIDGE_DISABLE_TERMINAL_EXEC");
-        let show_pairing_qr = parse_bool_env_with_default("BRIDGE_SHOW_PAIRING_QR", true);
-        let ws_limits = WebSocketResourceLimits::from_env()?;
-
-        let terminal_allowed_commands = parse_csv_env(
-            "BRIDGE_TERMINAL_ALLOWED_COMMANDS",
-            &["pwd", "ls", "cat", "git"],
-        );
-
-        Ok(Self {
-            host,
-            port,
-            preview_port,
-            connect_url,
-            preview_connect_url,
-            workdir,
-            cli_bin,
-            opencode_cli_bin,
-            cursor_app_server_bin,
-            active_engine,
-            enabled_engines,
-            opencode_host,
-            opencode_port,
-            opencode_server_username,
-            opencode_server_password,
-            auth_token,
-            auth_enabled,
-            allow_insecure_no_auth,
-            allow_query_token_auth,
-            allow_outside_root_cwd,
-            disable_terminal_exec,
-            terminal_allowed_commands,
-            show_pairing_qr,
-            ws_limits,
-        })
-    }
-
-    fn is_authorized_with_bridge_token(
-        &self,
-        headers: &HeaderMap,
-        query_token: Option<&str>,
-    ) -> bool {
-        let expected = match &self.auth_token {
-            Some(token) => token,
-            None => return false,
-        };
-
-        if let Some(token) = extract_bearer_token(headers) {
-            if constant_time_eq(token, expected) {
-                return true;
-            }
-        }
-
-        if self.allow_query_token_auth {
-            if let Some(token) = query_token.map(str::trim).filter(|token| !token.is_empty()) {
-                if constant_time_eq(token, expected) {
-                    return true;
-                }
-            }
-        }
-
-        false
-    }
-}
-
-impl WebSocketResourceLimits {
-    fn from_env() -> Result<Self, String> {
-        let limits = Self {
-            max_frame_bytes: parse_positive_usize_env(
-                "BRIDGE_WS_MAX_FRAME_BYTES",
-                DEFAULT_WS_MAX_FRAME_BYTES,
-            )?,
-            max_message_bytes: parse_positive_usize_env(
-                "BRIDGE_WS_MAX_MESSAGE_BYTES",
-                DEFAULT_WS_MAX_MESSAGE_BYTES,
-            )?,
-            per_client_in_flight: parse_positive_usize_env(
-                "BRIDGE_WS_PER_CLIENT_IN_FLIGHT",
-                DEFAULT_WS_PER_CLIENT_IN_FLIGHT,
-            )?,
-            global_in_flight: parse_positive_usize_env(
-                "BRIDGE_WS_GLOBAL_IN_FLIGHT",
-                DEFAULT_WS_GLOBAL_IN_FLIGHT,
-            )?,
-        };
-        limits.validate()?;
-        Ok(limits)
-    }
-
-    fn validate(&self) -> Result<(), String> {
-        if self.max_frame_bytes > self.max_message_bytes {
-            return Err(
-                "BRIDGE_WS_MAX_FRAME_BYTES must not exceed BRIDGE_WS_MAX_MESSAGE_BYTES".to_string(),
-            );
-        }
-        if self.per_client_in_flight > self.global_in_flight {
-            return Err(
-                "BRIDGE_WS_PER_CLIENT_IN_FLIGHT must not exceed BRIDGE_WS_GLOBAL_IN_FLIGHT"
-                    .to_string(),
-            );
-        }
-        Ok(())
-    }
-}
-
-fn extract_bearer_token<'a>(headers: &'a HeaderMap) -> Option<&'a str> {
-    let raw = headers.get("authorization")?.to_str().ok()?;
-    let mut parts = raw.trim().split_whitespace();
-    let scheme = parts.next()?;
-    let token = parts.next()?;
-    if !scheme.eq_ignore_ascii_case("bearer") || parts.next().is_some() {
-        return None;
-    }
-    let trimmed = token.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(trimmed)
-}
 
 #[derive(Debug, Clone)]
 struct GitHubViewer {
@@ -736,7 +538,6 @@ async fn configure_git_credential_store(
 // content-free payload to the Expo push service when a turn completes or an
 // approval is requested. Expo relays to APNs/FCM, which wakes the app.
 
-const PUSH_REGISTRY_FILE_NAME: &str = ".clawdex-push-registry.json";
 const EXPO_PUSH_SEND_ENDPOINT: &str = "https://exp.host/--/api/v2/push/send";
 const EXPO_PUSH_RECEIPTS_ENDPOINT: &str = "https://exp.host/--/api/v2/push/getReceipts";
 const EXPO_PUSH_BATCH_SIZE: usize = 100;
@@ -753,52 +554,8 @@ const QUEUE_COMPLETION_DISPOSITION_LIMIT: usize = 1_024;
 const QUEUE_MAX_ITEMS_PER_THREAD: usize = 100;
 const QUEUE_STATUS_DISPATCH_FALLBACK_MS: u64 = 250;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PushEventPreferences {
-    #[serde(default = "default_true")]
-    turn_completed: bool,
-    #[serde(default = "default_true")]
-    approval_requested: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for PushEventPreferences {
-    fn default() -> Self {
-        Self {
-            turn_completed: true,
-            approval_requested: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PushDeviceRegistration {
-    token: String,
-    #[serde(default)]
-    platform: String,
-    #[serde(default)]
-    device_name: String,
-    #[serde(default)]
-    events: PushEventPreferences,
-    created_at: String,
-    updated_at: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PushRegistry {
-    #[serde(default)]
-    devices: Vec<PushDeviceRegistration>,
-}
-
 struct PushService {
-    registry: RwLock<PushRegistry>,
-    registry_path: PathBuf,
+    registry: PushRegistryStore,
     project_label: String,
     http: reqwest::Client,
     access_token: Option<String>,
@@ -809,18 +566,13 @@ struct PushService {
 
 impl PushService {
     async fn load(workdir: &Path, project_label: String) -> Arc<Self> {
-        let registry_path = workdir.join(PUSH_REGISTRY_FILE_NAME);
-        let registry = match tokio::fs::read_to_string(&registry_path).await {
-            Ok(contents) => serde_json::from_str::<PushRegistry>(&contents).unwrap_or_default(),
-            Err(_) => PushRegistry::default(),
-        };
+        let registry = PushRegistryStore::load(workdir).await;
         let access_token = env::var("EXPO_ACCESS_TOKEN")
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         Arc::new(Self {
-            registry: RwLock::new(registry),
-            registry_path,
+            registry,
             project_label,
             http: reqwest::Client::new(),
             access_token,
@@ -856,18 +608,6 @@ impl PushService {
         });
     }
 
-    async fn persist(&self) {
-        let snapshot = { self.registry.read().await.clone() };
-        match serde_json::to_string_pretty(&snapshot) {
-            Ok(contents) => {
-                if let Err(error) = tokio::fs::write(&self.registry_path, contents).await {
-                    eprintln!("failed to persist push registry: {error}");
-                }
-            }
-            Err(error) => eprintln!("failed to serialize push registry: {error}"),
-        }
-    }
-
     async fn register(
         &self,
         token: String,
@@ -875,49 +615,17 @@ impl PushService {
         device_name: String,
         events: PushEventPreferences,
     ) -> usize {
-        let now = now_iso();
-        let count = {
-            let mut registry = self.registry.write().await;
-            if let Some(existing) = registry
-                .devices
-                .iter_mut()
-                .find(|device| device.token == token)
-            {
-                existing.platform = platform;
-                existing.device_name = device_name;
-                existing.events = events;
-                existing.updated_at = now;
-            } else {
-                registry.devices.push(PushDeviceRegistration {
-                    token,
-                    platform,
-                    device_name,
-                    events,
-                    created_at: now.clone(),
-                    updated_at: now,
-                });
-            }
-            registry.devices.len()
-        };
-        self.persist().await;
-        count
+        self.registry
+            .register(token, platform, device_name, events)
+            .await
     }
 
     async fn unregister(&self, token: &str) -> bool {
-        let removed = {
-            let mut registry = self.registry.write().await;
-            let before = registry.devices.len();
-            registry.devices.retain(|device| device.token != token);
-            registry.devices.len() != before
-        };
-        if removed {
-            self.persist().await;
-        }
-        removed
+        self.registry.unregister(token).await
     }
 
     async fn list(&self) -> Vec<Value> {
-        let registry = self.registry.read().await;
+        let registry = self.registry.snapshot().await;
         registry
             .devices
             .iter()
@@ -1048,7 +756,7 @@ impl PushService {
         }
 
         let targets: Vec<String> = {
-            let registry = self.registry.read().await;
+            let registry = self.registry.snapshot().await;
             registry
                 .devices
                 .iter()
@@ -1306,82 +1014,6 @@ impl PushEvent {
     }
 }
 
-/// Truncate to at most `max_chars` characters (char-safe), appending an ellipsis
-/// when content was dropped.
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let truncated: String = text.chars().take(max_chars.saturating_sub(1)).collect();
-    format!("{}…", truncated.trim_end())
-}
-
-fn token_suffix(token: &str) -> String {
-    let visible: String = token.chars().rev().take(6).collect::<String>();
-    visible.chars().rev().collect()
-}
-
-fn parse_push_event_preferences(value: Option<&Value>) -> PushEventPreferences {
-    let defaults = PushEventPreferences::default();
-    match value {
-        Some(object) => PushEventPreferences {
-            turn_completed: read_bool(object.get("turnCompleted"))
-                .unwrap_or(defaults.turn_completed),
-            approval_requested: read_bool(object.get("approvalRequested"))
-                .unwrap_or(defaults.approval_requested),
-        },
-        None => defaults,
-    }
-}
-
-fn push_thread_is_top_level(thread_read_result: &Value) -> bool {
-    let thread = thread_read_result
-        .get("thread")
-        .unwrap_or(thread_read_result);
-    let Some(source) = thread.get("source") else {
-        return false;
-    };
-
-    if let Some(source) = source.as_str() {
-        return push_source_kind_is_top_level(source);
-    }
-
-    let Some(source) = source.as_object() else {
-        return false;
-    };
-    if source.contains_key("subAgent")
-        || source.contains_key("subagent")
-        || value_contains_thread_parent(&Value::Object(source.clone()))
-    {
-        return false;
-    }
-
-    read_string(source.get("kind"))
-        .or_else(|| read_string(source.get("type")))
-        .is_some_and(|kind| push_source_kind_is_top_level(&kind))
-}
-
-fn push_source_kind_is_top_level(source: &str) -> bool {
-    matches!(
-        source.trim().to_ascii_lowercase().as_str(),
-        "cli" | "vscode" | "exec" | "appserver" | "unknown" | "cursorsdk"
-    )
-}
-
-fn value_contains_thread_parent(value: &Value) -> bool {
-    match value {
-        Value::Object(object) => object.iter().any(|(key, value)| {
-            (matches!(
-                key.as_str(),
-                "parentThreadId" | "parent_thread_id" | "parentID"
-            ) && read_string(Some(value)).is_some_and(|parent| !parent.trim().is_empty()))
-                || value_contains_thread_parent(value)
-        }),
-        Value::Array(values) => values.iter().any(value_contains_thread_parent),
-        _ => false,
-    }
-}
-
 #[derive(Clone)]
 struct AppState {
     config: Arc<BridgeConfig>,
@@ -1460,22 +1092,7 @@ impl AppState {
             .backend
             .engine_statuses(&self.config.enabled_engines)
             .await;
-        let available = engines.values().filter(|engine| engine.available).count();
-        let status = if available == 0 {
-            "unhealthy"
-        } else if engines.values().all(|engine| engine.available) {
-            "ok"
-        } else {
-            "degraded"
-        };
-        BridgeStatus {
-            status: status.to_string(),
-            at: now_iso(),
-            uptime_sec: self.started_at.elapsed().as_secs(),
-            connected_clients: devices.len(),
-            devices,
-            engines,
-        }
+        bridge_status(self.started_at, devices, engines)
     }
 
     async fn is_authorized(&self, headers: &HeaderMap, query_token: Option<&str>) -> bool {
@@ -1483,8 +1100,7 @@ impl AppState {
             return true;
         }
 
-        self.config
-            .is_authorized_with_bridge_token(headers, query_token)
+        self.config.is_authorized(headers, query_token)
     }
 }
 
@@ -1506,33 +1122,6 @@ fn sanitize_client_metadata(value: Option<&str>, fallback: &str, max_chars: usiz
     } else {
         sanitized
     }
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BrowserPreviewSessionResponse {
-    session_id: String,
-    target_url: String,
-    preview_port: u16,
-    preview_base_url: Option<String>,
-    bootstrap_path: String,
-    created_at: String,
-    last_accessed_at: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BrowserPreviewDiscoverySuggestion {
-    target_url: String,
-    port: u16,
-    label: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BrowserPreviewDiscoveryResponse {
-    scanned_at: String,
-    suggestions: Vec<BrowserPreviewDiscoverySuggestion>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1696,196 +1285,6 @@ async fn validate_cursor_api_key(api_key: &str) -> Result<CursorApiKeyInfo, Brid
         .json::<CursorApiKeyInfo>()
         .await
         .map_err(|error| BridgeError::server(&format!("invalid Cursor API key response: {error}")))
-}
-
-#[derive(Debug, Clone)]
-struct BrowserPreviewSessionEntry {
-    id: String,
-    target_url: Url,
-    bootstrap_token: String,
-    created_at: String,
-    last_accessed_at: String,
-}
-
-#[derive(Debug, Clone)]
-struct BrowserPreviewResolvedSession {
-    target_url: Url,
-}
-
-struct BrowserPreviewService {
-    bridge_port: u16,
-    preview_port: u16,
-    preview_base_url: Option<String>,
-    available: AtomicBool,
-    next_session_counter: AtomicU64,
-    http: HttpClient,
-    sessions: RwLock<HashMap<String, BrowserPreviewSessionEntry>>,
-}
-
-impl BrowserPreviewService {
-    fn new(bridge_port: u16, preview_port: u16, preview_base_url: Option<String>) -> Self {
-        Self {
-            bridge_port,
-            preview_port,
-            preview_base_url,
-            available: AtomicBool::new(false),
-            next_session_counter: AtomicU64::new(1),
-            http: HttpClient::builder()
-                .danger_accept_invalid_certs(true)
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .expect("build browser preview client"),
-            sessions: RwLock::new(HashMap::new()),
-        }
-    }
-
-    fn is_available(&self) -> bool {
-        self.available.load(Ordering::Relaxed)
-    }
-
-    fn set_available(&self, available: bool) {
-        self.available.store(available, Ordering::Relaxed);
-    }
-
-    async fn create_session(
-        &self,
-        target_url: &str,
-    ) -> Result<BrowserPreviewSessionResponse, BridgeError> {
-        if !self.is_available() {
-            return Err(BridgeError::server("browser preview server is unavailable"));
-        }
-
-        let target_url = normalize_browser_preview_target_url(target_url)?;
-        let created_at = now_iso();
-        let session_id = self.next_id("preview-session");
-        let bootstrap_token = self.next_id("preview-token");
-        let entry = BrowserPreviewSessionEntry {
-            id: session_id.clone(),
-            target_url,
-            bootstrap_token,
-            created_at: created_at.clone(),
-            last_accessed_at: created_at,
-        };
-
-        let mut sessions = self.sessions.write().await;
-        prune_expired_preview_sessions(&mut sessions);
-        evict_excess_preview_sessions(&mut sessions);
-        sessions.insert(session_id, entry.clone());
-        Ok(self.to_session_response(&entry))
-    }
-
-    async fn list_sessions(&self) -> Vec<BrowserPreviewSessionResponse> {
-        let mut sessions = self.sessions.write().await;
-        prune_expired_preview_sessions(&mut sessions);
-
-        let mut entries = sessions.values().cloned().collect::<Vec<_>>();
-        entries.sort_by(|left, right| right.last_accessed_at.cmp(&left.last_accessed_at));
-        entries
-            .iter()
-            .map(|entry| self.to_session_response(entry))
-            .collect()
-    }
-
-    async fn close_session(&self, session_id: &str) -> bool {
-        let mut sessions = self.sessions.write().await;
-        sessions.remove(session_id).is_some()
-    }
-
-    async fn resolve_bootstrap(
-        &self,
-        session_id: &str,
-        bootstrap_token: &str,
-    ) -> Option<BrowserPreviewResolvedSession> {
-        let mut sessions = self.sessions.write().await;
-        prune_expired_preview_sessions(&mut sessions);
-        let entry = sessions.get_mut(session_id)?;
-        if !constant_time_eq(&entry.bootstrap_token, bootstrap_token) {
-            return None;
-        }
-
-        entry.last_accessed_at = now_iso();
-        Some(BrowserPreviewResolvedSession {
-            target_url: entry.target_url.clone(),
-        })
-    }
-
-    async fn resolve_cookie(&self, bootstrap_token: &str) -> Option<BrowserPreviewResolvedSession> {
-        let mut sessions = self.sessions.write().await;
-        prune_expired_preview_sessions(&mut sessions);
-        let now = now_iso();
-
-        for entry in sessions.values_mut() {
-            if constant_time_eq(&entry.bootstrap_token, bootstrap_token) {
-                entry.last_accessed_at = now.clone();
-                return Some(BrowserPreviewResolvedSession {
-                    target_url: entry.target_url.clone(),
-                });
-            }
-        }
-
-        None
-    }
-
-    async fn discover_targets(&self) -> BrowserPreviewDiscoveryResponse {
-        let candidate_ports =
-            discover_loopback_listening_ports(&[self.bridge_port, self.preview_port]).await;
-        let http = self.http.clone();
-        let mut suggestions = stream::iter(candidate_ports.into_iter())
-            .map(|port| {
-                let http = http.clone();
-                async move {
-                    if is_loopback_http_port_reachable(&http, port).await {
-                        Some(BrowserPreviewDiscoverySuggestion {
-                            target_url: format!("http://127.0.0.1:{port}"),
-                            port,
-                            label: browser_preview_label_for_port(port),
-                        })
-                    } else {
-                        None
-                    }
-                }
-            })
-            .buffer_unordered(24)
-            .filter_map(async move |suggestion| suggestion)
-            .collect::<Vec<_>>()
-            .await;
-
-        suggestions.sort_by_key(|suggestion| suggestion.port);
-
-        BrowserPreviewDiscoveryResponse {
-            scanned_at: now_iso(),
-            suggestions,
-        }
-    }
-
-    fn to_session_response(
-        &self,
-        entry: &BrowserPreviewSessionEntry,
-    ) -> BrowserPreviewSessionResponse {
-        BrowserPreviewSessionResponse {
-            session_id: entry.id.clone(),
-            target_url: entry.target_url.to_string(),
-            preview_port: self.preview_port,
-            preview_base_url: self.preview_base_url.clone(),
-            bootstrap_path: build_preview_bootstrap_path(
-                &entry.target_url,
-                &entry.id,
-                &entry.bootstrap_token,
-            ),
-            created_at: entry.created_at.clone(),
-            last_accessed_at: entry.last_accessed_at.clone(),
-        }
-    }
-
-    fn next_id(&self, prefix: &str) -> String {
-        let nonce = self.next_session_counter.fetch_add(1, Ordering::Relaxed);
-        let stamp = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        let raw = format!("{prefix}:{stamp:x}:{nonce:x}");
-        general_purpose::URL_SAFE_NO_PAD.encode(raw.as_bytes())
-    }
 }
 
 #[derive(Clone)]
@@ -2691,10 +2090,9 @@ struct ClientHub {
     next_client_id: AtomicU64,
     next_event_id: AtomicU64,
     stream_id: String,
-    replay_capacity: usize,
     clients: RwLock<HashMap<u64, mpsc::Sender<Message>>>,
     client_infos: RwLock<HashMap<u64, BridgeDeviceConnection>>,
-    notification_replay: RwLock<VecDeque<ReplayableNotification>>,
+    notification_replay: NotificationReplay,
     notification_tx: broadcast::Sender<HubNotification>,
 }
 
@@ -2726,44 +2124,6 @@ impl ClientConnectionMetadata {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BridgeDeviceConnection {
-    client_id: u64,
-    client_type: String,
-    client_name: String,
-    connected_at: String,
-    last_seen_at: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BridgeStatus {
-    status: String,
-    at: String,
-    uptime_sec: u64,
-    connected_clients: usize,
-    devices: Vec<BridgeDeviceConnection>,
-    engines: HashMap<BridgeRuntimeEngine, BridgeEngineStatus>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BridgeEngineStatus {
-    configured: bool,
-    lifecycle: BackendLifecycleState,
-    available: bool,
-    restart_count: u32,
-    pending_requests: usize,
-    last_error: Option<String>,
-}
-
-#[derive(Clone)]
-struct ReplayableNotification {
-    event_id: u64,
-    payload: Value,
-}
-
 #[derive(Clone)]
 struct HubNotification {
     event_id: u64,
@@ -2783,10 +2143,9 @@ impl ClientHub {
             next_client_id: AtomicU64::new(1),
             next_event_id: AtomicU64::new(1),
             stream_id: Uuid::new_v4().to_string(),
-            replay_capacity,
             clients: RwLock::new(HashMap::new()),
             client_infos: RwLock::new(HashMap::new()),
-            notification_replay: RwLock::new(VecDeque::new()),
+            notification_replay: NotificationReplay::new(replay_capacity),
             notification_tx,
         }
     }
@@ -2948,7 +2307,9 @@ impl ClientHub {
         });
         let params = payload.get("params").cloned().unwrap_or(Value::Null);
 
-        self.push_replay(event_id, payload.clone()).await;
+        self.notification_replay
+            .push(event_id, payload.clone())
+            .await;
         let _ = self.notification_tx.send(HubNotification {
             event_id,
             method: method.to_string(),
@@ -2957,46 +2318,12 @@ impl ClientHub {
         self.broadcast_json(payload).await;
     }
 
-    async fn push_replay(&self, event_id: u64, payload: Value) {
-        if self.replay_capacity == 0 {
-            return;
-        }
-
-        let mut replay = self.notification_replay.write().await;
-        replay.push_back(ReplayableNotification { event_id, payload });
-        while replay.len() > self.replay_capacity {
-            replay.pop_front();
-        }
-    }
-
     async fn replay_since(&self, after_event_id: Option<u64>, limit: usize) -> (Vec<Value>, bool) {
-        let after = after_event_id.unwrap_or(0);
-        let replay = self.notification_replay.read().await;
-        let mut events = Vec::new();
-        let mut has_more = false;
-
-        for entry in replay.iter() {
-            if entry.event_id <= after {
-                continue;
-            }
-
-            if events.len() >= limit {
-                has_more = true;
-                break;
-            }
-
-            events.push(entry.payload.clone());
-        }
-
-        (events, has_more)
+        self.notification_replay.since(after_event_id, limit).await
     }
 
     async fn earliest_event_id(&self) -> Option<u64> {
-        self.notification_replay
-            .read()
-            .await
-            .front()
-            .map(|entry| entry.event_id)
+        self.notification_replay.earliest_event_id().await
     }
 
     fn latest_event_id(&self) -> u64 {
@@ -6730,23 +6057,6 @@ fn spawn_rollout_live_sync(hub: Arc<ClientHub>) {
     });
 }
 
-fn resolve_codex_sessions_root() -> Option<PathBuf> {
-    if let Some(codex_home) = read_non_empty_env("CODEX_HOME") {
-        let root = PathBuf::from(codex_home).join("sessions");
-        if root.is_dir() {
-            return Some(root);
-        }
-    }
-
-    let home = read_non_empty_env("HOME")?;
-    let root = PathBuf::from(home).join(".codex").join("sessions");
-    if root.is_dir() {
-        Some(root)
-    } else {
-        None
-    }
-}
-
 async fn rollout_live_sync_discover_files(
     sessions_root: &Path,
     state: &mut RolloutLiveSyncState,
@@ -6802,57 +6112,6 @@ async fn rollout_live_sync_poll_files(
     }
 
     Ok(())
-}
-
-async fn discover_recent_rollout_files(root: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
-    let now = SystemTime::now();
-    let mut stack = vec![root.to_path_buf()];
-    let mut matches = Vec::<(PathBuf, SystemTime)>::new();
-
-    while let Some(dir) = stack.pop() {
-        let mut entries = match fs::read_dir(&dir).await {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-        };
-
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            let metadata = entry.metadata().await?;
-
-            if metadata.is_dir() {
-                stack.push(path);
-                continue;
-            }
-
-            if !metadata.is_file() || !is_rollout_file_path(&path) {
-                continue;
-            }
-
-            let modified = metadata.modified().unwrap_or(now);
-            if now
-                .duration_since(modified)
-                .unwrap_or_else(|_| Duration::from_secs(0))
-                > ROLLOUT_LIVE_SYNC_MAX_FILE_AGE
-            {
-                continue;
-            }
-
-            matches.push((path, modified));
-        }
-    }
-
-    matches.sort_by(|left, right| right.1.cmp(&left.1));
-    matches.truncate(ROLLOUT_LIVE_SYNC_MAX_TRACKED_FILES);
-
-    Ok(matches.into_iter().map(|(path, _)| path).collect())
-}
-
-fn is_rollout_file_path(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
-        .unwrap_or(false)
 }
 
 async fn read_rollout_session_meta(
@@ -6929,30 +6188,6 @@ fn extract_rollout_thread_id(
                 None
             }
         })
-}
-
-fn hash_rollout_line(line: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    line.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn should_run_rollout_discovery_tick(tick: u64, interval_ticks: u64) -> bool {
-    if interval_ticks <= 1 {
-        return true;
-    }
-
-    tick == 1 || tick % interval_ticks == 0
-}
-
-fn rollout_originator_allowed(originator: Option<&str>) -> bool {
-    match originator {
-        Some(value) => {
-            let normalized = value.to_ascii_lowercase();
-            normalized.contains("codex") || normalized.contains("clawdex")
-        }
-        None => true,
-    }
 }
 
 fn build_rollout_thread_status_notification(method: &str, params: &Value) -> Option<Value> {
@@ -7770,16 +7005,6 @@ struct GitSwitchRequest {
     cwd: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AttachmentUploadRequest {
-    data_base64: String,
-    file_name: Option<String>,
-    mime_type: Option<String>,
-    thread_id: Option<String>,
-    kind: Option<String>,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkspaceListRequest {
@@ -7829,16 +7054,6 @@ struct FileSystemListResponse {
     path: String,
     parent_path: Option<String>,
     entries: Vec<FileSystemEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AttachmentUploadResponse {
-    path: String,
-    file_name: String,
-    mime_type: Option<String>,
-    size_bytes: usize,
-    kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9048,9 +8263,9 @@ async fn handle_client_message(
 ) {
     state.hub.mark_client_seen(client_id).await;
 
-    let parsed = match serde_json::from_str::<Value>(&text) {
-        Ok(value) => value,
-        Err(error) => {
+    let request = match parse_request(&text) {
+        Ok(request) => request,
+        Err(RpcRequestParseError::InvalidJson(error)) => {
             send_rpc_error(
                 state,
                 client_id,
@@ -9062,43 +8277,30 @@ async fn handle_client_message(
             .await;
             return;
         }
+        Err(RpcRequestParseError::InvalidPayload) => {
+            send_rpc_error(
+                state,
+                client_id,
+                Value::Null,
+                -32600,
+                "Invalid request payload",
+                None,
+            )
+            .await;
+            return;
+        }
+        Err(RpcRequestParseError::MissingMethod { id }) => {
+            send_rpc_error(state, client_id, id, -32600, "Missing method", None).await;
+            return;
+        }
+        Err(RpcRequestParseError::Notification) => return,
     };
-
-    let Some(object) = parsed.as_object() else {
-        send_rpc_error(
-            state,
-            client_id,
-            Value::Null,
-            -32600,
-            "Invalid request payload",
-            None,
-        )
-        .await;
-        return;
-    };
-
-    let Some(method) = object.get("method").and_then(Value::as_str) else {
-        send_rpc_error(
-            state,
-            client_id,
-            object.get("id").cloned().unwrap_or(Value::Null),
-            -32600,
-            "Missing method",
-            None,
-        )
-        .await;
-        return;
-    };
-
-    let Some(id) = object.get("id").cloned() else {
-        // Ignore client-side notifications for now.
-        return;
-    };
-
-    let params = object.get("params").cloned();
+    let id = request.id;
+    let method = request.method;
+    let params = request.params;
 
     if method.starts_with("bridge/") {
-        match handle_bridge_method(method, params, state, client_id).await {
+        match handle_bridge_method(&method, params, state, client_id).await {
             Ok(result) => {
                 state
                     .hub
@@ -9112,7 +8314,7 @@ async fn handle_client_message(
         return;
     }
 
-    if !is_forwarded_method(method) {
+    if !is_forwarded_method(&method) {
         send_rpc_error(
             state,
             client_id,
@@ -9127,7 +8329,7 @@ async fn handle_client_message(
 
     if let Err(error) = state
         .backend
-        .forward_request(client_id, id.clone(), method, params, permits)
+        .forward_request(client_id, id.clone(), &method, params, permits)
         .await
     {
         send_rpc_error(state, client_id, id, -32000, &error, None).await;
@@ -9438,7 +8640,7 @@ async fn handle_bridge_method(
             let request: AttachmentUploadRequest =
                 serde_json::from_value(params.unwrap_or_else(|| json!({})))
                     .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
-            let uploaded = save_uploaded_attachment(request, state).await?;
+            let uploaded = save_uploaded_attachment(request, &state.config.workdir).await?;
             serde_json::to_value(uploaded).map_err(|error| BridgeError::server(&error.to_string()))
         }
         "bridge/git/status" => {
@@ -10359,13 +9561,6 @@ async fn send_rpc_error(
     state.hub.send_json(client_id, payload).await;
 }
 
-fn parse_client_request_id(text: &str) -> Value {
-    serde_json::from_str::<Value>(text)
-        .ok()
-        .and_then(|value| value.get("id").cloned())
-        .unwrap_or(Value::Null)
-}
-
 async fn send_overload_error(
     state: &Arc<AppState>,
     client_id: u64,
@@ -10387,24 +9582,6 @@ async fn send_overload_error(
         })),
     )
     .await;
-}
-
-fn resolve_bridge_workdir(raw_workdir: PathBuf) -> Result<PathBuf, String> {
-    if !raw_workdir.is_absolute() {
-        return Err(format!(
-            "BRIDGE_WORKDIR must be an absolute path (got: {})",
-            raw_workdir.to_string_lossy()
-        ));
-    }
-
-    let canonical = std::fs::canonicalize(&raw_workdir).map_err(|error| {
-        format!(
-            "BRIDGE_WORKDIR is invalid or inaccessible ({}): {error}",
-            raw_workdir.to_string_lossy()
-        )
-    })?;
-
-    Ok(normalize_path(&canonical))
 }
 
 fn path_to_string(path: &Path) -> String {
@@ -11938,81 +11115,6 @@ fn build_preview_runtime_script() -> String {
     )
 }
 
-fn normalize_browser_preview_target_url(raw: &str) -> Result<Url, BridgeError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(BridgeError::invalid_params("targetUrl must not be empty"));
-    }
-
-    let mut parsed = Url::parse(trimmed)
-        .map_err(|error| BridgeError::invalid_params(&format!("invalid targetUrl: {error}")))?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(BridgeError::invalid_params(
-            "targetUrl must use http:// or https://",
-        ));
-    }
-    if parsed.username().trim().len() > 0 || parsed.password().is_some() {
-        return Err(BridgeError::invalid_params(
-            "targetUrl must not include username or password",
-        ));
-    }
-
-    let Some(host) = parsed.host_str() else {
-        return Err(BridgeError::invalid_params("targetUrl host is required"));
-    };
-    if !is_loopback_preview_host(host) {
-        return Err(BridgeError::invalid_params(
-            "browser preview only supports localhost, 127.0.0.1, or ::1 targets",
-        ));
-    }
-
-    parsed.set_fragment(None);
-    if parsed.path().trim().is_empty() {
-        parsed.set_path("/");
-    }
-
-    Ok(parsed)
-}
-
-fn is_loopback_preview_host(host: &str) -> bool {
-    matches!(
-        host.trim().to_ascii_lowercase().as_str(),
-        "localhost" | "127.0.0.1" | "::1"
-    )
-}
-
-fn build_preview_bootstrap_path(
-    target_url: &Url,
-    session_id: &str,
-    bootstrap_token: &str,
-) -> String {
-    let mut bootstrap_url = target_url.clone();
-    bootstrap_url.set_fragment(None);
-
-    let mut query_pairs = bootstrap_url
-        .query_pairs()
-        .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect::<Vec<_>>();
-    query_pairs.push(("sid".to_string(), session_id.to_string()));
-    query_pairs.push(("st".to_string(), bootstrap_token.to_string()));
-    bootstrap_url.set_query(None);
-    if !query_pairs.is_empty() {
-        let mut serializer = bootstrap_url.query_pairs_mut();
-        for (key, value) in &query_pairs {
-            serializer.append_pair(key, value);
-        }
-    }
-
-    format!(
-        "{}{}",
-        bootstrap_url.path(),
-        bootstrap_url
-            .query()
-            .map(|value| format!("?{value}"))
-            .unwrap_or_default()
-    )
-}
-
 #[derive(Debug, Clone)]
 struct PreviewRequestTarget {
     target_url: Url,
@@ -12353,252 +11455,12 @@ fn target_origin_string(target_url: &Url) -> String {
     }
 }
 
-async fn discover_loopback_listening_ports(excluded_ports: &[u16]) -> Vec<u16> {
-    let mut ports = HashSet::new();
-    let excluded: HashSet<u16> = excluded_ports.iter().copied().collect();
-
-    if let Some(output) = read_command_stdout("lsof", &["-nP", "-iTCP", "-sTCP:LISTEN"]).await {
-        collect_ports_from_lsof(&output, &mut ports);
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(contents) = fs::read_to_string("/proc/net/tcp").await {
-            collect_ports_from_linux_proc_net(&contents, false, &mut ports);
-        }
-        if let Ok(contents) = fs::read_to_string("/proc/net/tcp6").await {
-            collect_ports_from_linux_proc_net(&contents, true, &mut ports);
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(output) = read_command_stdout("netstat", &["-ano", "-p", "tcp"]).await {
-            collect_ports_from_netstat(&output, &mut ports);
-        }
-    }
-
-    let mut result = ports
-        .into_iter()
-        .filter(|port| !excluded.contains(port))
-        .collect::<Vec<_>>();
-    result.sort_unstable();
-    result.dedup();
-    result
-}
-
-async fn read_command_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .await
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-fn collect_ports_from_lsof(output: &str, ports: &mut HashSet<u16>) {
-    for line in output.lines() {
-        if !line.contains("(LISTEN)") {
-            continue;
-        }
-        let Some(address) = line
-            .split(" TCP ")
-            .nth(1)
-            .and_then(|rest| rest.split_whitespace().next())
-        else {
-            continue;
-        };
-        if let Some(port) = parse_listening_socket_port(address) {
-            ports.insert(port);
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn collect_ports_from_linux_proc_net(output: &str, is_ipv6: bool, ports: &mut HashSet<u16>) {
-    for line in output.lines().skip(1) {
-        let columns = line.split_whitespace().collect::<Vec<_>>();
-        if columns.len() < 4 || columns[3] != "0A" {
-            continue;
-        }
-        let Some((address_hex, port_hex)) = columns[1].split_once(':') else {
-            continue;
-        };
-        if !linux_proc_address_is_loopback_or_any(address_hex, is_ipv6) {
-            continue;
-        }
-        if let Ok(port) = u16::from_str_radix(port_hex, 16) {
-            ports.insert(port);
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn linux_proc_address_is_loopback_or_any(value: &str, is_ipv6: bool) -> bool {
-    if !is_ipv6 {
-        return matches!(value, "00000000" | "0100007F");
-    }
-
-    matches!(
-        value,
-        "00000000000000000000000000000000"
-            | "00000000000000000000000000000001"
-            | "00000000000000000000000001000000"
-    )
-}
-
-#[cfg(target_os = "windows")]
-fn collect_ports_from_netstat(output: &str, ports: &mut HashSet<u16>) {
-    for line in output.lines() {
-        let columns = line.split_whitespace().collect::<Vec<_>>();
-        if columns.len() < 4 {
-            continue;
-        }
-        if columns[0] != "TCP" || columns[3] != "LISTENING" {
-            continue;
-        }
-        if let Some(port) = parse_listening_socket_port(columns[1]) {
-            ports.insert(port);
-        }
-    }
-}
-
-fn parse_listening_socket_port(value: &str) -> Option<u16> {
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-
-    if let Some(rest) = value.strip_prefix('[') {
-        let (host, remainder) = rest.split_once(']')?;
-        let port = remainder.strip_prefix(':')?;
-        if !is_loopback_listen_host(host) {
-            return None;
-        }
-        return port.parse::<u16>().ok();
-    }
-
-    let (host, port) = value.rsplit_once(':')?;
-    if !is_loopback_listen_host(host) {
-        return None;
-    }
-    port.parse::<u16>().ok()
-}
-
-fn is_loopback_listen_host(host: &str) -> bool {
-    matches!(
-        host,
-        "*" | "127.0.0.1" | "0.0.0.0" | "::1" | "::" | "localhost"
-    )
-}
-
-async fn is_loopback_http_port_reachable(http: &HttpClient, port: u16) -> bool {
-    let request = http
-        .get(format!("http://127.0.0.1:{port}/"))
-        .header("accept", "text/html,application/json,*/*");
-    timeout(BROWSER_PREVIEW_DISCOVERY_HTTP_TIMEOUT, request.send())
-        .await
-        .map(|result| result.is_ok())
-        .unwrap_or(false)
-}
-
-fn browser_preview_label_for_port(port: u16) -> String {
-    match port {
-        3000 => "Local dev server on :3000".to_string(),
-        3001 => "Local dev server on :3001".to_string(),
-        3002 => "Local dev server on :3002".to_string(),
-        3003 => "Local dev server on :3003".to_string(),
-        3004 => "Local dev server on :3004".to_string(),
-        3005 => "Local dev server on :3005".to_string(),
-        4173 => "Vite preview on :4173".to_string(),
-        4200 => "Angular dev server on :4200".to_string(),
-        4321 => "Metro / Expo web on :4321".to_string(),
-        5000 => "Local dev server on :5000".to_string(),
-        5173 => "Vite dev server on :5173".to_string(),
-        5500 => "Live Server on :5500".to_string(),
-        8000 => "Local dev server on :8000".to_string(),
-        8080 => "Local dev server on :8080".to_string(),
-        8081 => "Metro bundler on :8081".to_string(),
-        _ => format!("Local dev server on :{port}"),
-    }
-}
-
-fn prune_expired_preview_sessions(sessions: &mut HashMap<String, BrowserPreviewSessionEntry>) {
-    let cutoff = SystemTime::now()
-        .checked_sub(BROWSER_PREVIEW_SESSION_TTL)
-        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs() as i64);
-
-    let Some(cutoff_secs) = cutoff else {
-        return;
-    };
-
-    sessions.retain(|_, entry| {
-        chrono::DateTime::parse_from_rfc3339(&entry.last_accessed_at)
-            .map(|value| value.timestamp() >= cutoff_secs)
-            .unwrap_or(true)
-    });
-}
-
-fn evict_excess_preview_sessions(sessions: &mut HashMap<String, BrowserPreviewSessionEntry>) {
-    while sessions.len() + 1 > BROWSER_PREVIEW_MAX_SESSIONS {
-        let Some(oldest_id) = sessions
-            .values()
-            .min_by(|left, right| left.last_accessed_at.cmp(&right.last_accessed_at))
-            .map(|entry| entry.id.clone())
-        else {
-            break;
-        };
-        sessions.remove(&oldest_id);
-    }
-}
-
 fn html_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
-}
-
-fn parse_bool_env(name: &str) -> bool {
-    env::var(name)
-        .map(|v| v.trim().eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
-fn parse_bool_env_with_default(name: &str, default: bool) -> bool {
-    env::var(name)
-        .map(|raw| {
-            let value = raw.trim();
-            if value.eq_ignore_ascii_case("true") {
-                true
-            } else if value.eq_ignore_ascii_case("false") {
-                false
-            } else {
-                default
-            }
-        })
-        .unwrap_or(default)
-}
-
-fn parse_positive_usize_env(name: &str, default: usize) -> Result<usize, String> {
-    let Some(raw) = env::var(name).ok() else {
-        return Ok(default);
-    };
-    let value = raw
-        .trim()
-        .parse::<usize>()
-        .map_err(|_| format!("{name} must be a positive integer"))?;
-    if value == 0 {
-        return Err(format!("{name} must be greater than zero"));
-    }
-    Ok(value)
 }
 
 fn read_non_empty_env(name: &str) -> Option<String> {
@@ -12608,112 +11470,6 @@ fn read_non_empty_env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn normalize_connect_url(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut parsed = Url::parse(trimmed).ok()?;
-    match parsed.scheme() {
-        "http" | "https" => {}
-        _ => return None,
-    }
-    if parsed.host_str().is_none() || !parsed.username().is_empty() || parsed.password().is_some() {
-        return None;
-    }
-
-    let normalized_path = parsed.path().trim_end_matches('/').to_string();
-    let final_path = if normalized_path.is_empty() {
-        ""
-    } else {
-        normalized_path.as_str()
-    };
-    parsed.set_path(final_path);
-    parsed.set_query(None);
-    parsed.set_fragment(None);
-
-    Some(parsed.to_string().trim_end_matches('/').to_string())
-}
-
-fn parse_connect_url_env(name: &str) -> Result<Option<String>, String> {
-    let Some(raw) = read_non_empty_env(name) else {
-        return Ok(None);
-    };
-
-    normalize_connect_url(&raw)
-        .ok_or_else(|| format!("{name} must be a valid http:// or https:// base URL"))
-        .map(Some)
-}
-
-fn constant_time_eq(left: &str, right: &str) -> bool {
-    let left_bytes = left.as_bytes();
-    let right_bytes = right.as_bytes();
-    let max_len = left_bytes.len().max(right_bytes.len());
-
-    let mut diff = left_bytes.len() ^ right_bytes.len();
-    for index in 0..max_len {
-        let left_byte = *left_bytes.get(index).unwrap_or(&0);
-        let right_byte = *right_bytes.get(index).unwrap_or(&0);
-        diff |= (left_byte ^ right_byte) as usize;
-    }
-
-    diff == 0
-}
-
-fn parse_csv_env(name: &str, fallback: &[&str]) -> HashSet<String> {
-    match env::var(name) {
-        Ok(raw) => raw
-            .split(',')
-            .map(|entry| entry.trim())
-            .filter(|entry| !entry.is_empty())
-            .map(str::to_string)
-            .collect(),
-        Err(_) => fallback.iter().map(|entry| entry.to_string()).collect(),
-    }
-}
-
-fn parse_enabled_bridge_engines_csv(raw: &str) -> Result<Vec<BridgeRuntimeEngine>, String> {
-    let mut parsed = Vec::new();
-    let mut seen = HashSet::new();
-    for entry in raw.split(',') {
-        let normalized = entry.trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            continue;
-        }
-        let Some(engine) = parse_bridge_runtime_engine(&normalized) else {
-            continue;
-        };
-        if seen.insert(engine) {
-            parsed.push(engine);
-        }
-    }
-
-    if parsed.is_empty() {
-        return Err(
-            "BRIDGE_ENABLED_ENGINES must include one or more of: codex, opencode, cursor"
-                .to_string(),
-        );
-    }
-
-    Ok(parsed)
-}
-
-fn parse_enabled_bridge_engines_env() -> Result<Option<Vec<BridgeRuntimeEngine>>, String> {
-    let raw = match env::var("BRIDGE_ENABLED_ENGINES") {
-        Ok(raw) => raw,
-        Err(_) => return Ok(None),
-    };
-
-    Ok(Some(parse_enabled_bridge_engines_csv(&raw)?))
-}
-
-fn legacy_default_enabled_engines(
-    requested_active_engine: BridgeRuntimeEngine,
-) -> Vec<BridgeRuntimeEngine> {
-    vec![requested_active_engine]
-}
-
 impl BridgeRuntimeEngine {
     fn as_str(self) -> &'static str {
         match self {
@@ -12721,15 +11477,6 @@ impl BridgeRuntimeEngine {
             Self::Opencode => "opencode",
             Self::Cursor => "cursor",
         }
-    }
-}
-
-fn parse_bridge_runtime_engine(value: &str) -> Option<BridgeRuntimeEngine> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "codex" => Some(BridgeRuntimeEngine::Codex),
-        "opencode" => Some(BridgeRuntimeEngine::Opencode),
-        "cursor" => Some(BridgeRuntimeEngine::Cursor),
-        _ => None,
     }
 }
 
@@ -14589,55 +13336,6 @@ fn thread_has_running_turn(thread: &Value) -> bool {
     )
 }
 
-fn is_forwarded_method(method: &str) -> bool {
-    matches!(
-        method,
-        "account/login/cancel"
-            | "account/login/start"
-            | "account/logout"
-            | "account/rateLimits/read"
-            | "account/read"
-            | "agent/list"
-            | "app/list"
-            | "collaborationMode/list"
-            | "command/exec"
-            | "config/batchWrite"
-            | "config/mcpServer/reload"
-            | "config/read"
-            | "config/value/write"
-            | "configRequirements/read"
-            | "experimentalFeature/list"
-            | "feedback/upload"
-            | "fuzzyFileSearch/sessionStart"
-            | "fuzzyFileSearch/sessionStop"
-            | "fuzzyFileSearch/sessionUpdate"
-            | "mcpServer/oauth/login"
-            | "mcpServerStatus/list"
-            | "mock/experimentalMethod"
-            | "model/list"
-            | "review/start"
-            | "skills/config/write"
-            | "skills/list"
-            | "skills/remote/export"
-            | "skills/remote/list"
-            | "thread/archive"
-            | "thread/backgroundTerminals/clean"
-            | "thread/compact/start"
-            | "thread/fork"
-            | "thread/list"
-            | "thread/loaded/list"
-            | "thread/name/set"
-            | "thread/read"
-            | "thread/resume"
-            | "thread/rollback"
-            | "thread/start"
-            | "thread/unarchive"
-            | "turn/interrupt"
-            | "turn/start"
-            | "turn/steer"
-    )
-}
-
 #[derive(Clone)]
 enum ApprovalDecisionCanonical {
     Accept,
@@ -14939,238 +13637,6 @@ fn validate_bridge_ui_block(block: &BridgeUiBlock) -> Result<(), BridgeError> {
     }
 }
 
-async fn save_uploaded_attachment(
-    request: AttachmentUploadRequest,
-    state: &Arc<AppState>,
-) -> Result<AttachmentUploadResponse, BridgeError> {
-    let encoded = request.data_base64.trim();
-    if encoded.is_empty() {
-        return Err(BridgeError::invalid_params("dataBase64 must not be empty"));
-    }
-
-    let estimated_size = estimate_base64_decoded_size(encoded)?;
-    if estimated_size > MAX_ATTACHMENT_BYTES {
-        return Err(BridgeError::invalid_params(&format!(
-            "attachment exceeds max size of {MAX_ATTACHMENT_BYTES} bytes"
-        )));
-    }
-
-    let bytes = decode_base64_payload(encoded)?;
-    if bytes.is_empty() {
-        return Err(BridgeError::invalid_params("attachment payload is empty"));
-    }
-
-    if bytes.len() > MAX_ATTACHMENT_BYTES {
-        return Err(BridgeError::invalid_params(&format!(
-            "attachment exceeds max size of {MAX_ATTACHMENT_BYTES} bytes"
-        )));
-    }
-
-    let normalized_kind =
-        normalize_attachment_kind(request.kind.as_deref(), request.mime_type.as_deref());
-    let file_name = build_attachment_file_name(
-        request.file_name.as_deref(),
-        request.mime_type.as_deref(),
-        normalized_kind,
-    );
-
-    let mut attachment_dir = state.config.workdir.join(MOBILE_ATTACHMENTS_DIR);
-    if let Some(thread_id) = request.thread_id.as_deref() {
-        let normalized_thread = sanitize_path_segment(&decode_engine_qualified_id(thread_id));
-        if !normalized_thread.is_empty() {
-            attachment_dir = attachment_dir.join(normalized_thread);
-        }
-    }
-
-    fs::create_dir_all(&attachment_dir).await.map_err(|error| {
-        BridgeError::server(&format!("failed to create attachment directory: {error}"))
-    })?;
-
-    let timestamp = Utc::now().format("%Y%m%d-%H%M%S-%3f").to_string();
-    let unique_name = format!("{timestamp}-{}-{file_name}", std::process::id());
-    let target_path = attachment_dir.join(unique_name);
-    let normalized_target = normalize_path(&target_path);
-    if !normalized_target.starts_with(&state.config.workdir) {
-        return Err(BridgeError::invalid_params(
-            "attachment path must stay within BRIDGE_WORKDIR",
-        ));
-    }
-
-    fs::write(&normalized_target, &bytes)
-        .await
-        .map_err(|error| BridgeError::server(&format!("failed to persist attachment: {error}")))?;
-
-    Ok(AttachmentUploadResponse {
-        path: normalized_target.to_string_lossy().to_string(),
-        file_name,
-        mime_type: request
-            .mime_type
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
-        size_bytes: bytes.len(),
-        kind: normalized_kind.to_string(),
-    })
-}
-
-fn extract_base64_payload(raw: &str) -> Result<&str, BridgeError> {
-    let payload = raw
-        .split_once(',')
-        .map(|(_, data)| data)
-        .unwrap_or(raw)
-        .trim();
-    if payload.is_empty() {
-        return Err(BridgeError::invalid_params(
-            "dataBase64 must contain base64 payload",
-        ));
-    }
-
-    Ok(payload)
-}
-
-fn estimate_base64_decoded_size(raw: &str) -> Result<usize, BridgeError> {
-    let payload = extract_base64_payload(raw)?;
-    let encoded_len = payload.len();
-    let padding = payload
-        .as_bytes()
-        .iter()
-        .rev()
-        .take_while(|byte| **byte == b'=')
-        .count()
-        .min(2);
-
-    let block_count = (encoded_len + 3) / 4;
-    Ok(block_count.saturating_mul(3).saturating_sub(padding))
-}
-
-fn decode_base64_payload(raw: &str) -> Result<Vec<u8>, BridgeError> {
-    let payload = extract_base64_payload(raw)?;
-
-    general_purpose::STANDARD
-        .decode(payload)
-        .or_else(|_| general_purpose::URL_SAFE.decode(payload))
-        .map_err(|error| {
-            BridgeError::invalid_params(&format!("invalid base64 attachment payload: {error}"))
-        })
-}
-
-fn normalize_attachment_kind(kind: Option<&str>, mime_type: Option<&str>) -> &'static str {
-    let normalized = kind
-        .map(str::trim)
-        .map(str::to_lowercase)
-        .unwrap_or_default();
-    if normalized == "image" {
-        return "image";
-    }
-    if normalized == "file" {
-        return "file";
-    }
-
-    if let Some(mime) = mime_type {
-        if mime.trim().to_ascii_lowercase().starts_with("image/") {
-            return "image";
-        }
-    }
-
-    "file"
-}
-
-fn build_attachment_file_name(
-    raw_name: Option<&str>,
-    raw_mime_type: Option<&str>,
-    kind: &str,
-) -> String {
-    let requested_name = raw_name
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            if kind == "image" {
-                "image".to_string()
-            } else {
-                "attachment".to_string()
-            }
-        });
-
-    let mut sanitized = sanitize_filename(&requested_name);
-    if !sanitized.contains('.') {
-        if let Some(extension) = infer_extension_from_mime(raw_mime_type) {
-            sanitized.push('.');
-            sanitized.push_str(extension);
-        }
-    }
-
-    sanitized
-}
-
-fn sanitize_filename(value: &str) -> String {
-    let basename = value
-        .split(['/', '\\'])
-        .filter(|segment| !segment.trim().is_empty())
-        .next_back()
-        .unwrap_or("attachment");
-
-    let mut cleaned = basename
-        .chars()
-        .map(|char| {
-            if char.is_ascii_alphanumeric() || matches!(char, '.' | '-' | '_') {
-                char
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-
-    cleaned = cleaned.trim_matches('.').to_string();
-    if cleaned.is_empty() {
-        return "attachment".to_string();
-    }
-
-    if cleaned.len() > 96 {
-        cleaned.truncate(96);
-    }
-
-    cleaned
-}
-
-fn sanitize_path_segment(value: &str) -> String {
-    let mut cleaned = value
-        .trim()
-        .chars()
-        .map(|char| {
-            if char.is_ascii_alphanumeric() || matches!(char, '-' | '_') {
-                char
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-
-    cleaned = cleaned.trim_matches('_').to_string();
-    if cleaned.len() > 64 {
-        cleaned.truncate(64);
-    }
-
-    cleaned
-}
-
-fn infer_extension_from_mime(raw_mime_type: Option<&str>) -> Option<&'static str> {
-    let mime = raw_mime_type?.trim().to_ascii_lowercase();
-    match mime.as_str() {
-        "image/jpeg" | "image/jpg" => Some("jpg"),
-        "image/png" => Some("png"),
-        "image/webp" => Some("webp"),
-        "image/gif" => Some("gif"),
-        "image/heic" => Some("heic"),
-        "image/heif" => Some("heif"),
-        "text/plain" => Some("txt"),
-        "application/json" => Some("json"),
-        "application/pdf" => Some("pdf"),
-        _ => None,
-    }
-}
-
 fn contains_disallowed_control_chars(value: &str) -> bool {
     value
         .chars()
@@ -15179,33 +13645,6 @@ fn contains_disallowed_control_chars(value: &str) -> bool {
 
 fn now_iso() -> String {
     Utc::now().to_rfc3339()
-}
-
-fn resolve_local_image_path(raw_path: &str) -> Result<PathBuf, &'static str> {
-    let trimmed = raw_path.trim();
-    if trimmed.is_empty() {
-        return Err("Image path is required");
-    }
-
-    let path = PathBuf::from(trimmed);
-    if !path.is_absolute() {
-        return Err("Image path must be absolute");
-    }
-
-    Ok(normalize_path(&path))
-}
-
-fn infer_image_content_type_from_path(path: &Path) -> Option<&'static str> {
-    let extension = path.extension()?.to_str()?.trim().to_ascii_lowercase();
-    match extension.as_str() {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "heic" => Some("image/heic"),
-        "heif" => Some("image/heif"),
-        _ => None,
-    }
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -15413,7 +13852,10 @@ mod tests {
             .handle_notification(HubNotification {
                 event_id: 101,
                 method: "turn/completed".to_string(),
-                params: json!({ "threadId": "opencode:session-queue" }),
+                params: json!({
+                    "threadId": "opencode:session-queue",
+                    "turnId": "turn-1",
+                }),
             })
             .await;
         assert_eq!(
@@ -15425,7 +13867,10 @@ mod tests {
             .handle_notification(HubNotification {
                 event_id: 102,
                 method: "turn/completed".to_string(),
-                params: json!({ "threadId": "opencode:session-queue" }),
+                params: json!({
+                    "threadId": "opencode:session-queue",
+                    "turnId": "turn-2",
+                }),
             })
             .await;
         assert_eq!(
