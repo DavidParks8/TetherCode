@@ -24,11 +24,38 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  release_metadata:
+    name: Resolve release ownership
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      package_name: ${{ steps.release.outputs.package_name }}
+      package_version: ${{ steps.release.outputs.package_version }}
+      publish_allowed: ${{ steps.release.outputs.publish_allowed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          package-manager-cache: false
+
+      - name: Resolve release ownership
+        id: release
+        env:
+          RELEASE_EVENT_NAME: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_MANUAL_PUBLISH: ${{ inputs.publish_package || false }}
+        run: node scripts/resolve-npm-release.mjs
+
   build_bridge_binaries:
     name: Build bridge binary (${{ matrix.package_target }})
+    needs: release_metadata
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -215,10 +242,18 @@ jobs:
 
   publish:
     name: Publish package to npm
-    needs: build_bridge_binaries
-    if: github.event_name != 'workflow_dispatch' || inputs.publish_package
+    needs:
+      - release_metadata
+      - build_bridge_binaries
+    if: needs.release_metadata.outputs.publish_allowed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment:
+      name: npm-publish
+      url: https://www.npmjs.com/package/${{ needs.release_metadata.outputs.package_name }}/v/${{ needs.release_metadata.outputs.package_version }}
+    concurrency:
+      group: npm-publish-${{ needs.release_metadata.outputs.package_name }}-${{ needs.release_metadata.outputs.package_version }}
+      cancel-in-progress: false
     permissions:
       contents: write # create the GitHub release on tag pushes
       id-token: write # OIDC trusted publishing to npm

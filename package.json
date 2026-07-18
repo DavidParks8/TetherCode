@@ -24,6 +24,9 @@
     "qrcode-terminal": "^0.12.0",
     "zod": "^3.25.0"
   },
+  "devDependencies": {
+    "yaml": "^2.8.2"
+  },
   "bin": {
     "clawdex": "bin/clawdex.js",
     "cursor-app-server": "services/cursor-app-server/dist/stdio.js"
@@ -74,12 +77,14 @@
     "secure:bridge:dev": "node ./scripts/start-bridge-secure.js --dev",
     "bridge:ts": "BRIDGE_WORKDIR=$(pwd) npm run -w @codex/mac-bridge dev",
     "version:sync": "node scripts/sync-versions.js",
+    "release:check": "node scripts/validate-npm-release-workflow.mjs",
+    "test:release": "node --test scripts/__tests__/*.test.mjs",
     "contract:check": "node scripts/validate-rpc-contract-fixtures.mjs && npm run test:contract -w apps/mobile && npm run test:contract -w @codex/rust-bridge",
     "prepack": "npm run build -w @clawdex/cursor-app-server",
     "build": "npm run --workspaces build",
     "typecheck": "npm run --workspaces typecheck",
     "lint": "npm run --workspaces lint",
-    "test": "npm run test -w @codex/mac-bridge && npm run test -w apps/mobile && npm run test -w @codex/rust-bridge && npm run test -w @clawdex/cursor-app-server",
+    "test": "npm run test:release && npm run test -w @codex/mac-bridge && npm run test -w apps/mobile && npm run test -w @codex/rust-bridge && npm run test -w @clawdex/cursor-app-server",
     "teardown": "./scripts/teardown.sh"
   }
 }

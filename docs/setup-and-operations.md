@@ -350,9 +350,13 @@ Approval events are surfaced via `bridge/approval.requested` and `bridge/approva
 
 Workflow: `.github/workflows/npm-release.yml`
 
-Required repo secret:
+Publishing uses npm trusted publishing (OIDC), so no `NPM_TOKEN` repo secret is used.
 
-- `NPM_TOKEN`
+Repository setup:
+
+- Create the `npm-publish` deployment environment.
+- Add required reviewers to protect manual releases and restrict deployment branches/tags to the intended release sources. The workflow applies this environment to every npm publish job; GitHub repository settings own the reviewer policy.
+- Configure npm trusted publishing for `.github/workflows/npm-release.yml` and the `npm-publish` environment.
 
 Typical release flow (from `main`):
 
@@ -362,6 +366,9 @@ git push origin main --follow-tags
 ```
 
 Automation verifies tag/version consistency and publishes to npm.
+The `main` push still builds every bridge target but cannot publish. Only an exact `v<package.json version>` tag, or a manual run with `publish_package` explicitly selected and the `npm-publish` environment approved, can enter the publish job. Publishes for the same package and version share one non-cancelling concurrency group, so the release commit and tag cannot compete.
+
+Use `npm run test:release` to validate workflow YAML and the release ownership guard locally. CI runs the same focused policy suite on pull requests.
 
 ## API Summary (Rust Bridge)
 

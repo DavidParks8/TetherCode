@@ -17,6 +17,25 @@ permissions:
   contents: read
 
 jobs:
+  npm-release-policy:
+    name: NPM Release Policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci
+      - name: Validate release workflow and ownership
+        run: npm run test:release
+
   rpc-contract:
     name: RPC Contract
     runs-on: ubuntu-latest
