@@ -3019,6 +3019,7 @@ impl BridgeQueueService {
             backend,
             hub,
             threads: Arc::new(RwLock::new(HashMap::new())),
+            thread_actors: Arc::new(RwLock::new(HashMap::new())),
             completion_dispositions: Arc::new(Mutex::new(HashMap::new())),
             completion_disposition_notify: Arc::new(Notify::new()),
             next_queue_item_id: AtomicU64::new(1),
@@ -3032,6 +3033,17 @@ impl BridgeQueueService {
             "queue-{}",
             self.next_queue_item_id.fetch_add(1, Ordering::Relaxed)
         )
+    }
+
+    async fn thread_actor(&self, thread_id: &str) -> Arc<Mutex<()>> {
+        if let Some(actor) = self.thread_actors.read().await.get(thread_id).cloned() {
+            return actor;
+        }
+        let mut actors = self.thread_actors.write().await;
+        actors
+            .entry(thread_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     fn spawn_notification_loop(self: &Arc<Self>) {
@@ -3115,6 +3127,9 @@ impl BridgeQueueService {
         if content.is_empty() {
             return Err("content must not be empty".to_string());
         }
+
+        let actor = self.thread_actor(&normalized_thread_id).await;
+        let _actor_guard = actor.lock().await;
 
         self.ensure_thread_runtime(&normalized_thread_id).await?;
 
@@ -3202,6 +3217,9 @@ impl BridgeQueueService {
         if normalized_item_id.is_empty() {
             return Err("itemId must not be empty".to_string());
         }
+
+        let actor = self.thread_actor(&normalized_thread_id).await;
+        let _actor_guard = actor.lock().await;
 
         self.ensure_thread_runtime(&normalized_thread_id).await?;
 
@@ -3304,6 +3322,9 @@ impl BridgeQueueService {
         if normalized_item_id.is_empty() {
             return Err("itemId must not be empty".to_string());
         }
+
+        let actor = self.thread_actor(&normalized_thread_id).await;
+        let _actor_guard = actor.lock().await;
 
         let snapshot = {
             let mut threads = self.threads.write().await;
@@ -3669,6 +3690,8 @@ impl BridgeQueueService {
     }
 
     async fn drain_thread_queue(&self, thread_id: String) {
+        let actor = self.thread_actor(&thread_id).await;
+        let _actor_guard = actor.lock().await;
         let (queued_item, snapshot) = {
             let mut threads = self.threads.write().await;
             let Some(runtime) = threads.get_mut(&thread_id) else {
@@ -8062,6 +8085,7 @@ struct BridgeQueueService {
     backend: Arc<RuntimeBackend>,
     hub: Arc<ClientHub>,
     threads: Arc<RwLock<HashMap<String, BridgeThreadQueueRuntime>>>,
+    thread_actors: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
     completion_dispositions: Arc<Mutex<HashMap<u64, QueueCompletionDisposition>>>,
     completion_disposition_notify: Arc<Notify>,
     next_queue_item_id: AtomicU64,
@@ -18787,6 +18811,25 @@ mod tests {
         assert_eq!(first.queue.items.len(), 1);
         assert_eq!(second.queue.items.len(), 2);
         assert_ne!(second.queue.items[0].id, second.queue.items[1].id);
+
+        shutdown_test_backend(&state.backend).await;
+    }
+
+    #[tokio::test]
+    async fn bridge_queue_uses_one_actor_owner_per_thread() {
+        let state = build_test_state().await;
+        let queue = state.queue.clone();
+        let first = queue.thread_actor("thread-actor").await;
+        let second = queue.thread_actor("thread-actor").await;
+        let other = queue.thread_actor("thread-other").await;
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(!Arc::ptr_eq(&first, &other));
+
+        let guard = first.lock().await;
+        assert!(second.try_lock().is_err());
+        drop(guard);
+        assert!(second.try_lock().is_ok());
 
         shutdown_test_backend(&state.backend).await;
     }
