@@ -36,6 +36,9 @@ jobs:
       - name: Validate release workflow and ownership
         run: npm run test:scripts
 
+      - name: Audit production dependencies
+        run: npm run security:check
+
   rpc-contract:
     name: RPC Contract
     runs-on: ubuntu-latest

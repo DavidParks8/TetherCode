@@ -28,7 +28,7 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "yaml": "^2.8.2"
+    "yaml": "^2.9.0"
   },
   "bin": {
     "clawdex": "bin/clawdex.js",
@@ -83,6 +83,7 @@
     "bridge:ts": "BRIDGE_WORKDIR=$(pwd) npm run -w @codex/mac-bridge dev",
     "version:sync": "node scripts/sync-versions.js",
     "release:check": "node scripts/validate-npm-release-workflow.mjs",
+    "security:check": "node scripts/check-production-audit.mjs",
     "docs:check": "node scripts/validate-doc-consistency.mjs",
     "test:scripts": "node --test scripts/__tests__/*.test.mjs",
     "test:release": "node --test scripts/__tests__/npm-release-policy.test.mjs",
