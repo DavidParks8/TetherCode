@@ -1,3 +1,5 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
@@ -69,6 +71,22 @@ mod storage;
 
 #[cfg(all(test, unix))]
 mod boundary_integration;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod coverage_main_backends;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod coverage_main_mappings;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod coverage_main_orchestration;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod coverage_main_surfaces;
 
 #[cfg(test)]
 use attachments::{
@@ -6835,7 +6853,8 @@ fn format_duration_seconds(seconds: u64) -> String {
 }
 
 fn epoch_seconds_to_rfc3339(seconds: u64) -> Option<String> {
-    DateTime::<Utc>::from_timestamp(seconds as i64, 0).map(|timestamp| timestamp.to_rfc3339())
+    let seconds = i64::try_from(seconds).ok()?;
+    DateTime::<Utc>::from_timestamp(seconds, 0).map(|timestamp| timestamp.to_rfc3339())
 }
 
 fn parse_rollout_mcp_tool_name(name: &str) -> Option<(String, String)> {
@@ -10705,8 +10724,18 @@ fn parse_preview_viewport_cookie(raw: &str) -> Option<PreviewViewportConfig> {
 
     let mut parts = trimmed.split(':');
     let preset = parse_preview_viewport_preset(parts.next()?)?;
-    let width = normalize_preview_viewport_dimension(parts.next());
-    let height = normalize_preview_viewport_dimension(parts.next());
+    let raw_width = parts.next();
+    let raw_height = parts.next();
+    if parts.next().is_some() {
+        return None;
+    }
+    let width = normalize_preview_viewport_dimension(raw_width);
+    let height = normalize_preview_viewport_dimension(raw_height);
+    if raw_width.is_some_and(|value| !value.trim().is_empty()) && width.is_none()
+        || raw_height.is_some_and(|value| !value.trim().is_empty()) && height.is_none()
+    {
+        return None;
+    }
     build_preview_viewport_config(Some(preset), width, height)
 }
 
@@ -11981,14 +12010,13 @@ fn append_vary_header_value(headers: &mut HeaderMap, token: &str) {
 }
 
 fn target_origin_string(target_url: &Url) -> String {
-    let default_port = target_url.port_or_known_default();
     let explicit_port = target_url.port();
-    if explicit_port.is_some() && explicit_port != default_port {
+    if let Some(explicit_port) = explicit_port {
         format!(
             "{}://{}:{}",
             target_url.scheme(),
             target_url.host_str().unwrap_or("127.0.0.1"),
-            explicit_port.unwrap_or_default()
+            explicit_port
         )
     } else {
         format!(
@@ -13869,11 +13897,11 @@ fn generate_opencode_local_id() -> String {
 
 fn to_preview_like(value: &str) -> String {
     let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.len() <= 180 {
+    if collapsed.chars().count() <= 180 {
         return collapsed;
     }
 
-    format!("{}...", &collapsed[..177])
+    format!("{}...", collapsed.chars().take(177).collect::<String>())
 }
 
 fn normalize_thread_status_label(value: Option<&Value>) -> Option<String> {
@@ -13895,7 +13923,9 @@ fn read_active_turn_id_from_thread(thread: &Value) -> Option<String> {
     let thread_object = thread.as_object()?;
     let turns = thread_object.get("turns")?.as_array()?;
     for turn in turns.iter().rev() {
-        let turn_object = turn.as_object()?;
+        let Some(turn_object) = turn.as_object() else {
+            continue;
+        };
         let status = normalize_thread_status_label(turn_object.get("status"));
         if matches!(
             status.as_deref(),
@@ -14341,6 +14371,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

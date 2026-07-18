@@ -512,6 +512,7 @@ pub(crate) fn parse_bridge_runtime_engine(value: &str) -> Option<BridgeRuntimeEn
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -651,5 +652,291 @@ mod tests {
             HashSet::from([TerminalExecPolicy::Pwd, TerminalExecPolicy::Read])
         );
         assert!(parse_terminal_exec_policies("git").is_err());
+    }
+
+    #[test]
+    fn authorization_covers_bearer_and_query_token_variants() {
+        let mut config = no_auth_config("127.0.0.1");
+        assert!(config.is_authorized(&HeaderMap::new(), None));
+
+        config.auth_enabled = true;
+        assert!(!config.is_authorized(&HeaderMap::new(), None));
+        config.auth_token = Some("secret".to_string());
+
+        for raw in [
+            "Basic secret",
+            "Bearer",
+            "Bearer secret extra",
+            "Bearer wrong",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert("authorization", raw.parse().unwrap());
+            assert!(!config.is_authorized(&headers, None), "accepted {raw}");
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "bEaReR secret".parse().unwrap());
+        assert!(config.is_authorized(&headers, None));
+
+        config.allow_query_token_auth = true;
+        assert!(!config.is_authorized(&HeaderMap::new(), Some("   ")));
+        assert!(!config.is_authorized(&HeaderMap::new(), Some("wrong")));
+        assert!(config.is_authorized(&HeaderMap::new(), Some(" secret ")));
+    }
+
+    #[test]
+    fn connect_url_normalization_rejects_unsafe_values_and_strips_suffixes() {
+        assert_eq!(normalize_connect_url("   "), None);
+        assert_eq!(normalize_connect_url("not a url"), None);
+        assert_eq!(normalize_connect_url("ftp://example.com"), None);
+        assert_eq!(normalize_connect_url("https://user@example.com"), None);
+        assert_eq!(
+            normalize_connect_url("https://example.com/"),
+            Some("https://example.com".into())
+        );
+        assert_eq!(
+            normalize_connect_url(" https://example.com/base///?query=1#fragment "),
+            Some("https://example.com/base".into())
+        );
+    }
+
+    #[test]
+    fn websocket_limits_validate_both_relationships() {
+        assert!(WebSocketResourceLimits {
+            max_frame_bytes: 2,
+            max_message_bytes: 1,
+            per_client_in_flight: 1,
+            global_in_flight: 1,
+        }
+        .validate()
+        .is_err());
+        assert!(WebSocketResourceLimits {
+            max_frame_bytes: 1,
+            max_message_bytes: 1,
+            per_client_in_flight: 2,
+            global_in_flight: 1,
+        }
+        .validate()
+        .is_err());
+        assert!(WebSocketResourceLimits {
+            max_frame_bytes: 1,
+            max_message_bytes: 1,
+            per_client_in_flight: 1,
+            global_in_flight: 1,
+        }
+        .validate()
+        .is_ok());
+    }
+
+    #[test]
+    fn engine_csv_parser_handles_empty_unknown_and_duplicate_entries() {
+        assert!(parse_enabled_bridge_engines_csv(" ,unknown, ").is_err());
+        assert_eq!(
+            parse_enabled_bridge_engines_csv(" codex,unknown,CODEX,cursor ").unwrap(),
+            vec![BridgeRuntimeEngine::Codex, BridgeRuntimeEngine::Cursor]
+        );
+        assert_eq!(
+            parse_bridge_runtime_engine(" OPENCODE "),
+            Some(BridgeRuntimeEngine::Opencode)
+        );
+        assert_eq!(parse_bridge_runtime_engine("unknown"), None);
+    }
+
+    #[test]
+    fn environment_parsers_cover_missing_valid_and_invalid_values() {
+        let suffix = uuid::Uuid::new_v4();
+        let bool_name = format!("CLAWDEX_TEST_BOOL_{suffix}");
+        let default_bool_name = format!("CLAWDEX_TEST_DEFAULT_BOOL_{suffix}");
+        let usize_name = format!("CLAWDEX_TEST_USIZE_{suffix}");
+        let url_name = format!("CLAWDEX_TEST_URL_{suffix}");
+        let origin_name = format!("CLAWDEX_TEST_ORIGIN_{suffix}");
+
+        assert!(!parse_bool_env(&bool_name));
+        unsafe { env::set_var(&bool_name, " TRUE ") };
+        assert!(parse_bool_env(&bool_name));
+        unsafe { env::set_var(&bool_name, "false") };
+        assert!(!parse_bool_env(&bool_name));
+
+        assert!(parse_bool_env_with_default(&default_bool_name, true));
+        unsafe { env::set_var(&default_bool_name, "true") };
+        assert!(parse_bool_env_with_default(&default_bool_name, false));
+        unsafe { env::set_var(&default_bool_name, "false") };
+        assert!(!parse_bool_env_with_default(&default_bool_name, true));
+        unsafe { env::set_var(&default_bool_name, "invalid") };
+        assert!(parse_bool_env_with_default(&default_bool_name, true));
+
+        assert_eq!(parse_positive_usize_env(&usize_name, 7).unwrap(), 7);
+        unsafe { env::set_var(&usize_name, "9") };
+        assert_eq!(parse_positive_usize_env(&usize_name, 7).unwrap(), 9);
+        unsafe { env::set_var(&usize_name, "0") };
+        assert!(parse_positive_usize_env(&usize_name, 7).is_err());
+        unsafe { env::set_var(&usize_name, "invalid") };
+        assert!(parse_positive_usize_env(&usize_name, 7).is_err());
+
+        assert_eq!(parse_connect_url_env(&url_name).unwrap(), None);
+        unsafe { env::set_var(&url_name, "  ") };
+        assert_eq!(parse_connect_url_env(&url_name).unwrap(), None);
+        unsafe { env::set_var(&url_name, "https://example.com/path/") };
+        assert_eq!(
+            parse_connect_url_env(&url_name).unwrap(),
+            Some("https://example.com/path".into())
+        );
+        unsafe { env::set_var(&url_name, "ftp://example.com") };
+        assert!(parse_connect_url_env(&url_name).is_err());
+
+        assert!(parse_origin_csv_env(&origin_name).unwrap().is_empty());
+        unsafe { env::set_var(&origin_name, "https://one.example, https://two.example") };
+        assert_eq!(parse_origin_csv_env(&origin_name).unwrap().len(), 2);
+        unsafe { env::set_var(&origin_name, "https://example.com/path") };
+        assert!(parse_origin_csv_env(&origin_name).is_err());
+
+        for name in [
+            bool_name,
+            default_bool_name,
+            usize_name,
+            url_name,
+            origin_name,
+        ] {
+            unsafe { env::remove_var(name) };
+        }
+    }
+
+    #[test]
+    fn bridge_config_loads_a_fully_configured_environment() {
+        const NAMES: &[&str] = &[
+            "BRIDGE_HOST",
+            "BRIDGE_PORT",
+            "BRIDGE_PREVIEW_HOST",
+            "BRIDGE_PREVIEW_PORT",
+            "BRIDGE_CONNECT_URL",
+            "BRIDGE_PREVIEW_CONNECT_URL",
+            "BRIDGE_WORKDIR",
+            "CODEX_CLI_BIN",
+            "OPENCODE_CLI_BIN",
+            "CURSOR_APP_SERVER_BIN",
+            "BRIDGE_ACTIVE_ENGINE",
+            "BRIDGE_ENABLED_ENGINES",
+            "BRIDGE_OPENCODE_HOST",
+            "BRIDGE_OPENCODE_PORT",
+            "BRIDGE_AUTH_TOKEN",
+            "BRIDGE_OPENCODE_SERVER_USERNAME",
+            "BRIDGE_OPENCODE_SERVER_PASSWORD",
+            "BRIDGE_ALLOW_INSECURE_NO_AUTH",
+            "BRIDGE_NO_AUTH_ALLOWED_ORIGINS",
+            "BRIDGE_ALLOW_QUERY_TOKEN_AUTH",
+            "BRIDGE_ALLOW_OUTSIDE_ROOT_CWD",
+            "BRIDGE_SHOW_PAIRING_QR",
+            "BRIDGE_WS_MAX_FRAME_BYTES",
+            "BRIDGE_WS_MAX_MESSAGE_BYTES",
+            "BRIDGE_WS_PER_CLIENT_IN_FLIGHT",
+            "BRIDGE_WS_GLOBAL_IN_FLIGHT",
+            "BRIDGE_TERMINAL_EXEC_POLICIES",
+        ];
+
+        struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                for (name, value) in self.0.drain(..) {
+                    if let Some(value) = value {
+                        unsafe { env::set_var(name, value) };
+                    } else {
+                        unsafe { env::remove_var(name) };
+                    }
+                }
+            }
+        }
+
+        let _restore = RestoreEnv(
+            NAMES
+                .iter()
+                .map(|name| (*name, env::var_os(name)))
+                .collect(),
+        );
+        let root = std::env::temp_dir().join(format!("clawdex-config-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let values = [
+            ("BRIDGE_HOST", "127.0.0.1"),
+            ("BRIDGE_PORT", "9000"),
+            ("BRIDGE_PREVIEW_HOST", "127.0.0.1"),
+            ("BRIDGE_PREVIEW_PORT", "9001"),
+            ("BRIDGE_CONNECT_URL", "https://bridge.example/base/"),
+            ("BRIDGE_PREVIEW_CONNECT_URL", "https://preview.example/"),
+            ("BRIDGE_WORKDIR", root.to_str().unwrap()),
+            ("CODEX_CLI_BIN", "configured-codex"),
+            ("OPENCODE_CLI_BIN", "configured-opencode"),
+            ("CURSOR_APP_SERVER_BIN", "configured-cursor"),
+            ("BRIDGE_ACTIVE_ENGINE", "opencode"),
+            ("BRIDGE_ENABLED_ENGINES", "codex,cursor"),
+            ("BRIDGE_OPENCODE_HOST", "127.0.0.2"),
+            ("BRIDGE_OPENCODE_PORT", "4091"),
+            ("BRIDGE_AUTH_TOKEN", "secret"),
+            ("BRIDGE_OPENCODE_SERVER_USERNAME", "user"),
+            ("BRIDGE_OPENCODE_SERVER_PASSWORD", "password"),
+            ("BRIDGE_ALLOW_INSECURE_NO_AUTH", "false"),
+            ("BRIDGE_NO_AUTH_ALLOWED_ORIGINS", "https://trusted.example"),
+            ("BRIDGE_ALLOW_QUERY_TOKEN_AUTH", "true"),
+            ("BRIDGE_ALLOW_OUTSIDE_ROOT_CWD", "false"),
+            ("BRIDGE_SHOW_PAIRING_QR", "false"),
+            ("BRIDGE_WS_MAX_FRAME_BYTES", "1024"),
+            ("BRIDGE_WS_MAX_MESSAGE_BYTES", "2048"),
+            ("BRIDGE_WS_PER_CLIENT_IN_FLIGHT", "2"),
+            ("BRIDGE_WS_GLOBAL_IN_FLIGHT", "4"),
+            ("BRIDGE_TERMINAL_EXEC_POLICIES", "pwd,ls,cat"),
+        ];
+        for (name, value) in values {
+            unsafe { env::set_var(name, value) };
+        }
+
+        let config = BridgeConfig::from_env().unwrap();
+        assert_eq!(config.port, 9000);
+        assert_eq!(config.preview_port, 9001);
+        assert_eq!(
+            config.connect_url.as_deref(),
+            Some("https://bridge.example/base")
+        );
+        assert_eq!(config.active_engine, BridgeRuntimeEngine::Codex);
+        assert_eq!(config.enabled_engines.len(), 2);
+        assert!(config.auth_enabled);
+        assert!(config.allow_query_token_auth);
+        assert!(!config.allow_outside_root_cwd);
+        assert_eq!(config.ws_limits.global_in_flight, 4);
+        assert_eq!(config.terminal_exec_policies.len(), 3);
+
+        unsafe { env::set_var("BRIDGE_PREVIEW_PORT", "9000") };
+        assert!(BridgeConfig::from_env().is_err());
+        unsafe {
+            env::set_var("BRIDGE_PREVIEW_PORT", "9001");
+            env::set_var("BRIDGE_ACTIVE_ENGINE", "codex");
+        }
+        assert_eq!(
+            BridgeConfig::from_env().unwrap().active_engine,
+            BridgeRuntimeEngine::Codex
+        );
+
+        unsafe {
+            env::remove_var("BRIDGE_AUTH_TOKEN");
+            env::set_var("BRIDGE_ALLOW_INSECURE_NO_AUTH", "false");
+        }
+        assert!(BridgeConfig::from_env().is_err());
+        unsafe {
+            env::set_var("BRIDGE_ALLOW_INSECURE_NO_AUTH", "true");
+            env::set_var("BRIDGE_HOST", "0.0.0.0");
+        }
+        assert!(BridgeConfig::from_env().is_err());
+        unsafe { env::set_var("BRIDGE_HOST", "127.0.0.1") };
+        assert!(!BridgeConfig::from_env().unwrap().auth_enabled);
+
+        assert_eq!(normalize_connect_url("https://user:pass@example.com"), None);
+        assert_eq!(normalize_connect_url("https://:pass@example.com"), None);
+        assert_eq!(normalize_browser_origin(""), None);
+        assert_eq!(
+            normalize_browser_origin("https://user:pass@example.com"),
+            None
+        );
+        assert_eq!(
+            normalize_browser_origin("https://example.com/#fragment"),
+            None
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

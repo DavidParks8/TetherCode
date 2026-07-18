@@ -10,6 +10,7 @@
     "lint": "cargo fmt --check",
     "test": "cargo test",
     "test:boundary": "cargo test --locked boundary_integration -- --test-threads=1",
+    "test:coverage": "../../scripts/run-rust-coverage.sh",
     "test:contract": "cargo test contract_fixture_manifest"
   }
 }

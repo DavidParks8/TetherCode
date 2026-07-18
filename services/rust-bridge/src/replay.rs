@@ -61,10 +61,11 @@ impl NotificationReplay {
         });
         let mut total_bytes = entries.iter().map(|entry| entry.bytes).sum::<usize>();
         while entries.len() > self.capacity || total_bytes > self.max_bytes {
-            if let Some(removed) = entries.pop_front() {
-                total_bytes = total_bytes.saturating_sub(removed.bytes);
-                self.evicted.fetch_add(1, Ordering::Relaxed);
-            }
+            let removed = entries
+                .pop_front()
+                .expect("replay eviction requires a non-empty buffer");
+            total_bytes = total_bytes.saturating_sub(removed.bytes);
+            self.evicted.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -122,6 +123,7 @@ impl NotificationReplay {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::NotificationReplay;
     use serde_json::json;
@@ -148,5 +150,26 @@ mod tests {
         replay.push(1, json!({ "id": 1 }), 5).await;
         assert_eq!(replay.earliest_event_id().await, None);
         assert_eq!(replay.status(0).await.dropped_oversize, 1);
+    }
+
+    #[tokio::test]
+    async fn zero_capacity_drops_and_since_skips_the_cursor() {
+        let disabled = NotificationReplay::new(0, 100);
+        disabled.push(1, json!({ "id": 1 }), 1).await;
+        assert_eq!(disabled.status(7).await.dropped_oversize, 1);
+        assert_eq!(disabled.status(7).await.client_queue_drops, 7);
+
+        let replay = NotificationReplay::new(3, 100);
+        replay.push(1, json!({ "id": 1 }), 2).await;
+        replay.push(2, json!({ "id": 2 }), 2).await;
+        replay.push(3, json!({ "id": 3 }), 2).await;
+        let (events, has_more, bytes) = replay.since(Some(1), 1, 100).await;
+        assert_eq!(events, vec![json!({ "id": 2 })]);
+        assert!(has_more);
+        assert_eq!(bytes, 2);
+
+        let status = replay.status(0).await;
+        assert_eq!(status.latest_event_id, Some(3));
+        assert_eq!(status.bytes, 6);
     }
 }

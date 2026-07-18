@@ -55,15 +55,11 @@ impl GitService {
             .await?;
 
         if result.code != Some(0) {
-            return Err(BridgeError::server(
-                &(if !result.stderr.is_empty() {
-                    result.stderr.clone()
-                } else if !result.stdout.is_empty() {
-                    result.stdout.clone()
-                } else {
-                    "git status failed".to_string()
-                }),
-            ));
+            return Err(BridgeError::server(&git_failure_message(
+                &result.stderr,
+                &result.stdout,
+                "git status failed",
+            )));
         }
 
         let lines = result
@@ -76,15 +72,8 @@ impl GitService {
 
         let branch = lines
             .iter()
-            .find(|line| line.starts_with("## "))
-            .map(|line| {
-                line.trim_start_matches("## ")
-                    .split("...")
-                    .next()
-                    .unwrap_or("unknown")
-            })
-            .unwrap_or("unknown")
-            .to_string();
+            .find_map(|line| parse_status_branch(line))
+            .unwrap_or_else(|| "unknown".to_string());
 
         let clean = porcelain_entries.is_empty();
         let total_files = porcelain_entries.len();
@@ -93,8 +82,8 @@ impl GitService {
         let mut returned_files = Vec::new();
         for entry in files.drain(..).take(GIT_STATUS_MAX_FILES) {
             let entry_bytes = serde_json::to_vec(&entry)
-                .map(|value| value.len())
-                .unwrap_or(0);
+                .expect("GitStatusEntry serialization must succeed")
+                .len();
             if used_bytes.saturating_add(entry_bytes) > GIT_STATUS_MAX_BYTES {
                 break;
             }
@@ -138,6 +127,7 @@ impl GitService {
                         &[
                             "diff",
                             "--no-color",
+                            "--no-ext-diff",
                             "--no-index",
                             "--",
                             "/dev/null",
@@ -163,6 +153,7 @@ impl GitService {
                     &[
                         "diff",
                         "--no-color",
+                        "--no-ext-diff",
                         "--patch",
                         "HEAD",
                         "--",
@@ -186,6 +177,7 @@ impl GitService {
                             &[
                                 "diff",
                                 "--no-color",
+                                "--no-ext-diff",
                                 "--patch",
                                 "--cached",
                                 "--",
@@ -202,7 +194,14 @@ impl GitService {
                     let unstaged_patch = self
                         .run_git_diff_command(
                             &repo_path,
-                            &["diff", "--no-color", "--patch", "--", entry.path.as_str()],
+                            &[
+                                "diff",
+                                "--no-color",
+                                "--no-ext-diff",
+                                "--patch",
+                                "--",
+                                entry.path.as_str(),
+                            ],
                             false,
                             "git diff for file failed",
                         )
@@ -268,15 +267,11 @@ impl GitService {
             .await?;
 
         if result.code != Some(0) {
-            return Err(BridgeError::server(
-                &(if !result.stderr.is_empty() {
-                    result.stderr
-                } else if !result.stdout.is_empty() {
-                    result.stdout
-                } else {
-                    "git log failed".to_string()
-                }),
-            ));
+            return Err(BridgeError::server(&git_failure_message(
+                &result.stderr,
+                &result.stdout,
+                "git log failed",
+            )));
         }
 
         Ok(GitHistoryResponse {
@@ -357,17 +352,6 @@ impl GitService {
     ) -> Result<GitCloneResponse, BridgeError> {
         let parent_path = self.resolve_repo_path(raw_parent_path)?;
         let repository_url = validate_remote_url(repository_url)?;
-        if !parent_path.exists() {
-            return Err(BridgeError::invalid_params(
-                "destination parent path must exist",
-            ));
-        }
-        if !parent_path.is_dir() {
-            return Err(BridgeError::invalid_params(
-                "destination parent path must be a directory",
-            ));
-        }
-
         let normalized_directory_name = resolve_clone_directory_name(directory_name)?;
         let destination_path = normalize_path(&parent_path.join(&normalized_directory_name));
         if destination_path.exists() {
@@ -613,15 +597,11 @@ impl GitService {
             .await?;
 
         if result.code != Some(0) {
-            return Err(BridgeError::server(
-                &(if !result.stderr.is_empty() {
-                    result.stderr
-                } else if !result.stdout.is_empty() {
-                    result.stdout
-                } else {
-                    "git status --porcelain failed".to_string()
-                }),
-            ));
+            return Err(BridgeError::server(&git_failure_message(
+                &result.stderr,
+                &result.stdout,
+                "git status --porcelain failed",
+            )));
         }
 
         parse_porcelain_status_entries(&result.stdout)
@@ -645,15 +625,11 @@ impl GitService {
         let code = result.code.unwrap_or(-1);
         let is_allowed = code == 0 || (allow_exit_code_one && code == 1);
         if !is_allowed {
-            return Err(BridgeError::server(
-                &(if !result.stderr.is_empty() {
-                    result.stderr
-                } else if !result.stdout.is_empty() {
-                    result.stdout
-                } else {
-                    fallback_message.to_string()
-                }),
-            ));
+            return Err(BridgeError::server(&git_failure_message(
+                &result.stderr,
+                &result.stdout,
+                fallback_message,
+            )));
         }
 
         Ok(result.stdout)
@@ -674,15 +650,11 @@ impl GitService {
             .await?;
 
         if result.code != Some(0) {
-            return Err(BridgeError::server(
-                &(if !result.stderr.is_empty() {
-                    result.stderr
-                } else if !result.stdout.is_empty() {
-                    result.stdout
-                } else {
-                    fallback_message.to_string()
-                }),
-            ));
+            return Err(BridgeError::server(&git_failure_message(
+                &result.stderr,
+                &result.stdout,
+                fallback_message,
+            )));
         }
 
         Ok(result.stdout)
@@ -734,7 +706,7 @@ impl GitService {
             "config".to_string(),
             "--local".to_string(),
             "--get-regexp".to_string(),
-            "^(core\\.(hooksPath|fsmonitor)|credential\\..*helper|diff\\..*\\.(command|textconv)|filter\\..*\\.(clean|smudge|process)|remote\\..*\\.(proxy|vcs))$".to_string(),
+            "^(core\\.(hookspath|fsmonitor)|credential\\..*helper|diff\\..*\\.(command|textconv)|filter\\..*\\.(clean|smudge|process)|remote\\..*\\.(proxy|vcs))$".to_string(),
         ];
         let result = self
             .terminal
@@ -761,7 +733,7 @@ fn validate_remote_url(raw: &str) -> Result<String, BridgeError> {
     let parsed = Url::parse(trimmed)
         .map_err(|_| BridgeError::invalid_params("Git remotes must use an explicit HTTPS URL"))?;
     if parsed.scheme() != "https"
-        || parsed.host_str().is_none()
+        || parsed.host_str().map(str::is_empty).unwrap_or(true)
         || !parsed.username().is_empty()
         || parsed.password().is_some()
         || parsed.fragment().is_some()
@@ -772,6 +744,16 @@ fn validate_remote_url(raw: &str) -> Result<String, BridgeError> {
         ));
     }
     Ok(trimmed.to_string())
+}
+
+fn git_failure_message(stderr: &str, stdout: &str, fallback: &str) -> String {
+    if !stderr.is_empty() {
+        stderr.to_string()
+    } else if !stdout.is_empty() {
+        stdout.to_string()
+    } else {
+        fallback.to_string()
+    }
 }
 
 fn validate_remote_name(raw: &str) -> Result<(), BridgeError> {
@@ -817,9 +799,7 @@ fn parse_porcelain_status_entries(raw: &str) -> Result<Vec<GitStatusEntry>, Brid
         if matches!(index_status, 'R' | 'C') && index < tokens.len() {
             let original = tokens[index].to_string();
             index += 1;
-            if !original.is_empty() {
-                original_path = Some(original);
-            }
+            original_path = Some(original);
         }
 
         let untracked = index_status == '?' && worktree_status == '?';
@@ -846,6 +826,19 @@ fn parse_status_has_upstream(raw: &str) -> bool {
         .find(|line| line.starts_with("## "))
         .map(|line| line.contains("..."))
         .unwrap_or(false)
+}
+
+fn parse_status_branch(line: &str) -> Option<String> {
+    let status = line.strip_prefix("## ")?;
+    let branch = status
+        .strip_prefix("No commits yet on ")
+        .or_else(|| status.strip_prefix("Initial commit on "))
+        .unwrap_or(status)
+        .split("...")
+        .next()
+        .expect("split always yields a first segment")
+        .trim();
+    (!branch.is_empty()).then(|| branch.to_string())
 }
 
 fn parse_git_history(raw: &str) -> Vec<GitHistoryCommit> {
@@ -1073,11 +1066,9 @@ fn resolve_clone_directory_name(raw_name: &str) -> Result<String, BridgeError> {
     }
 
     let mut components = requested.components();
-    let Some(component) = components.next() else {
-        return Err(BridgeError::invalid_params(
-            "directoryName must not be empty",
-        ));
-    };
+    let component = components
+        .next()
+        .expect("a non-empty path has at least one component");
     if components.next().is_some() {
         return Err(BridgeError::invalid_params(
             "directoryName must be a single folder name",
@@ -1093,16 +1084,67 @@ fn resolve_clone_directory_name(raw_name: &str) -> Result<String, BridgeError> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{
         normalize_git_branch_target, parse_git_branches, parse_git_history,
-        parse_porcelain_status_entries, parse_status_has_upstream, resolve_clone_directory_name,
-        resolve_repo_relative_path, resolve_switch_target, select_default_remote_name,
-        validate_remote_name, validate_remote_url, GitSwitchTarget,
+        parse_porcelain_status_entries, parse_status_branch, parse_status_has_upstream,
+        resolve_clone_directory_name, resolve_repo_relative_path, resolve_switch_target,
+        select_default_remote_name, validate_remote_name, validate_remote_url, GitSwitchTarget,
     };
     use crate::{path_policy::PathPolicy, GitBranchSummary};
-    use std::{collections::HashSet, fs, path::Path, sync::Arc};
+    use std::{
+        collections::HashSet,
+        fs,
+        path::{Path, PathBuf},
+        process::Command,
+        sync::Arc,
+    };
     use uuid::Uuid;
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("clawdex-git-{label}-{}", Uuid::new_v4()));
+            fs::create_dir(&path).expect("create test directory");
+            Self(path)
+        }
+
+        fn git(&self, args: &[&str]) -> String {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&self.0)
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).expect("utf-8 git output")
+        }
+
+        fn init(&self) {
+            self.git(&["init", "-b", "main"]);
+            self.git(&["config", "user.email", "tests@example.com"]);
+            self.git(&["config", "user.name", "Clawdex Tests"]);
+            self.git(&["config", "commit.gpgSign", "false"]);
+        }
+
+        fn service(&self) -> super::GitService {
+            let policy = Arc::new(PathPolicy::new(self.0.clone(), false).expect("create policy"));
+            let terminal = Arc::new(super::TerminalService::new(policy.clone(), HashSet::new()));
+            super::GitService::new(terminal, policy)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1182,6 +1224,26 @@ mod tests {
             "## main...origin/main [ahead 1]\n"
         ));
         assert!(!parse_status_has_upstream("## feature/local-only\n"));
+        assert!(!parse_status_has_upstream("not a status header\n"));
+        assert!(!parse_status_has_upstream(""));
+    }
+
+    #[test]
+    fn parses_normal_unborn_and_missing_status_branches() {
+        assert_eq!(
+            parse_status_branch("## main...origin/main [ahead 1]").as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            parse_status_branch("## No commits yet on trunk").as_deref(),
+            Some("trunk")
+        );
+        assert_eq!(
+            parse_status_branch("## Initial commit on legacy").as_deref(),
+            Some("legacy")
+        );
+        assert_eq!(parse_status_branch("## "), None);
+        assert_eq!(parse_status_branch(" M file.txt"), None);
     }
 
     #[test]
@@ -1209,6 +1271,8 @@ mod tests {
             "file:///tmp/repo",
             "ext::sh -c id",
             "https://token@github.com/example/repo.git",
+            "https://user:password@github.com/example/repo.git",
+            "https://github.com/example/repo.git#branch",
         ] {
             assert!(validate_remote_url(remote).is_err(), "accepted {remote}");
         }
@@ -1244,6 +1308,14 @@ mod tests {
         );
         assert_eq!(commits[1].subject, "Previous commit");
         assert!(!commits[1].is_head);
+        assert!(parse_git_history("\x1e\n\x1e").is_empty());
+        assert!(parse_git_history("hash-only\x1e").is_empty());
+        assert!(parse_git_history("\x1fshort\x1fauthor\x1fdate\x1frefs\x1fsubject\x1e").is_empty());
+        assert!(parse_git_history("hash\x1fshort\x1fauthor\x1fdate\x1frefs\x1f\x1e").is_empty());
+        assert!(parse_git_history("hash\x1f\x1fauthor\x1fdate\x1frefs\x1fsubject\x1e").is_empty());
+        assert!(
+            parse_git_history("hash\x1fshort\x1fauthor\x1fdate\x1fHEAD\x1fsubject\x1e")[0].is_head
+        );
     }
 
     #[test]
@@ -1264,6 +1336,18 @@ mod tests {
             .iter()
             .any(|branch| branch.name == "origin/main" && branch.remote));
         assert!(!branches.iter().any(|branch| branch.name == "origin/HEAD"));
+
+        let edge_cases = parse_git_branches(concat!(
+            "malformed\n",
+            " \x1frefs/heads/empty\x1f\n",
+            " \x1frefs/remotes/origin/main\x1fremotes/origin/main\n",
+            " \x1frefs/remotes/origin/main\x1forigin/main\n",
+            " \x1frefs/remotes/origin/HEAD\x1fHEAD\n",
+            " \x1frefs/remotes/origin/alias\x1forigin/HEAD -> origin/main\n",
+        ));
+        assert_eq!(edge_cases.len(), 1);
+        assert_eq!(edge_cases[0].name, "origin/main");
+        assert!(edge_cases[0].remote);
     }
 
     #[test]
@@ -1307,6 +1391,34 @@ mod tests {
                 track_remote: false,
             }
         );
+        assert_eq!(
+            resolve_switch_target("missing", &branches),
+            GitSwitchTarget {
+                name: "missing".to_string(),
+                track_remote: false,
+            }
+        );
+        assert_eq!(
+            super::branch_remote_name("origin/feature/x"),
+            Some("feature/x")
+        );
+        assert_eq!(super::branch_remote_name("origin/"), None);
+        assert_eq!(super::branch_remote_name("/main"), None);
+        assert_eq!(super::branch_remote_name("main"), None);
+        assert_eq!(
+            resolve_switch_target(
+                "remote-only",
+                &[GitBranchSummary {
+                    name: "remote-only".to_string(),
+                    remote: true,
+                    current: false,
+                }],
+            ),
+            GitSwitchTarget {
+                name: "remote-only".to_string(),
+                track_remote: true,
+            }
+        );
     }
 
     #[test]
@@ -1314,5 +1426,343 @@ mod tests {
         assert!(normalize_git_branch_target("feature/test").is_ok());
         let error = normalize_git_branch_target("--detach").expect_err("reject option-like name");
         assert_eq!(error.code, -32602);
+        for branch in ["", "  ", "bad\0name", "bad\nname", "bad\rname"] {
+            assert!(
+                normalize_git_branch_target(branch).is_err(),
+                "accepted {branch:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validates_repo_relative_paths_and_clone_names() {
+        let repo = Path::new("/bridge/root/repo");
+        for path in ["", "  ", "/absolute", ".", "src/../../outside"] {
+            assert!(
+                resolve_repo_relative_path(path, repo).is_err(),
+                "accepted {path:?}"
+            );
+        }
+        for name in ["", "  ", "/absolute", ".", "..", "nested/repo"] {
+            assert!(
+                resolve_clone_directory_name(name).is_err(),
+                "accepted {name:?}"
+            );
+        }
+        assert_eq!(resolve_clone_directory_name(" repo ").unwrap(), "repo");
+    }
+
+    #[test]
+    fn parses_porcelain_edge_cases() {
+        let entries = parse_porcelain_status_entries(
+            "## main\0\0 X short\0C  copied\0original\0 M changed\0?? untracked\0",
+        )
+        .expect("parse edge cases");
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].path, "short");
+        assert!(!entries[0].staged);
+        assert!(entries[0].unstaged);
+        assert_eq!(entries[1].original_path.as_deref(), Some("original"));
+        assert!(entries[1].staged);
+        assert!(entries[2].unstaged);
+        assert!(entries[3].untracked);
+
+        let missing_rename_source =
+            parse_porcelain_status_entries("R  renamed\0").expect("parse rename without source");
+        assert_eq!(missing_rename_source[0].original_path, None);
+        assert!(parse_porcelain_status_entries("X\0").unwrap().is_empty());
+    }
+
+    #[test]
+    fn selects_git_failure_message_in_priority_order() {
+        assert_eq!(
+            super::git_failure_message("stderr", "stdout", "fallback"),
+            "stderr"
+        );
+        assert_eq!(
+            super::git_failure_message("", "stdout", "fallback"),
+            "stdout"
+        );
+        assert_eq!(super::git_failure_message("", "", "fallback"), "fallback");
+    }
+
+    #[tokio::test]
+    async fn exercises_git_workflow_against_real_repository() {
+        let repo = TestDir::new("workflow");
+        repo.init();
+        let service = repo.service();
+
+        let unborn = service.get_status(None).await.expect("unborn status");
+        assert_eq!(unborn.branch, "main");
+        assert!(unborn.clean);
+        assert_eq!(service.get_branches(None).await.unwrap().current, None);
+
+        fs::write(repo.0.join("tracked.txt"), "first\n").expect("write tracked file");
+        let staged = service
+            .stage_file("tracked.txt", None)
+            .await
+            .expect("stage file");
+        assert!(staged.staged);
+        let initial_diff = service.get_diff(None).await.expect("initial diff");
+        assert!(initial_diff.diff.contains("first"));
+        let committed = service
+            .commit("initial commit".to_string(), None)
+            .await
+            .expect("commit");
+        assert!(committed.committed);
+
+        fs::write(repo.0.join("tracked.txt"), "first\nsecond\n").expect("modify tracked file");
+        fs::write(repo.0.join("new file.txt"), "untracked\n").expect("write untracked file");
+        let dirty = service.get_status(None).await.expect("dirty status");
+        assert!(!dirty.clean);
+        assert_eq!(dirty.total_files, 2);
+        assert!(dirty.files.iter().any(|entry| entry.untracked));
+        let diff = service.get_diff(None).await.expect("working tree diff");
+        assert!(diff.diff.contains("second"));
+        assert!(diff.diff.contains("untracked"));
+        assert!(!diff.truncated);
+
+        assert!(service.stage_all(None).await.expect("stage all").staged);
+        assert!(
+            service
+                .unstage_file("tracked.txt", None)
+                .await
+                .expect("unstage file")
+                .unstaged
+        );
+        assert!(
+            service
+                .unstage_all(None)
+                .await
+                .expect("unstage all")
+                .unstaged
+        );
+        assert!(service.stage_all(None).await.expect("restage all").staged);
+        assert!(
+            service
+                .commit("second commit".to_string(), None)
+                .await
+                .expect("second commit")
+                .committed
+        );
+
+        let history = service.get_history(None, Some(99)).await.expect("history");
+        assert_eq!(history.commits.len(), 2);
+        assert_eq!(history.commits[0].subject, "second commit");
+        assert!(history.commits[0].is_head);
+        assert_eq!(
+            service
+                .get_history(None, Some(0))
+                .await
+                .unwrap()
+                .commits
+                .len(),
+            1
+        );
+
+        repo.git(&["branch", "feature/local"]);
+        let branches = service.get_branches(None).await.expect("branches");
+        assert_eq!(branches.current.as_deref(), Some("main"));
+        assert!(branches
+            .branches
+            .iter()
+            .any(|branch| branch.name == "feature/local"));
+        let switched = service
+            .switch_branch("feature/local".to_string(), None)
+            .await
+            .expect("switch branch");
+        assert!(switched.switched);
+        assert_eq!(
+            service.get_status(None).await.unwrap().branch,
+            "feature/local"
+        );
+
+        assert!(
+            !service
+                .commit("nothing to commit".to_string(), None)
+                .await
+                .expect("empty commit result")
+                .committed
+        );
+        assert!(
+            !service
+                .switch_branch("missing".to_string(), None)
+                .await
+                .expect("missing branch result")
+                .switched
+        );
+    }
+
+    #[tokio::test]
+    async fn validates_repository_safety_and_push_paths() {
+        let repo = TestDir::new("push");
+        repo.init();
+        fs::write(repo.0.join("file.txt"), "content\n").expect("write file");
+        repo.git(&["add", "file.txt"]);
+        repo.git(&["commit", "-m", "initial"]);
+        let service = repo.service();
+
+        let no_remote = service.push(None).await.expect("no remote response");
+        assert!(!no_remote.pushed);
+        assert!(no_remote.stderr.contains("No git remote"));
+
+        repo.git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://127.0.0.1:1/example/repo.git",
+        ]);
+        let failed_push = service
+            .push(None)
+            .await
+            .expect("failed network push response");
+        assert!(!failed_push.pushed);
+        assert!(failed_push.stderr.contains("127.0.0.1"));
+
+        repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        repo.git(&["config", "branch.main.remote", "origin"]);
+        repo.git(&["config", "branch.main.merge", "refs/heads/main"]);
+        let upstream_push = service.push(None).await.expect("upstream push response");
+        assert!(!upstream_push.pushed);
+
+        repo.git(&["remote", "set-url", "origin", "file:///tmp/unsafe"]);
+        let unsafe_remote = service.push(None).await.expect_err("reject unsafe remote");
+        assert_eq!(unsafe_remote.code, -32003);
+
+        repo.git(&["remote", "remove", "origin"]);
+        repo.git(&["config", "core.hooksPath", "/tmp/hooks"]);
+        let unsafe_config = service
+            .stage_all(None)
+            .await
+            .expect_err("reject helper config");
+        assert_eq!(unsafe_config.code, -32003);
+    }
+
+    #[tokio::test]
+    async fn reports_non_repository_failures_and_clone_validation() {
+        let root = TestDir::new("errors");
+        let service = root.service();
+        assert_eq!(service.get_status(None).await.unwrap_err().code, -32000);
+        assert_eq!(
+            service.get_history(None, None).await.unwrap_err().code,
+            -32000
+        );
+        assert_eq!(service.get_branches(None).await.unwrap_err().code, -32000);
+        assert_eq!(service.stage_all(None).await.unwrap_err().code, -32000);
+
+        assert_eq!(
+            service
+                .clone_repo("ssh://example.com/repo", None, "repo")
+                .await
+                .unwrap_err()
+                .code,
+            -32003
+        );
+        fs::create_dir(root.0.join("existing")).expect("create existing destination");
+        assert_eq!(
+            service
+                .clone_repo("https://example.com/repo.git", None, "existing")
+                .await
+                .unwrap_err()
+                .code,
+            -32602
+        );
+        let clone = service
+            .clone_repo("https://127.0.0.1:1/repo.git", None, "new-repo")
+            .await
+            .expect("failed clone response");
+        assert!(!clone.cloned);
+    }
+
+    #[tokio::test]
+    async fn tracks_remote_branch_from_real_repository_refs() {
+        let repo = TestDir::new("remote-branch");
+        repo.init();
+        fs::write(repo.0.join("file.txt"), "content\n").expect("write file");
+        repo.git(&["add", "file.txt"]);
+        repo.git(&["commit", "-m", "initial"]);
+        repo.git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://example.com/example/repo.git",
+        ]);
+        repo.git(&["update-ref", "refs/remotes/origin/feature/remote", "HEAD"]);
+
+        let service = repo.service();
+        let branches = service.get_branches(None).await.expect("remote branches");
+        assert!(branches
+            .branches
+            .iter()
+            .any(|branch| branch.name == "origin/feature/remote" && branch.remote));
+        let switched = service
+            .switch_branch("feature/remote".to_string(), None)
+            .await
+            .expect("track remote branch");
+        assert!(switched.switched);
+        assert_eq!(switched.branch, "feature/remote");
+    }
+
+    #[tokio::test]
+    async fn diff_covers_staged_only_new_repo_and_stderr_error_fallback() {
+        let repo = TestDir::new("diff-staged");
+        repo.init();
+        let service = repo.service();
+
+        // A file staged before any HEAD commit: diff falls back to --cached.
+        fs::write(repo.0.join("staged.txt"), "staged content\n").expect("write staged file");
+        repo.git(&["add", "staged.txt"]);
+        let diff = service.get_diff(None).await.expect("staged-only diff");
+        assert!(diff.diff.contains("staged content") || diff.diff.contains("staged.txt"));
+        assert!(!diff.truncated);
+
+        // Also exercise an unstaged change in the same repo.
+        repo.git(&["commit", "-m", "first"]);
+        fs::write(repo.0.join("staged.txt"), "changed content\n").expect("modify staged file");
+        let working_diff = service.get_diff(None).await.expect("working diff");
+        assert!(working_diff.diff.contains("changed"));
+    }
+
+    #[tokio::test]
+    async fn validates_repository_helpers_rejects_unsafe_config_with_stderr() {
+        let repo = TestDir::new("unsafe-config");
+        repo.init();
+        fs::write(repo.0.join("file.txt"), "x\n").expect("write file");
+        repo.git(&["add", "file.txt"]);
+        repo.git(&["commit", "-m", "initial"]);
+        repo.git(&["config", "core.hooksPath", "/tmp/evil-hooks"]);
+        let service = repo.service();
+
+        let error = service
+            .get_diff(None)
+            .await
+            .expect_err("reject unsafe git configuration");
+        assert_eq!(error.code, -32003);
+        assert!(error.data.as_ref().unwrap()["error"] == "unsafe_git_configuration");
+    }
+
+    #[tokio::test]
+    async fn truncates_status_after_maximum_file_count() {
+        let repo = TestDir::new("status-limit");
+        repo.init();
+        for index in 0..=crate::resource_limits::GIT_STATUS_MAX_FILES {
+            fs::write(repo.0.join(format!("file-{index:04}.txt")), "")
+                .expect("write untracked file");
+        }
+        let status = repo
+            .service()
+            .get_status(None)
+            .await
+            .expect("limited status");
+        assert!(status.truncated);
+        assert_eq!(
+            status.total_files,
+            crate::resource_limits::GIT_STATUS_MAX_FILES + 1
+        );
+        assert_eq!(
+            status.files.len(),
+            crate::resource_limits::GIT_STATUS_MAX_FILES
+        );
+        assert_eq!(status.omitted_files, 1);
     }
 }

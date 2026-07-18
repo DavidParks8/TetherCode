@@ -91,6 +91,7 @@
     "lint": "npm run --workspaces lint",
     "test": "npm run test:scripts && npm run test -w @codex/mac-bridge && npm run test -w apps/mobile && npm run test -w @codex/rust-bridge && npm run test -w @clawdex/cursor-app-server",
     "coverage:check": "npm run test:coverage -w apps/mobile",
+    "coverage:rust": "./scripts/run-rust-coverage.sh",
     "teardown": "./scripts/teardown.sh"
   }
 }

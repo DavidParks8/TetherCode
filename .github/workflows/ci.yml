@@ -129,3 +129,52 @@ jobs:
 
       - name: Boundary integration suite
         run: npm run test:boundary
+
+  rust-bridge-coverage:
+    name: Rust Branch Coverage
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Setup pinned nightly Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly-2026-07-15
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2.83.4
+        with:
+          tool: cargo-llvm-cov@0.8.7
+          fallback: none
+
+      - name: Cache Rust coverage dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            services/rust-bridge -> target
+          key: llvm-cov-branch-nightly-2026-07-15-v1
+          cache-bin: false
+          cache-on-failure: true
+
+      - name: Enforce Rust branch coverage
+        run: npm run coverage:rust
+
+      - name: Upload Rust coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-branch-coverage-macos
+          path: |
+            services/rust-bridge/target/llvm-cov/coverage.json
+            services/rust-bridge/target/llvm-cov/html

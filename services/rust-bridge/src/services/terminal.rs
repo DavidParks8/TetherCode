@@ -56,6 +56,10 @@ impl TerminalExecPolicy {
 }
 
 fn hardened_git_args(args: &[String]) -> Vec<String> {
+    hardened_git_args_with_helper(args, trusted_credential_helper())
+}
+
+fn hardened_git_args_with_helper(args: &[String], helper: Option<String>) -> Vec<String> {
     let mut hardened_args = vec![
         "--no-pager".to_string(),
         "-c".to_string(),
@@ -75,7 +79,7 @@ fn hardened_git_args(args: &[String]) -> Vec<String> {
         "-c".to_string(),
         "credential.useHttpPath=true".to_string(),
     ];
-    if let Some(helper) = trusted_credential_helper() {
+    if let Some(helper) = helper {
         hardened_args.push("-c".to_string());
         hardened_args.push(format!("credential.helper={helper}"));
     }
@@ -300,13 +304,16 @@ impl TerminalService {
             self.saturated.fetch_add(1, Ordering::Relaxed);
         }
         self.waiting.fetch_add(1, Ordering::Relaxed);
+        let waiting = TerminalWaitingGuard {
+            waiting: self.waiting.clone(),
+        };
         let permit = self
             .concurrency_limiter
             .clone()
             .acquire_owned()
             .await
             .map_err(|_| BridgeError::server("terminal concurrency limiter is closed"))?;
-        self.waiting.fetch_sub(1, Ordering::Relaxed);
+        drop(waiting);
         self.running.fetch_add(1, Ordering::Relaxed);
         let _activity = TerminalActivityGuard {
             running: self.running.clone(),
@@ -326,6 +333,8 @@ impl TerminalService {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(unix)]
+        command.process_group(0);
         for name in ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SystemRoot"] {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
@@ -365,6 +374,16 @@ impl TerminalService {
             Err(_) => {
                 timed_out = true;
                 self.timed_out.fetch_add(1, Ordering::Relaxed);
+                #[cfg(unix)]
+                if let Some(pid) = child.id() {
+                    let pid = pid as i32;
+                    // Only signal the group after verifying it is the isolated child group.
+                    if unsafe { libc::getpgid(pid) } == pid {
+                        unsafe {
+                            libc::kill(-pid, libc::SIGKILL);
+                        }
+                    }
+                }
                 let _ = child.kill().await;
                 let _ = child.wait().await;
             }
@@ -375,12 +394,7 @@ impl TerminalService {
 
         let stdout_text = finalize_output(stdout_bytes, stdout_truncated);
         let mut stderr_text = finalize_output(stderr_bytes, stderr_truncated);
-        if let Some(wait_error) = wait_error {
-            if !stderr_text.is_empty() {
-                stderr_text.push('\n');
-            }
-            stderr_text.push_str(&wait_error);
-        }
+        append_wait_error(&mut stderr_text, wait_error.as_deref());
 
         Ok(TerminalExecResponse {
             command: display_command,
@@ -404,6 +418,25 @@ impl TerminalService {
     }
 }
 
+fn append_wait_error(stderr: &mut String, wait_error: Option<&str>) {
+    if let Some(wait_error) = wait_error {
+        if !stderr.is_empty() {
+            stderr.push('\n');
+        }
+        stderr.push_str(wait_error);
+    }
+}
+
+struct TerminalWaitingGuard {
+    waiting: Arc<AtomicU64>,
+}
+
+impl Drop for TerminalWaitingGuard {
+    fn drop(&mut self) {
+        self.waiting.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 struct TerminalActivityGuard {
     running: Arc<AtomicU64>,
     _permit: tokio::sync::OwnedSemaphorePermit,
@@ -416,7 +449,11 @@ impl Drop for TerminalActivityGuard {
 }
 
 fn trusted_credential_helper() -> Option<String> {
-    let path = PathBuf::from(std::env::var_os("HOME")?).join(TRUSTED_GITHUB_CREDENTIALS_PATH);
+    trusted_credential_helper_from_home(std::env::var_os("HOME").map(PathBuf::from))
+}
+
+fn trusted_credential_helper_from_home(home: Option<PathBuf>) -> Option<String> {
+    let path = home?.join(TRUSTED_GITHUB_CREDENTIALS_PATH);
     if !path.is_file() {
         return None;
     }
@@ -466,10 +503,21 @@ fn finalize_output(bytes: Vec<u8>, truncated: bool) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::{finalize_output, hardened_git_args, TerminalExecPolicy, TerminalService};
+    use super::{
+        append_wait_error, finalize_output, hardened_git_args, hardened_git_args_with_helper,
+        read_stream_limited, trusted_credential_helper_from_home, TerminalExecPolicy,
+        TerminalService, DEFAULT_TERMINAL_MAX_CONCURRENT,
+    };
     use crate::{path_policy::PathPolicy, TerminalExecRequest};
-    use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
+    use std::{
+        collections::HashSet,
+        fs,
+        path::{Path, PathBuf},
+        sync::Arc,
+        time::Duration,
+    };
     use uuid::Uuid;
 
     struct TestDir(PathBuf);
@@ -486,6 +534,405 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn service(root: &Path, policies: &[TerminalExecPolicy]) -> TerminalService {
+        let policy = Arc::new(PathPolicy::new(root.to_path_buf(), false).expect("create policy"));
+        TerminalService::new(policy, policies.iter().copied().collect())
+    }
+
+    fn request(command: &str) -> TerminalExecRequest {
+        TerminalExecRequest {
+            command: command.to_string(),
+            cwd: None,
+            timeout_ms: None,
+        }
+    }
+
+    async fn wait_for_status(service: &TerminalService, running: u64, waiting: u64) {
+        for _ in 0..200 {
+            let status = service.status();
+            if status.running == running && status.waiting == waiting {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let status = service.status();
+        panic!(
+            "terminal status did not reach running={running}, waiting={waiting}: running={}, waiting={}",
+            status.running, status.waiting
+        );
+    }
+
+    #[test]
+    fn terminal_policy_names_are_explicit() {
+        assert_eq!(
+            TerminalExecPolicy::parse("pwd"),
+            Some(TerminalExecPolicy::Pwd)
+        );
+        assert_eq!(
+            TerminalExecPolicy::parse("ls"),
+            Some(TerminalExecPolicy::List)
+        );
+        assert_eq!(
+            TerminalExecPolicy::parse("cat"),
+            Some(TerminalExecPolicy::Read)
+        );
+        assert_eq!(TerminalExecPolicy::parse("PWD"), None);
+    }
+
+    #[tokio::test]
+    async fn shell_rejects_malformed_and_denied_commands() {
+        let temp = TestDir::new();
+        let service = service(
+            &temp.0,
+            &[TerminalExecPolicy::Pwd, TerminalExecPolicy::Read],
+        );
+
+        for (command, expected) in [
+            ("   ", "command must not be empty"),
+            ("pwd; cat safe.txt", "disallowed control characters"),
+            ("cat 'unterminated", "invalid command quoting"),
+            ("ls", "Enabled policies: cat, pwd"),
+            ("pwd extra", "pwd does not accept arguments"),
+        ] {
+            let error = service
+                .execute_shell(request(command))
+                .await
+                .expect_err("reject command");
+            assert!(
+                error.message.contains(expected),
+                "{command}: {}",
+                error.message
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn pwd_policy_executes_in_resolved_cwd() {
+        let temp = TestDir::new();
+        let nested = temp.0.join("nested");
+        fs::create_dir(&nested).expect("create nested directory");
+        let service = service(&temp.0, &[TerminalExecPolicy::Pwd]);
+        let response = service
+            .execute_shell(TerminalExecRequest {
+                command: "  pwd  ".to_string(),
+                cwd: Some("nested".to_string()),
+                timeout_ms: Some(1),
+            })
+            .await
+            .expect("execute pwd");
+
+        let canonical = fs::canonicalize(nested).expect("canonical nested directory");
+        assert_eq!(response.command, "pwd");
+        assert_eq!(response.cwd, canonical.to_string_lossy());
+        assert_eq!(response.stdout, canonical.to_string_lossy());
+        assert_eq!(response.code, Some(0));
+        assert!(!response.timed_out);
+        assert_eq!(service.status().running, 0);
+    }
+
+    #[tokio::test]
+    async fn list_policy_accepts_safe_options_and_paths() {
+        let temp = TestDir::new();
+        fs::write(temp.0.join("-dash"), "dash").expect("write dash file");
+        fs::write(temp.0.join("ordinary"), "ordinary").expect("write ordinary file");
+        let service = service(&temp.0, &[TerminalExecPolicy::List]);
+
+        for command in ["ls -", "ls -z"] {
+            assert!(service.execute_shell(request(command)).await.is_err());
+        }
+        assert!(service.execute_shell(request("ls missing")).await.is_err());
+
+        let options_only = service
+            .execute_shell(request("ls -aAlh1"))
+            .await
+            .expect("list with options");
+        assert_eq!(options_only.code, Some(0));
+        assert!(options_only.stdout.contains("ordinary"));
+
+        let dash_path = service
+            .execute_shell(request("ls -1 -- -dash"))
+            .await
+            .expect("list dash path");
+        assert_eq!(
+            dash_path.stdout,
+            fs::canonicalize(temp.0.join("-dash"))
+                .unwrap()
+                .to_string_lossy()
+        );
+    }
+
+    #[tokio::test]
+    async fn read_policy_requires_scoped_files_and_reads_multiple_paths() {
+        let temp = TestDir::new();
+        fs::write(temp.0.join("one.txt"), "one\n").expect("write first file");
+        fs::write(temp.0.join("-two.txt"), "two\n").expect("write dash file");
+        fs::create_dir(temp.0.join("directory")).expect("create directory");
+        let outside = TestDir::new();
+        fs::write(outside.0.join("outside.txt"), "outside").expect("write outside file");
+        let service = service(&temp.0, &[TerminalExecPolicy::Read]);
+
+        for command in ["cat", "cat --", "cat -two.txt", "cat directory"] {
+            assert!(
+                service.execute_shell(request(command)).await.is_err(),
+                "{command}"
+            );
+        }
+        assert!(service
+            .execute_shell(request(&format!(
+                "cat {}",
+                outside.0.join("outside.txt").to_string_lossy()
+            )))
+            .await
+            .is_err());
+
+        let response = service
+            .execute_shell(request("cat one.txt -- -two.txt"))
+            .await
+            .expect_err("a later -- is a path, not an option terminator");
+        assert!(response.message.contains("cat options are not permitted"));
+
+        let response = service
+            .execute_shell(request("cat -- one.txt -two.txt"))
+            .await
+            .expect("read files");
+        assert_eq!(response.stdout, "one\ntwo");
+        assert_eq!(response.stderr, "");
+        assert_eq!(response.code, Some(0));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn binary_runner_reports_success_failure_and_spawn_errors() {
+        let temp = TestDir::new();
+        let service = service(&temp.0, &[]);
+        let args = [
+            "-c".to_string(),
+            "printf 'out\\n'; printf 'err\\n' >&2; exit 7".to_string(),
+        ];
+        let response = service
+            .execute_binary_internal(
+                "/bin/sh",
+                &args,
+                "fixture command".to_string(),
+                temp.0.clone(),
+                None,
+                1024,
+            )
+            .await
+            .expect("execute shell fixture");
+        assert_eq!(response.command, "fixture command");
+        assert_eq!(response.code, Some(7));
+        assert_eq!(response.stdout, "out");
+        assert_eq!(response.stderr, "err");
+
+        let error = service
+            .execute_binary_internal(
+                temp.0.join("missing-command").to_string_lossy().as_ref(),
+                &[],
+                "missing".to_string(),
+                temp.0.clone(),
+                None,
+                1024,
+            )
+            .await
+            .expect_err("report spawn error");
+        assert!(error.message.contains("failed to spawn command"));
+        assert_eq!(service.status().running, 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn binary_runner_truncates_stdout_and_stderr_independently() {
+        let temp = TestDir::new();
+        let service = service(&temp.0, &[]);
+        let response = service
+            .execute_binary_internal(
+                "/bin/sh",
+                &[
+                    "-c".to_string(),
+                    "printf 123456789; printf abcdefghi >&2".to_string(),
+                ],
+                "large output".to_string(),
+                temp.0.clone(),
+                None,
+                5,
+            )
+            .await
+            .expect("execute output fixture");
+
+        assert_eq!(response.stdout, "12345\n[output truncated]");
+        assert_eq!(response.stderr, "abcde\n[output truncated]");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_kills_command_process_group_and_updates_status() {
+        let temp = TestDir::new();
+        let service = service(&temp.0, &[]);
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            service.execute_binary_internal(
+                "/bin/sh",
+                &["-c".to_string(), "sleep 10 & wait".to_string()],
+                "slow command".to_string(),
+                temp.0.clone(),
+                Some(100),
+                1024,
+            ),
+        )
+        .await
+        .expect("timeout cleanup must not wait for descendants")
+        .expect("execute timeout fixture");
+
+        assert!(result.timed_out);
+        assert_eq!(result.code, None);
+        assert_eq!(service.status().timed_out, 1);
+        assert_eq!(service.status().running, 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn concurrency_status_tracks_saturation_and_cancelled_waiters() {
+        let temp = TestDir::new();
+        let hold = temp.0.join("hold");
+        fs::write(&hold, "hold").expect("write hold marker");
+        let service = service(&temp.0, &[]);
+        let mut running = Vec::new();
+
+        for index in 0..DEFAULT_TERMINAL_MAX_CONCURRENT {
+            let service = service.clone();
+            let cwd = temp.0.clone();
+            let hold = hold.clone();
+            running.push(tokio::spawn(async move {
+                service
+                    .execute_binary_internal(
+                        "/bin/sh",
+                        &[
+                            "-c".to_string(),
+                            format!("while test -e '{}'; do sleep .02; done", hold.display()),
+                        ],
+                        format!("holder {index}"),
+                        cwd,
+                        Some(5_000),
+                        1024,
+                    )
+                    .await
+            }));
+        }
+        wait_for_status(&service, DEFAULT_TERMINAL_MAX_CONCURRENT as u64, 0).await;
+
+        let waiting_service = service.clone();
+        let waiting_cwd = temp.0.clone();
+        let waiter = tokio::spawn(async move {
+            waiting_service
+                .execute_binary_internal(
+                    "/bin/sh",
+                    &["-c".to_string(), "printf never".to_string()],
+                    "waiter".to_string(),
+                    waiting_cwd,
+                    None,
+                    1024,
+                )
+                .await
+        });
+        wait_for_status(&service, DEFAULT_TERMINAL_MAX_CONCURRENT as u64, 1).await;
+        waiter.abort();
+        assert!(waiter
+            .await
+            .expect_err("waiter was cancelled")
+            .is_cancelled());
+        wait_for_status(&service, DEFAULT_TERMINAL_MAX_CONCURRENT as u64, 0).await;
+        assert_eq!(service.status().saturation_count, 1);
+
+        fs::remove_file(hold).expect("release commands");
+        for task in running {
+            assert_eq!(
+                task.await
+                    .expect("holder task")
+                    .expect("holder command")
+                    .code,
+                Some(0)
+            );
+        }
+        assert_eq!(service.status().running, 0);
+    }
+
+    #[tokio::test]
+    async fn git_runner_uses_real_git_and_validates_cwd() {
+        let temp = TestDir::new();
+        let service = service(&temp.0, &[]);
+        let success = service
+            .execute_git(&["--version".to_string()], temp.0.clone(), None)
+            .await
+            .expect("run git");
+        assert_eq!(success.command, "git --version");
+        assert_eq!(success.code, Some(0));
+        assert!(success.stdout.starts_with("git version"));
+
+        let failure = service
+            .execute_git(
+                &["rev-parse".to_string(), "--is-inside-work-tree".to_string()],
+                temp.0.clone(),
+                None,
+            )
+            .await
+            .expect("git process errors are responses");
+        assert_ne!(failure.code, Some(0));
+        assert!(!failure.stderr.is_empty());
+
+        let file = temp.0.join("file");
+        fs::write(&file, "not a directory").expect("write cwd fixture");
+        assert!(service.execute_git(&[], file, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn stream_reader_handles_limits_and_eof() {
+        let (bytes, truncated) = read_stream_limited(&b"short"[..], 10).await;
+        assert_eq!(bytes, b"short");
+        assert!(!truncated);
+
+        let (bytes, truncated) = read_stream_limited(&b"long"[..], 0).await;
+        assert!(bytes.is_empty());
+        assert!(truncated);
+    }
+
+    #[test]
+    fn credential_helper_requires_a_file_and_escapes_its_path() {
+        let temp = TestDir::new();
+        assert_eq!(trusted_credential_helper_from_home(None), None);
+        assert_eq!(
+            trusted_credential_helper_from_home(Some(temp.0.clone())),
+            None
+        );
+
+        let quoted_home = temp.0.join("user's-home");
+        let credentials = quoted_home.join(".clawdex/github-credentials");
+        fs::create_dir_all(credentials.parent().unwrap()).expect("create credentials directory");
+        fs::write(&credentials, "fixture").expect("write credentials");
+        let helper = trusted_credential_helper_from_home(Some(quoted_home)).expect("build helper");
+        assert!(helper.contains("user'\\''s-home"));
+
+        let args = hardened_git_args_with_helper(&["status".to_string()], Some(helper.clone()));
+        assert!(args.contains(&format!("credential.helper={helper}")));
+        let args = hardened_git_args_with_helper(&["status".to_string()], None);
+        assert!(!args
+            .iter()
+            .any(|arg| arg.starts_with("credential.helper=store")));
+    }
+
+    #[test]
+    fn wait_errors_are_appended_without_spurious_newlines() {
+        let mut stderr = String::new();
+        append_wait_error(&mut stderr, None);
+        assert_eq!(stderr, "");
+
+        append_wait_error(&mut stderr, Some("wait failed"));
+        assert_eq!(stderr, "wait failed");
+
+        append_wait_error(&mut stderr, Some("again"));
+        assert_eq!(stderr, "wait failed\nagain");
     }
 
     #[cfg(unix)]

@@ -8,6 +8,7 @@ pub(crate) enum RpcRequestParseError {
     Notification,
 }
 
+#[derive(Debug)]
 pub(crate) struct RpcRequest {
     pub(crate) id: Value,
     pub(crate) method: String,
@@ -90,4 +91,59 @@ pub(crate) fn is_forwarded_method(method: &str) -> bool {
             | "turn/start"
             | "turn/steer"
     )
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parses_requests_with_all_id_and_params_shapes() {
+        let request =
+            parse_request(r#"{"id":7,"method":"thread/read","params":{"id":"t"}}"#).unwrap();
+        assert_eq!(request.id, json!(7));
+        assert_eq!(request.method, "thread/read");
+        assert_eq!(request.params, Some(json!({ "id": "t" })));
+
+        let request = parse_request(r#"{"id":null,"method":"account/read"}"#).unwrap();
+        assert_eq!(request.id, Value::Null);
+        assert!(request.params.is_none());
+    }
+
+    #[test]
+    fn classifies_each_parse_failure_without_losing_an_id() {
+        match parse_request("{").unwrap_err() {
+            RpcRequestParseError::InvalidJson(message) => assert!(!message.is_empty()),
+            _ => panic!("expected invalid JSON"),
+        }
+        assert!(matches!(
+            parse_request("[]"),
+            Err(RpcRequestParseError::InvalidPayload)
+        ));
+        match parse_request(r#"{"id":"client"}"#).unwrap_err() {
+            RpcRequestParseError::MissingMethod { id } => assert_eq!(id, json!("client")),
+            _ => panic!("expected missing method"),
+        }
+        match parse_request(r#"{"method":3}"#).unwrap_err() {
+            RpcRequestParseError::MissingMethod { id } => assert_eq!(id, Value::Null),
+            _ => panic!("expected missing method"),
+        }
+        assert!(matches!(
+            parse_request(r#"{"method":"event"}"#),
+            Err(RpcRequestParseError::Notification)
+        ));
+    }
+
+    #[test]
+    fn client_id_recovery_and_forwarding_are_conservative() {
+        assert_eq!(parse_client_request_id(r#"{"id":"abc"}"#), json!("abc"));
+        assert_eq!(parse_client_request_id(r#"{"method":"x"}"#), Value::Null);
+        assert_eq!(parse_client_request_id("not json"), Value::Null);
+        assert!(is_forwarded_method("thread/read"));
+        assert!(is_forwarded_method("turn/start"));
+        assert!(!is_forwarded_method("bridge/status/read"));
+        assert!(!is_forwarded_method("thread/read/extra"));
+    }
 }

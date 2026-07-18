@@ -47,8 +47,9 @@ pub(crate) async fn atomic_write_private(path: &Path, bytes: &[u8]) -> std::io::
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::{atomic_write_private, write_private_new};
+    use super::{atomic_write_private, private_open_options, write_private_new};
     use std::fs;
     use uuid::Uuid;
 
@@ -71,6 +72,30 @@ mod tests {
                 & 0o777,
             0o600
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn truncate_mode_replaces_contents_and_failed_atomic_write_cleans_up() {
+        let dir = std::env::temp_dir().join(format!("clawdex-storage-errors-{}", Uuid::new_v4()));
+        fs::create_dir(&dir).expect("create test directory");
+        let path = dir.join("state");
+        fs::write(&path, b"long contents").expect("seed file");
+        let mut file = private_open_options(false)
+            .open(&path)
+            .await
+            .expect("open truncate mode");
+        use tokio::io::AsyncWriteExt;
+        file.write_all(b"x").await.expect("write replacement");
+        file.sync_all().await.expect("sync replacement");
+        drop(file);
+        assert_eq!(fs::read(&path).unwrap(), b"x");
+
+        let missing_parent = dir.join("missing").join("state");
+        assert!(atomic_write_private(&missing_parent, b"value")
+            .await
+            .is_err());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         let _ = fs::remove_dir_all(dir);
     }
 }

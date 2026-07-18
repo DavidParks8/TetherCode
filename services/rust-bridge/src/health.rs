@@ -88,3 +88,93 @@ pub(crate) fn bridge_status(
         operational,
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::backend_runtime::BackendLifecycleState;
+    use crate::observability::OperationalMetrics;
+
+    fn engine(available: bool) -> BridgeEngineStatus {
+        BridgeEngineStatus {
+            configured: true,
+            lifecycle: if available {
+                BackendLifecycleState::Ready
+            } else {
+                BackendLifecycleState::Degraded
+            },
+            available,
+            restart_count: 0,
+            pending_requests: 0,
+            timed_out_requests: 0,
+            last_error: None,
+        }
+    }
+
+    async fn operational() -> BridgeOperationalStatus {
+        let metrics = OperationalMetrics::new();
+        BridgeOperationalStatus {
+            requests: metrics.request_snapshot(),
+            live_sync: metrics.live_sync_snapshot(),
+            replay: crate::replay::NotificationReplay::new(4, 1024)
+                .status(0)
+                .await,
+            queue: QueueStatus {
+                tracked_threads: 0,
+                depth: 0,
+                busy_threads: 0,
+            },
+            push: metrics.push_snapshot(),
+            terminal: TerminalStatus {
+                max_concurrent: 4,
+                running: 0,
+                waiting: 0,
+                saturation_count: 0,
+                timed_out: 0,
+            },
+            recent_errors: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn status_is_unhealthy_without_available_engines() {
+        let status = bridge_status(
+            Instant::now(),
+            Vec::new(),
+            HashMap::new(),
+            operational().await,
+        );
+        assert_eq!(status.status, "unhealthy");
+        assert_eq!(status.connected_clients, 0);
+    }
+
+    #[tokio::test]
+    async fn status_is_ok_when_every_engine_is_available() {
+        let devices = vec![BridgeDeviceConnection {
+            client_id: 1,
+            client_type: "mobile".to_string(),
+            client_name: "phone".to_string(),
+            connected_at: "then".to_string(),
+            last_seen_at: "now".to_string(),
+        }];
+        let engines = HashMap::from([
+            (BridgeRuntimeEngine::Codex, engine(true)),
+            (BridgeRuntimeEngine::Opencode, engine(true)),
+        ]);
+        let status = bridge_status(Instant::now(), devices, engines, operational().await);
+        assert_eq!(status.status, "ok");
+        assert_eq!(status.connected_clients, 1);
+        assert_eq!(status.devices[0].client_id, 1);
+    }
+
+    #[tokio::test]
+    async fn status_is_degraded_for_mixed_engine_availability() {
+        let engines = HashMap::from([
+            (BridgeRuntimeEngine::Codex, engine(true)),
+            (BridgeRuntimeEngine::Cursor, engine(false)),
+        ]);
+        let status = bridge_status(Instant::now(), Vec::new(), engines, operational().await);
+        assert_eq!(status.status, "degraded");
+    }
+}

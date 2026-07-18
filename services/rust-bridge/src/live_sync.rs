@@ -92,3 +92,55 @@ pub(crate) fn rollout_originator_allowed(originator: Option<&str>) -> bool {
         None => true,
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use std::{env, fs as std_fs};
+    use uuid::Uuid;
+
+    #[test]
+    fn session_root_resolution_covers_preference_and_fallbacks() {
+        let root = env::temp_dir().join(format!("clawdex-live-sync-{}", Uuid::new_v4()));
+        let codex_sessions = root.join("codex").join("sessions");
+        let home_sessions = root.join("home").join(".codex").join("sessions");
+        std_fs::create_dir_all(&codex_sessions).unwrap();
+        std_fs::create_dir_all(&home_sessions).unwrap();
+        let previous_codex = env::var_os("CODEX_HOME");
+        let previous_home = env::var_os("HOME");
+
+        env::set_var("CODEX_HOME", root.join("codex"));
+        env::set_var("HOME", root.join("home"));
+        assert_eq!(resolve_codex_sessions_root(), Some(codex_sessions));
+        env::set_var("CODEX_HOME", root.join("missing"));
+        assert_eq!(resolve_codex_sessions_root(), Some(home_sessions));
+        env::remove_var("CODEX_HOME");
+        env::set_var("HOME", root.join("missing-home"));
+        assert_eq!(resolve_codex_sessions_root(), None);
+        env::remove_var("HOME");
+        assert_eq!(resolve_codex_sessions_root(), None);
+
+        match previous_codex {
+            Some(value) => env::set_var("CODEX_HOME", value),
+            None => env::remove_var("CODEX_HOME"),
+        }
+        match previous_home {
+            Some(value) => env::set_var("HOME", value),
+            None => env::remove_var("HOME"),
+        }
+        let _ = std_fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn discovery_handles_missing_root_and_non_directory_errors() {
+        let root = env::temp_dir().join(format!("clawdex-live-sync-{}", Uuid::new_v4()));
+        assert!(discover_recent_rollout_files(&root)
+            .await
+            .unwrap()
+            .is_empty());
+        std_fs::write(&root, "not a directory").unwrap();
+        assert!(discover_recent_rollout_files(&root).await.is_err());
+        let _ = std_fs::remove_file(root);
+    }
+}

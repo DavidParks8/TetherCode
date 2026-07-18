@@ -312,13 +312,21 @@ pub(crate) fn infer_image_content_type_from_path(path: &Path) -> Option<&'static
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{
-        append_bounded_chunk, build_attachment_file_name, normalize_attachment_kind,
-        private_new_file, secure_directory, MOBILE_ATTACHMENTS_DIR,
+        append_bounded_chunk, build_attachment_file_name, infer_extension_from_mime,
+        infer_image_content_type_from_path, non_empty, normalize_attachment_kind, private_new_file,
+        sanitize_filename, sanitize_path_segment, save_multipart_attachment, secure_directory,
+        MOBILE_ATTACHMENTS_DIR,
     };
     use crate::path_policy::PathPolicy;
     use crate::resource_limits::ATTACHMENT_MAX_BYTES;
+    use axum::{
+        body::Body,
+        extract::{FromRequest, Multipart},
+        http::{header::CONTENT_TYPE, Request},
+    };
     use std::{fs, path::PathBuf};
     use uuid::Uuid;
 
@@ -338,6 +346,42 @@ mod tests {
         }
     }
 
+    async fn multipart(body: Vec<u8>, boundary: &str) -> Multipart {
+        let request = Request::builder()
+            .header(
+                CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+        Multipart::from_request(request, &()).await.unwrap()
+    }
+
+    fn multipart_body(
+        boundary: &str,
+        parts: &[(&str, Option<&str>, Option<&str>, &[u8])],
+    ) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (name, file_name, content_type, value) in parts {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"")
+                    .as_bytes(),
+            );
+            if let Some(file_name) = file_name {
+                body.extend_from_slice(format!("; filename=\"{file_name}\"").as_bytes());
+            }
+            body.extend_from_slice(b"\r\n");
+            if let Some(content_type) = content_type {
+                body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
+            }
+            body.extend_from_slice(b"\r\n");
+            body.extend_from_slice(value);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        body
+    }
+
     #[test]
     fn metadata_normalization_is_safe() {
         assert_eq!(normalize_attachment_kind(Some("image"), None), "image");
@@ -346,6 +390,164 @@ mod tests {
             build_attachment_file_name(Some("../unsafe name"), Some("image/jpeg"), "image"),
             "unsafe_name.jpg"
         );
+    }
+
+    #[test]
+    fn metadata_helpers_cover_defaults_limits_and_supported_types() {
+        assert_eq!(non_empty("  value  ".into()), Some("value".into()));
+        assert_eq!(non_empty("   ".into()), None);
+        assert_eq!(
+            normalize_attachment_kind(Some(" FILE "), Some("image/png")),
+            "file"
+        );
+        assert_eq!(
+            normalize_attachment_kind(Some("other"), Some(" IMAGE/PNG ")),
+            "image"
+        );
+        assert_eq!(normalize_attachment_kind(None, None), "file");
+        assert_eq!(
+            build_attachment_file_name(None, Some("image/png"), "image"),
+            "image.png"
+        );
+        assert_eq!(build_attachment_file_name(None, None, "file"), "attachment");
+        assert_eq!(
+            build_attachment_file_name(Some("report.txt"), Some("application/pdf"), "file"),
+            "report.txt"
+        );
+        assert_eq!(sanitize_filename("///...///"), "attachment");
+        assert_eq!(sanitize_filename(&"a".repeat(100)).len(), 96);
+        assert_eq!(sanitize_path_segment(" __a/b__ "), "a_b");
+        assert_eq!(sanitize_path_segment(&"a".repeat(70)).len(), 64);
+
+        for (mime, extension) in [
+            ("image/jpeg", Some("jpg")),
+            ("image/jpg", Some("jpg")),
+            ("image/png", Some("png")),
+            ("image/webp", Some("webp")),
+            ("image/gif", Some("gif")),
+            ("image/heic", Some("heic")),
+            ("image/heif", Some("heif")),
+            ("text/plain", Some("txt")),
+            ("application/json", Some("json")),
+            ("application/pdf", Some("pdf")),
+            ("unknown", None),
+        ] {
+            assert_eq!(infer_extension_from_mime(Some(mime)), extension);
+        }
+        assert_eq!(infer_extension_from_mime(None), None);
+
+        for (path, mime) in [
+            ("image.PNG", Some("image/png")),
+            ("image.jpg", Some("image/jpeg")),
+            ("image.jpeg", Some("image/jpeg")),
+            ("image.gif", Some("image/gif")),
+            ("image.webp", Some("image/webp")),
+            ("image.heic", Some("image/heic")),
+            ("image.heif", Some("image/heif")),
+            ("image.txt", None),
+            ("image", None),
+        ] {
+            assert_eq!(
+                infer_image_content_type_from_path(PathBuf::from(path).as_path()),
+                mime
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn multipart_upload_saves_normalized_file_in_thread_directory() {
+        let temp = TestDir::new();
+        let root = temp.0.join("root");
+        fs::create_dir(&root).unwrap();
+        let policy = PathPolicy::new(root.clone(), false).unwrap();
+        let boundary = "upload-boundary";
+        let body = multipart_body(
+            boundary,
+            &[
+                ("threadId", None, None, b"codex:thread/one"),
+                ("kind", None, None, b"image"),
+                ("fileName", None, None, b"../safe name"),
+                (
+                    "file",
+                    Some("ignored.bin"),
+                    Some("application/octet-stream"),
+                    b"abc",
+                ),
+                ("mimeType", None, None, b"image/png"),
+            ],
+        );
+        let uploaded = save_multipart_attachment(multipart(body, boundary).await, &policy)
+            .await
+            .unwrap();
+        assert_eq!(uploaded.file_name, "safe_name.png");
+        assert_eq!(uploaded.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(uploaded.size_bytes, 3);
+        assert_eq!(uploaded.kind, "image");
+        assert!(PathBuf::from(&uploaded.path).is_file());
+        assert!(uploaded.path.contains("thread_one"));
+    }
+
+    #[tokio::test]
+    async fn multipart_upload_rejects_missing_empty_duplicate_and_unsupported_fields() {
+        let temp = TestDir::new();
+        let root = temp.0.join("root");
+        fs::create_dir(&root).unwrap();
+        let policy = PathPolicy::new(root.clone(), false).unwrap();
+        let boundary = "reject-boundary";
+
+        let cases = [
+            multipart_body(boundary, &[("kind", None, None, b"file")]),
+            multipart_body(boundary, &[("file", Some("empty"), None, b"")]),
+            multipart_body(
+                boundary,
+                &[
+                    ("file", Some("one"), None, b"one"),
+                    ("file", Some("two"), None, b"two"),
+                ],
+            ),
+            multipart_body(
+                boundary,
+                &[
+                    ("unsupported", None, None, b"value"),
+                    ("file", Some("one"), None, b"one"),
+                ],
+            ),
+        ];
+        for body in cases {
+            assert!(
+                save_multipart_attachment(multipart(body, boundary).await, &policy)
+                    .await
+                    .is_err()
+            );
+        }
+
+        let temporary_dir = root.join(MOBILE_ATTACHMENTS_DIR).join(".tmp");
+        assert!(fs::read_dir(temporary_dir).unwrap().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn multipart_upload_bounds_and_validates_metadata() {
+        let temp = TestDir::new();
+        let root = temp.0.join("root");
+        fs::create_dir(&root).unwrap();
+        let policy = PathPolicy::new(root, false).unwrap();
+        let boundary = "metadata-boundary";
+
+        let too_large = vec![b'a'; 4 * 1024 + 1];
+        for value in [too_large, vec![0xff]] {
+            let body = multipart_body(
+                boundary,
+                &[
+                    ("fileName", None, None, value.as_slice()),
+                    ("file", Some("one"), None, b"one"),
+                ],
+            );
+            assert!(
+                save_multipart_attachment(multipart(body, boundary).await, &policy)
+                    .await
+                    .is_err()
+            );
+        }
     }
 
     #[tokio::test]

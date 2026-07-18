@@ -177,6 +177,7 @@ impl PathPolicy {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{PathKind, PathPolicy};
     use std::{fs, path::PathBuf};
@@ -276,5 +277,82 @@ mod tests {
             .resolve_root_owned_directory(PathBuf::from("attachments/thread").as_path())
             .expect_err("reject root-owned symlink escape");
         assert_eq!(error.code, -32602);
+    }
+
+    #[test]
+    fn constructor_rejects_relative_missing_and_file_roots() {
+        let temp = TestDir::new();
+        assert!(PathPolicy::new(PathBuf::from("relative"), false).is_err());
+        assert!(PathPolicy::new(temp.0.join("missing"), false).is_err());
+
+        let file = temp.0.join("file");
+        fs::write(&file, b"contents").expect("write root file");
+        assert!(PathPolicy::new(file, false).is_err());
+    }
+
+    #[test]
+    fn resolves_default_cwd_and_checks_all_path_kinds() {
+        let temp = TestDir::new();
+        let root = temp.0.join("root");
+        fs::create_dir(&root).expect("create root");
+        let file = root.join("file.txt");
+        fs::write(&file, b"contents").expect("write file");
+        let policy = PathPolicy::new(root.clone(), false).expect("create policy");
+
+        assert_eq!(
+            policy.resolve_cwd(None).unwrap(),
+            fs::canonicalize(&root).unwrap()
+        );
+        assert_eq!(
+            policy.resolve_cwd(Some("  ")).unwrap(),
+            fs::canonicalize(&root).unwrap()
+        );
+        assert_eq!(
+            policy.resolve_existing("file.txt", PathKind::Any).unwrap(),
+            fs::canonicalize(&file).unwrap()
+        );
+        assert!(policy.resolve_existing("file.txt", PathKind::File).is_ok());
+        assert!(policy
+            .resolve_existing("file.txt", PathKind::Directory)
+            .is_err());
+        assert!(policy.resolve_existing(".", PathKind::File).is_err());
+        assert!(policy.resolve_existing(" ", PathKind::Any).is_err());
+        assert!(policy.resolve_existing("missing", PathKind::Any).is_err());
+    }
+
+    #[test]
+    fn root_owned_targets_and_browsing_enforce_boundaries() {
+        let temp = TestDir::new();
+        let root = temp.0.join("root");
+        fs::create_dir(&root).expect("create root");
+        let policy = PathPolicy::new(root.clone(), false).expect("create policy");
+
+        assert!(policy.resolve_root_owned_target(&root).is_err());
+        assert!(policy
+            .resolve_root_owned_target(PathBuf::from("a/../b").as_path())
+            .is_err());
+        assert_eq!(
+            policy
+                .resolve_root_owned_target(PathBuf::from("a/b").as_path())
+                .unwrap(),
+            fs::canonicalize(&root).unwrap().join("a/b")
+        );
+
+        let file = root.join("owned-file");
+        fs::write(&file, b"contents").expect("write owned file");
+        assert!(policy
+            .resolve_root_owned_directory(PathBuf::from("owned-file").as_path())
+            .is_err());
+        assert_eq!(policy.parent_for_browsing(policy.root()), None);
+        assert_eq!(
+            policy.parent_for_browsing(&policy.root().join("child")),
+            Some(policy.root().to_path_buf())
+        );
+
+        let outside_policy = PathPolicy::new(root, true).expect("create outside policy");
+        assert_eq!(
+            outside_policy.parent_for_browsing(outside_policy.root()),
+            outside_policy.root().parent().map(PathBuf::from)
+        );
     }
 }

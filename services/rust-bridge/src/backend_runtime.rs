@@ -79,6 +79,7 @@ pub(crate) fn restart_backoff(restart_count: u32) -> Duration {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

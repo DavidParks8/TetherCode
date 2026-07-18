@@ -450,6 +450,21 @@ realtime synchronization controllers, navigation logic, and pure product helpers
 rendering, styles, generated files, and native projects remain covered by component, build, and
 manual UI checks rather than the logic branch threshold.
 
+### Rust branch coverage
+
+Run `npm run coverage:rust` from the repository root. The first run requires the pinned coverage
+toolchain and reporter:
+
+```bash
+rustup toolchain install nightly-2026-07-15 --profile minimal --component llvm-tools-preview
+cargo install cargo-llvm-cov@0.8.7 --locked
+```
+
+CI and the local command enforce at least 85% branch coverage over all Rust production source.
+Inline `#[cfg(test)]` modules and `src/boundary_integration.rs` are excluded from instrumentation as
+test infrastructure; the production paths they exercise remain included. The command writes JSON
+and HTML reports under `services/rust-bridge/target/llvm-cov/`.
+
 ### Host execution policy
 
 - `bridge/terminal/exec` is deny-all by default. Opt in with `BRIDGE_TERMINAL_EXEC_POLICIES=pwd,ls,cat`; an unset or empty value enables nothing.

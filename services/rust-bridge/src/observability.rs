@@ -338,6 +338,7 @@ fn structured_log(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -373,5 +374,77 @@ mod tests {
         assert_eq!(snapshot.failed, 1);
         assert_eq!(snapshot.timed_out, 1);
         assert_eq!(snapshot.pending, 0);
+    }
+
+    #[test]
+    fn request_failure_and_pending_snapshots_are_distinct() {
+        let metrics = OperationalMetrics::new();
+        let pending = metrics.start_request("thread/read", "codex");
+        let failed = metrics.start_request("turn/start", "codex");
+        metrics.finish_request(&failed, "backend_error");
+
+        let snapshot = metrics.request_snapshot();
+        assert_eq!(snapshot.total, 2);
+        assert_eq!(snapshot.completed, 0);
+        assert_eq!(snapshot.failed, 1);
+        assert_eq!(snapshot.pending, 1);
+        assert!(!pending.request_id.is_empty());
+    }
+
+    #[test]
+    fn live_sync_metrics_track_every_outcome() {
+        let metrics = OperationalMetrics::new();
+        let empty = metrics.live_sync_snapshot();
+        assert!(empty.last_event_at.is_none());
+
+        metrics.live_sync_discovery(4);
+        metrics.live_sync_discovery(2);
+        metrics.live_sync_poll();
+        metrics.live_sync_event();
+        metrics.live_sync_deduplicated();
+        metrics.live_sync_error("rollout_read_failed");
+
+        let snapshot = metrics.live_sync_snapshot();
+        assert_eq!(snapshot.discovery_runs, 2);
+        assert_eq!(snapshot.poll_runs, 1);
+        assert_eq!(snapshot.tracked_files, 2);
+        assert_eq!(snapshot.emitted_events, 1);
+        assert_eq!(snapshot.deduplicated_lines, 1);
+        assert_eq!(snapshot.errors, 1);
+        assert!(snapshot.last_event_at.is_some());
+        let errors = metrics.recent_errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].backend.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn push_metrics_cover_accepted_partial_and_transport_failures() {
+        let metrics = OperationalMetrics::new();
+        let empty = metrics.push_snapshot();
+        assert!(empty.last_outcome.is_none());
+        assert!(empty.last_outcome_at.is_none());
+
+        metrics.push_attempted(5);
+        metrics.push_outcome(2, 0);
+        assert_eq!(
+            metrics.push_snapshot().last_outcome.as_deref(),
+            Some("accepted")
+        );
+        metrics.push_outcome(1, 1);
+        assert_eq!(
+            metrics.push_snapshot().last_outcome.as_deref(),
+            Some("partial_failure")
+        );
+        metrics.push_transport_failure(2);
+        metrics.push_receipt_error();
+
+        let snapshot = metrics.push_snapshot();
+        assert_eq!(snapshot.attempted, 5);
+        assert_eq!(snapshot.accepted, 3);
+        assert_eq!(snapshot.failed, 3);
+        assert_eq!(snapshot.receipt_errors, 1);
+        assert_eq!(snapshot.last_outcome.as_deref(), Some("transport_failure"));
+        assert!(snapshot.last_outcome_at.is_some());
+        assert_eq!(metrics.recent_errors().len(), 1);
     }
 }
