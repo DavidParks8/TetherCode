@@ -1,13 +1,15 @@
 import {
   Agent,
   Cursor,
+  getDefaultSdkStateRoot,
   type AgentOptions,
-  type CursorAgentPlatformOptions,
+  type LocalAgentStore,
   type ModelListItem,
   type Run,
   type SDKAgent,
   type SDKAgentInfo,
 } from '@cursor/sdk';
+import { SqliteLocalAgentStore } from '@cursor/sdk/sqlite';
 
 import type {
   CursorAgentHandle,
@@ -22,6 +24,8 @@ import type {
 } from './types.js';
 
 export class CursorSdkDriver implements CursorDriver {
+  private readonly localStores = new Map<string, Promise<LocalAgentStore>>();
+
   async createAgent(options: {
     agentId?: string;
     cwd: string;
@@ -29,13 +33,14 @@ export class CursorSdkDriver implements CursorDriver {
     name?: string;
     model?: ModelSelection;
   }): Promise<CursorAgentHandle> {
+    const store = await this.localStore(options.cwd);
     return wrapAgent(
       await Agent.create({
         agentId: options.agentId,
         apiKey: options.apiKey,
         name: options.name,
         model: options.model,
-        ...buildLocalCursorAgentOptions({ cwd: options.cwd }),
+        ...buildLocalCursorAgentOptions({ cwd: options.cwd, store }),
       })
     );
   }
@@ -44,13 +49,15 @@ export class CursorSdkDriver implements CursorDriver {
     agentId: string,
     options: { cwd: string; storeCwd?: string; apiKey: string; model?: ModelSelection }
   ): Promise<CursorAgentHandle> {
+    const storeCwd = options.storeCwd ?? options.cwd;
+    const store = await this.localStore(storeCwd);
     return wrapAgent(
       await Agent.resume(agentId, {
         apiKey: options.apiKey,
         model: options.model,
         ...buildLocalCursorAgentOptions({
           cwd: options.cwd,
-          ...(options.storeCwd ? { storeCwd: options.storeCwd } : {}),
+          store,
         }),
       })
     );
@@ -61,9 +68,11 @@ export class CursorSdkDriver implements CursorDriver {
     limit?: number;
     cursor?: string;
   }): Promise<{ items: CursorAgentInfo[]; nextCursor?: string }> {
+    const store = await this.localStore(options.cwd);
     const result = await Agent.list({
       runtime: 'local',
       cwd: options.cwd,
+      store,
       limit: options.limit,
       cursor: options.cursor,
     });
@@ -74,16 +83,21 @@ export class CursorSdkDriver implements CursorDriver {
   }
 
   async getAgent(agentId: string, options: { cwd: string; apiKey?: string }): Promise<CursorAgentInfo> {
-    return toAgentInfo(await Agent.get(agentId, { cwd: options.cwd, apiKey: options.apiKey }));
+    const store = await this.localStore(options.cwd);
+    return toAgentInfo(
+      await Agent.get(agentId, { cwd: options.cwd, store, apiKey: options.apiKey })
+    );
   }
 
   async listMessages(
     agentId: string,
     options: { cwd: string; limit?: number; offset?: number }
   ): Promise<CursorAgentMessage[]> {
+    const store = await this.localStore(options.cwd);
     return (await Agent.messages.list(agentId, {
       runtime: 'local',
       cwd: options.cwd,
+      store,
       limit: options.limit,
       offset: options.offset,
     })) as CursorAgentMessage[];
@@ -93,9 +107,11 @@ export class CursorSdkDriver implements CursorDriver {
     agentId: string,
     options: { cwd: string; limit?: number; cursor?: string }
   ): Promise<{ items: CursorRunInfo[]; nextCursor?: string }> {
+    const store = await this.localStore(options.cwd);
     const result = await Agent.listRuns(agentId, {
       runtime: 'local',
       cwd: options.cwd,
+      store,
       limit: options.limit,
       cursor: options.cursor,
     });
@@ -108,24 +124,41 @@ export class CursorSdkDriver implements CursorDriver {
   async listModels(options: { apiKey: string }): Promise<CursorModelListItem[]> {
     return (await Cursor.models.list({ apiKey: options.apiKey })).map(toModelListItem);
   }
+
+  private localStore(cwd: string): Promise<LocalAgentStore> {
+    const existing = this.localStores.get(cwd);
+    if (existing) {
+      return existing;
+    }
+
+    const store = SqliteLocalAgentStore.open({
+      workspaceRef: cwd,
+      stateRoot: localCursorAgentStoreRoot(cwd),
+    });
+    this.localStores.set(cwd, store);
+    void store.catch(() => {
+      if (this.localStores.get(cwd) === store) {
+        this.localStores.delete(cwd);
+      }
+    });
+    return store;
+  }
 }
 
 export function buildLocalCursorAgentOptions(options: {
   cwd: string;
-  storeCwd?: string;
-}): Pick<AgentOptions, 'local' | 'platform'> {
+  store: LocalAgentStore;
+}): Pick<AgentOptions, 'local'> {
   return {
     local: {
       cwd: options.cwd,
+      store: options.store,
     },
-    platform: localCursorAgentPlatform(options.storeCwd ?? options.cwd),
   };
 }
 
-export function localCursorAgentPlatform(cwd: string): CursorAgentPlatformOptions {
-  return {
-    workspaceRef: cwd,
-  };
+export function localCursorAgentStoreRoot(cwd: string): string {
+  return getDefaultSdkStateRoot(cwd);
 }
 
 function wrapAgent(agent: SDKAgent): CursorAgentHandle {

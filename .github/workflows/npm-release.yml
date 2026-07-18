@@ -42,7 +42,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22.13.1"
           package-manager-cache: false
 
       - name: Resolve release ownership
@@ -129,7 +129,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22.13.1"
           package-manager-cache: false
 
       - name: Setup Rust toolchain
@@ -266,7 +266,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22.13.1"
           # No registry-url: it makes setup-node write an .npmrc with
           # _authToken=${NODE_AUTH_TOKEN}, forcing (empty) token auth and
           # breaking OIDC trusted publishing (npm returns 404 on PUT).

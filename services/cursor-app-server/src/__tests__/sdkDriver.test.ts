@@ -1,30 +1,23 @@
-import { buildLocalCursorAgentOptions } from '../sdkDriver.js';
+import { getDefaultSdkStateRoot, type LocalAgentStore } from '@cursor/sdk';
+
+import { buildLocalCursorAgentOptions, localCursorAgentStoreRoot } from '../sdkDriver.js';
 
 describe('CursorSdkDriver', () => {
+  const store = {} as LocalAgentStore;
+
   it('pins new local agents to the requested Cursor SDK workspace', () => {
-    expect(buildLocalCursorAgentOptions({ cwd: '/workspace/launchkit' })).toEqual({
-      local: {
-        cwd: '/workspace/launchkit',
-      },
-      platform: {
-        workspaceRef: '/workspace/launchkit',
-      },
-    });
+    const options = buildLocalCursorAgentOptions({ cwd: '/workspace/launchkit', store });
+
+    expect(options.local?.cwd).toBe('/workspace/launchkit');
+    expect(options.local?.store).toBe(store);
+    expect(localCursorAgentStoreRoot('/workspace/launchkit')).toBe(
+      getDefaultSdkStateRoot('/workspace/launchkit')
+    );
   });
 
-  it('can resume from an existing SDK store while running in the requested workspace', () => {
-    expect(
-      buildLocalCursorAgentOptions({
-        cwd: '/workspace/launchkit',
-        storeCwd: '/workspace/clawdex-mobile',
-      })
-    ).toEqual({
-      local: {
-        cwd: '/workspace/launchkit',
-      },
-      platform: {
-        workspaceRef: '/workspace/clawdex-mobile',
-      },
-    });
+  it('uses the SDK default SQLite state root for existing workspace stores', () => {
+    expect(localCursorAgentStoreRoot('/workspace/clawdex-mobile')).toBe(
+      getDefaultSdkStateRoot('/workspace/clawdex-mobile')
+    );
   });
 });

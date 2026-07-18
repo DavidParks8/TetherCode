@@ -20,7 +20,7 @@ This project is for trusted/private networking by default. Keep the bridge on a 
 
 Before you start:
 
-- Node.js 20+
+- Node.js 22.13+
 - npm 10+
 - `git`
 - `codex` in `PATH` for the default Codex flow
