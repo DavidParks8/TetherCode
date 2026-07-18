@@ -433,6 +433,15 @@ The checked inventory is `contracts/bridge-rpc/v1/manifest.json`. Major groups a
 
 All of these methods are available only after the WebSocket connection passes bridge authentication.
 
+### Boundary integration tests
+
+Run `npm run test:boundary` from the repository root. The suite starts the production Axum router on
+ephemeral loopback ports and isolated fake stdio app servers. It covers transport authentication and
+origins, reconnect/replay, backend death and degraded status, concurrent queue sends, request timeout
+and disconnect cancellation, path confinement, atomic push-registry persistence, and the shared
+Rust/TypeScript contract fixtures. It does not read bridge runtime state, bind configured bridge ports,
+or stop/restart a developer bridge. CI runs it in the Rust bridge job in addition to the full Rust suite.
+
 ### Host execution policy
 
 - `bridge/terminal/exec` is deny-all by default. Opt in with `BRIDGE_TERMINAL_EXEC_POLICIES=pwd,ls,cat`; an unset or empty value enables nothing.

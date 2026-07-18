@@ -67,6 +67,9 @@ mod rpc;
 mod services;
 mod storage;
 
+#[cfg(all(test, unix))]
+mod boundary_integration;
+
 #[cfg(test)]
 use attachments::{
     build_attachment_file_name, infer_extension_from_mime, normalize_attachment_kind,
@@ -3250,6 +3253,7 @@ struct AppServerBridge {
     lifecycle: Arc<BackendRuntimeStatus>,
     metrics: Arc<OperationalMetrics>,
     timed_out_requests: AtomicU64,
+    request_timeout: Duration,
 }
 
 struct PendingRequest {
@@ -3328,10 +3332,21 @@ impl AppServerBridge {
     }
 
     async fn start_with_command(
+        command: Command,
+        engine: BridgeRuntimeEngine,
+        hub: Arc<ClientHub>,
+        metrics: Arc<OperationalMetrics>,
+    ) -> Result<Arc<Self>, String> {
+        Self::start_with_command_timeout(command, engine, hub, metrics, APP_SERVER_REQUEST_TIMEOUT)
+            .await
+    }
+
+    async fn start_with_command_timeout(
         mut command: Command,
         engine: BridgeRuntimeEngine,
         hub: Arc<ClientHub>,
         metrics: Arc<OperationalMetrics>,
+        request_timeout: Duration,
     ) -> Result<Arc<Self>, String> {
         configure_managed_child_command(&mut command);
 
@@ -3371,6 +3386,7 @@ impl AppServerBridge {
             lifecycle: Arc::new(BackendRuntimeStatus::starting()),
             metrics,
             timed_out_requests: AtomicU64::new(0),
+            request_timeout,
         });
 
         bridge.spawn_stdout_loop(stdout);
@@ -3661,7 +3677,7 @@ impl AppServerBridge {
 
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            sleep(APP_SERVER_REQUEST_TIMEOUT).await;
+            sleep(this.request_timeout).await;
             let pending = this.pending_requests.lock().await.remove(&internal_id);
             if let Some(pending) = pending {
                 this.timed_out_requests.fetch_add(1, Ordering::Relaxed);
@@ -3730,7 +3746,7 @@ impl AppServerBridge {
             ));
         }
 
-        match timeout(Duration::from_secs(20), rx).await {
+        match timeout(self.request_timeout, rx).await {
             Ok(Ok(Ok(result))) => Ok(result),
             Ok(Ok(Err(message))) => Err(message),
             Ok(Err(_)) => Err("internal app-server waiter dropped".to_string()),
@@ -7663,21 +7679,8 @@ async fn main() {
         metrics,
     });
 
-    let app = Router::new()
-        .route("/rpc", get(ws_handler))
-        .route(
-            "/attachments",
-            post(attachment_upload_handler)
-                .layer(DefaultBodyLimit::max(ATTACHMENT_MULTIPART_MAX_BYTES)),
-        )
-        .route("/health", get(health_handler))
-        .route("/status", get(status_handler))
-        .route("/local-image", get(local_image_handler))
-        .with_state(state.clone());
-    let preview_app = Router::new()
-        .route("/", any(preview_entry_handler))
-        .route("/{*path}", any(preview_entry_handler))
-        .with_state(state.clone());
+    let app = build_bridge_router(state.clone());
+    let preview_app = build_preview_router(state.clone());
 
     let bind_addr = format!("{}:{}", config.host, config.port);
     let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
@@ -7751,6 +7754,27 @@ async fn main() {
         eprintln!("server error: {error}");
         std::process::exit(1);
     }
+}
+
+fn build_bridge_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/rpc", get(ws_handler))
+        .route(
+            "/attachments",
+            post(attachment_upload_handler)
+                .layer(DefaultBodyLimit::max(ATTACHMENT_MULTIPART_MAX_BYTES)),
+        )
+        .route("/health", get(health_handler))
+        .route("/status", get(status_handler))
+        .route("/local-image", get(local_image_handler))
+        .with_state(state)
+}
+
+fn build_preview_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/", any(preview_entry_handler))
+        .route("/{*path}", any(preview_entry_handler))
+        .with_state(state)
 }
 
 async fn health_handler(State(state): State<Arc<AppState>>) -> Response {
@@ -14775,6 +14799,7 @@ mod tests {
             lifecycle: Arc::new(BackendRuntimeStatus::starting()),
             metrics: Arc::new(OperationalMetrics::new()),
             timed_out_requests: AtomicU64::new(0),
+            request_timeout: APP_SERVER_REQUEST_TIMEOUT,
         });
         bridge
             .lifecycle
@@ -17932,6 +17957,7 @@ mod tests {
             lifecycle: Arc::new(BackendRuntimeStatus::starting()),
             metrics: Arc::new(OperationalMetrics::new()),
             timed_out_requests: AtomicU64::new(0),
+            request_timeout: APP_SERVER_REQUEST_TIMEOUT,
         });
 
         let (_client_id, mut rx) = add_test_client(&hub).await;

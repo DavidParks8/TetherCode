@@ -8,7 +8,8 @@
     "build": "cargo build --release",
     "typecheck": "cargo check",
     "lint": "cargo fmt --check",
-    "test": "cargo test"
-    ,"test:contract": "cargo test contract_fixture_manifest"
+    "test": "cargo test",
+    "test:boundary": "cargo test --locked boundary_integration -- --test-threads=1",
+    "test:contract": "cargo test contract_fixture_manifest"
   }
 }

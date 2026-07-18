@@ -122,3 +122,6 @@ jobs:
       - name: Rust test
         working-directory: services/rust-bridge
         run: cargo test --locked
+
+      - name: Boundary integration suite
+        run: npm run test:boundary
