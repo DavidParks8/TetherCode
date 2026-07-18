@@ -2,13 +2,16 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+import {
+  extractBridgeHttpRoutes,
+  extractNativeBridgeMethods,
+  readRustBridgeProductionSources,
+} from './rust-bridge-source-inventory.mjs';
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(readFileSync(path.join(root, 'contracts/bridge-rpc/v1/manifest.json'), 'utf8'));
-const rust = [
-  'services/rust-bridge/src/main.rs',
-  'services/rust-bridge/src/rpc.rs',
-  'services/rust-bridge/src/config.rs',
-].map((file) => readFileSync(path.join(root, file), 'utf8')).join('\n');
+const rustSources = readRustBridgeProductionSources(root);
+const rust = [...rustSources.values()].join('\n');
 const client = readFileSync(path.join(root, 'apps/mobile/src/api/client.ts'), 'utf8');
 const ws = readFileSync(path.join(root, 'apps/mobile/src/api/ws.ts'), 'utf8');
 const mobileSource = `${client}\n${ws}`;
@@ -18,6 +21,16 @@ const fail = (message) => {
   throw new Error(`RPC contract validation failed: ${message}`);
 };
 const uniqueSorted = (values) => [...new Set(values)].sort();
+const assertEqualInventory = (name, actual, expected) => {
+  const sortedActual = uniqueSorted(actual);
+  const sortedExpected = uniqueSorted(expected);
+  if (sortedActual.length === 0) fail(`${name} implementation inventory is empty`);
+  if (JSON.stringify(sortedActual) !== JSON.stringify(sortedExpected)) {
+    const missing = sortedExpected.filter((value) => !sortedActual.includes(value));
+    const undeclared = sortedActual.filter((value) => !sortedExpected.includes(value));
+    fail(`${name} inventory mismatch (missing: ${missing.join(', ') || 'none'}; undeclared: ${undeclared.join(', ') || 'none'})`);
+  }
+};
 const assertUniqueSortedStrings = (name, values) => {
   if (!Array.isArray(values) || values.some((value) => typeof value !== 'string' || !value)) {
     fail(`${name} must contain non-empty strings`);
@@ -36,7 +49,8 @@ assertUniqueSortedStrings('notifications', manifest.notifications);
 if (!Array.isArray(manifest.httpEndpoints) || manifest.httpEndpoints.length !== 1) fail('HTTP endpoint inventory');
 const attachmentEndpoint = manifest.httpEndpoints[0];
 if (attachmentEndpoint.method !== 'POST' || attachmentEndpoint.path !== '/attachments' || attachmentEndpoint.auth !== 'bearer') fail('attachment HTTP endpoint');
-if (!rust.includes('"/attachments"') || !client.includes('/attachments')) fail('attachment endpoint implementation');
+const rustHttpRoutes = extractBridgeHttpRoutes(rustSources);
+if (!rustHttpRoutes.includes('/attachments') || !client.includes('/attachments')) fail('attachment endpoint implementation');
 if (!attachments.includes('ATTACHMENT_MAX_BYTES') || attachmentEndpoint.maxFileBytes !== 20971520) fail('attachment endpoint limit');
 
 const rustProtocol = Number(rust.match(/const BRIDGE_PROTOCOL_VERSION: u32 = (\d+);/)?.[1]);
@@ -45,9 +59,7 @@ if (rustProtocol !== manifest.protocolVersion || mobileProtocol !== manifest.pro
   fail('protocol version constants do not match the manifest');
 }
 
-for (const method of manifest.bridgeMethods) {
-  if (!rust.includes(`"${method}"`)) fail(`Rust bridge method missing: ${method}`);
-}
+assertEqualInventory('native bridge methods', extractNativeBridgeMethods(rustSources), manifest.bridgeMethods);
 for (const method of manifest.mobileForwardedMethods) {
   if (!client.includes(`'${method}'`) && !client.includes(`"${method}"`)) {
     fail(`mobile forwarded method missing: ${method}`);

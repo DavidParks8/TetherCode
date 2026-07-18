@@ -2,6 +2,11 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  extractBridgeHttpRoutes,
+  readRustBridgeProductionSources,
+} from './rust-bridge-source-inventory.mjs';
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const fail = (message) => {
@@ -74,11 +79,10 @@ for (const method of ['bridge/push/register', 'bridge/push/unregister', 'bridge/
 }
 if (/content-free/i.test(push)) fail('push guide incorrectly describes payloads as content-free');
 
-const main = readFileSync(path.join(root, 'services/rust-bridge/src/main.rs'), 'utf8');
 const operations = readFileSync(path.join(root, 'docs/setup-and-operations.md'), 'utf8');
-const mainRoutes = [...main.matchAll(/\.route\(\s*"(\/(?:rpc|attachments|health|status|local-image))"/g)]
-  .map((match) => match[1]);
-for (const route of new Set(mainRoutes)) {
+const bridgeRoutes = extractBridgeHttpRoutes(readRustBridgeProductionSources(root));
+if (bridgeRoutes.length === 0) fail('Rust bridge HTTP route inventory is empty');
+for (const route of new Set(bridgeRoutes)) {
   if (!operations.includes(route)) fail(`operations API summary is missing ${route}`);
 }
 
