@@ -54,6 +54,15 @@
       "availableEngines": ["codex"],
       "unifiedChatList": false
     },
+    "operationalStatus": {
+      "requests": { "total": 12, "completed": 10, "failed": 2, "timedOut": 1, "pending": 0 },
+      "liveSync": { "trackedFiles": 3, "emittedEvents": 42, "errors": 0 },
+      "replay": { "entries": 42, "capacity": 2000, "evicted": 0, "clientQueueDrops": 0 },
+      "queue": { "trackedThreads": 2, "depth": 1, "busyThreads": 1 },
+      "push": { "attempted": 4, "accepted": 3, "failed": 1 },
+      "terminal": { "maxConcurrent": 4, "running": 1, "waiting": 0, "saturationCount": 0 },
+      "recentErrors": [{ "method": "thread/read", "backend": "codex", "kind": "request_timeout" }]
+    },
     "notification": {
       "method": "bridge/approval.requested",
       "protocolVersion": 1,

@@ -739,6 +739,7 @@ export interface BridgeStatus {
   connectedClients: number;
   devices: BridgeDeviceConnection[];
   engines: Partial<Record<ChatEngine, BridgeEngineStatus>>;
+  operational: BridgeOperationalStatus;
 }
 
 export interface BridgeEngineStatus {
@@ -747,7 +748,55 @@ export interface BridgeEngineStatus {
   available: boolean;
   restartCount: number;
   pendingRequests: number;
+  timedOutRequests: number;
   lastError: string | null;
+}
+
+export interface BridgeOperationalStatus {
+  requests: { total: number; completed: number; failed: number; timedOut: number; pending: number };
+  liveSync: {
+    discoveryRuns: number;
+    pollRuns: number;
+    trackedFiles: number;
+    emittedEvents: number;
+    deduplicatedLines: number;
+    errors: number;
+    lastEventAt: string | null;
+  };
+  replay: {
+    capacity: number;
+    maxBytes: number;
+    entries: number;
+    bytes: number;
+    earliestEventId: number | null;
+    latestEventId: number | null;
+    droppedOversize: number;
+    evicted: number;
+    clientQueueDrops: number;
+  };
+  queue: { trackedThreads: number; depth: number; busyThreads: number };
+  push: {
+    attempted: number;
+    accepted: number;
+    failed: number;
+    receiptErrors: number;
+    lastOutcomeAt: string | null;
+    lastOutcome: string | null;
+  };
+  terminal: {
+    maxConcurrent: number;
+    running: number;
+    waiting: number;
+    saturationCount: number;
+    timedOut: number;
+  };
+  recentErrors: Array<{
+    at: string;
+    requestId: string | null;
+    method: string | null;
+    backend: string | null;
+    kind: string;
+  }>;
 }
 
 export interface BrowserPreviewSession {

@@ -57,6 +57,7 @@ mod backend_runtime;
 mod config;
 mod health;
 mod live_sync;
+mod observability;
 mod path_policy;
 mod preview;
 mod push;
@@ -82,11 +83,15 @@ use config::{
     DEFAULT_WS_MAX_FRAME_BYTES, DEFAULT_WS_MAX_MESSAGE_BYTES, DEFAULT_WS_PER_CLIENT_IN_FLIGHT,
 };
 use config::{parse_bridge_runtime_engine, BridgeConfig};
-use health::{bridge_status, BridgeDeviceConnection, BridgeEngineStatus, BridgeStatus};
+use health::{
+    bridge_status, BridgeDeviceConnection, BridgeEngineStatus, BridgeOperationalStatus,
+    BridgeStatus, QueueStatus,
+};
 use live_sync::{
     discover_recent_rollout_files, hash_rollout_line, resolve_codex_sessions_root,
     rollout_originator_allowed, should_run_rollout_discovery_tick, ROLLOUT_LIVE_SYNC_MAX_FILE_AGE,
 };
+use observability::{OperationalMetrics, RequestTrace};
 use path_policy::{PathKind, PathPolicy};
 #[cfg(test)]
 use preview::{browser_preview_label_for_port, parse_listening_socket_port};
@@ -429,10 +434,15 @@ struct PushService {
     // Accumulates the in-flight agent reply text per thread (keyed by threadId),
     // so a turn/completed push can include a short preview of what the agent said.
     recent_replies: RwLock<HashMap<String, String>>,
+    metrics: Arc<OperationalMetrics>,
 }
 
 impl PushService {
-    async fn load(workdir: &Path, project_label: String) -> Arc<Self> {
+    async fn load(
+        workdir: &Path,
+        project_label: String,
+        metrics: Arc<OperationalMetrics>,
+    ) -> Arc<Self> {
         let registry = PushRegistryStore::load(workdir).await;
         let access_token = env::var("EXPO_ACCESS_TOKEN")
             .ok()
@@ -444,6 +454,7 @@ impl PushService {
             http: reqwest::Client::new(),
             access_token,
             recent_replies: RwLock::new(HashMap::new()),
+            metrics,
         })
     }
 
@@ -744,6 +755,7 @@ impl PushService {
         targets: Vec<(String, String, String)>,
     ) {
         for chunk in targets.chunks(EXPO_PUSH_BATCH_SIZE) {
+            self.metrics.push_attempted(chunk.len());
             let messages: Vec<Value> = chunk
                 .iter()
                 .map(|(token, profile_id, registration_id)| {
@@ -771,6 +783,7 @@ impl PushService {
                 .post_with_retry(EXPO_PUSH_SEND_ENDPOINT, &Value::Array(messages))
                 .await
             else {
+                self.metrics.push_transport_failure(chunk.len());
                 continue;
             };
 
@@ -779,21 +792,26 @@ impl PushService {
             // re-check later, because DeviceNotRegistered (and APNs/FCM delivery
             // failures) frequently only surface in the receipt, not the ticket.
             let Some(tickets) = payload.get("data").and_then(Value::as_array) else {
+                self.metrics.push_transport_failure(chunk.len());
                 continue;
             };
             let mut stale: Vec<String> = Vec::new();
             let mut pending_receipts: Vec<(String, String)> = Vec::new();
+            let mut accepted = 0usize;
+            let mut failed = chunk.len().saturating_sub(tickets.len());
             for (index, ticket) in tickets.iter().enumerate() {
                 let Some((token, _, _)) = chunk.get(index).cloned() else {
                     continue;
                 };
                 match read_string(ticket.get("status")).as_deref() {
                     Some("ok") => {
+                        accepted += 1;
                         if let Some(receipt_id) = read_string(ticket.get("id")) {
                             pending_receipts.push((receipt_id, token));
                         }
                     }
                     Some("error") => {
+                        failed += 1;
                         let error_kind = ticket
                             .get("details")
                             .and_then(|details| read_string(details.get("error")));
@@ -801,9 +819,10 @@ impl PushService {
                             stale.push(token);
                         }
                     }
-                    _ => {}
+                    _ => failed += 1,
                 }
             }
+            self.metrics.push_outcome(accepted, failed);
             for token in stale {
                 self.unregister_stale_token(&token).await;
             }
@@ -892,6 +911,7 @@ impl PushService {
                 if read_string(receipt.get("status")).as_deref() != Some("error") {
                     continue;
                 }
+                self.metrics.push_receipt_error();
                 let error_kind = receipt
                     .get("details")
                     .and_then(|details| read_string(details.get("error")));
@@ -944,6 +964,7 @@ struct AppState {
     preview: Arc<BrowserPreviewService>,
     push: Arc<PushService>,
     ws_global_in_flight: Arc<Semaphore>,
+    metrics: Arc<OperationalMetrics>,
 }
 
 #[allow(dead_code)]
@@ -1008,7 +1029,16 @@ impl AppState {
             .backend
             .engine_statuses(&self.config.enabled_engines)
             .await;
-        bridge_status(self.started_at, devices, engines)
+        let operational = BridgeOperationalStatus {
+            requests: self.metrics.request_snapshot(),
+            live_sync: self.metrics.live_sync_snapshot(),
+            replay: self.hub.replay_status().await,
+            queue: self.queue.status().await,
+            push: self.metrics.push_snapshot(),
+            terminal: self.terminal.status(),
+            recent_errors: self.metrics.recent_errors(),
+        };
+        bridge_status(self.started_at, devices, engines, operational)
     }
 }
 
@@ -1088,6 +1118,7 @@ struct CursorCredentialStatus {
 async fn start_cursor_app_server_from_config(
     config: &Arc<BridgeConfig>,
     hub: Arc<ClientHub>,
+    metrics: Arc<OperationalMetrics>,
 ) -> Result<Arc<AppServerBridge>, String> {
     let credential = resolve_cursor_runtime_credential()
         .await
@@ -1097,6 +1128,7 @@ async fn start_cursor_app_server_from_config(
         &credential.api_key,
         &config.workdir,
         hub,
+        metrics,
     )
     .await
 }
@@ -1201,6 +1233,7 @@ struct RuntimeBackend {
     codex: Arc<StdRwLock<Option<Arc<AppServerBridge>>>>,
     opencode: Option<Arc<OpencodeBackend>>,
     cursor: Arc<StdRwLock<Option<Arc<AppServerBridge>>>>,
+    metrics: Arc<OperationalMetrics>,
 }
 
 impl RuntimeBackend {
@@ -1215,24 +1248,26 @@ impl RuntimeBackend {
             BridgeRuntimeEngine::Cursor,
         ] {
             let configured = configured_engines.contains(&engine);
-            let (runtime, pending_requests) = match engine {
+            let (runtime, pending_requests, timed_out_requests) = match engine {
                 BridgeRuntimeEngine::Codex => match self.codex_backend() {
                     Some(backend) => (
                         backend.lifecycle.snapshot().await,
                         backend.pending_requests.lock().await.len(),
+                        backend.timed_out_requests.load(Ordering::Relaxed),
                     ),
-                    None => (dead_backend_snapshot("backend not started"), 0),
+                    None => (dead_backend_snapshot("backend not started"), 0, 0),
                 },
                 BridgeRuntimeEngine::Opencode => match self.opencode.as_ref() {
-                    Some(backend) => (backend.lifecycle.snapshot().await, 0),
-                    None => (dead_backend_snapshot("backend not started"), 0),
+                    Some(backend) => (backend.lifecycle.snapshot().await, 0, 0),
+                    None => (dead_backend_snapshot("backend not started"), 0, 0),
                 },
                 BridgeRuntimeEngine::Cursor => match self.cursor_backend() {
                     Some(backend) => (
                         backend.lifecycle.snapshot().await,
                         backend.pending_requests.lock().await.len(),
+                        backend.timed_out_requests.load(Ordering::Relaxed),
                     ),
-                    None => (dead_backend_snapshot("backend not started"), 0),
+                    None => (dead_backend_snapshot("backend not started"), 0, 0),
                 },
             };
             statuses.insert(
@@ -1243,14 +1278,21 @@ impl RuntimeBackend {
                     available: configured && runtime.state == BackendLifecycleState::Ready,
                     restart_count: runtime.restart_count,
                     pending_requests,
-                    last_error: runtime.last_error,
+                    timed_out_requests,
+                    last_error: runtime
+                        .last_error
+                        .map(|_| "backend lifecycle error (details redacted)".to_string()),
                 },
             );
         }
         statuses
     }
 
-    async fn start(config: &Arc<BridgeConfig>, hub: Arc<ClientHub>) -> Result<Arc<Self>, String> {
+    async fn start(
+        config: &Arc<BridgeConfig>,
+        hub: Arc<ClientHub>,
+        metrics: Arc<OperationalMetrics>,
+    ) -> Result<Arc<Self>, String> {
         let preferred_engine = config.active_engine;
         let codex_enabled = config.enabled_engines.contains(&BridgeRuntimeEngine::Codex);
         let opencode_enabled = config
@@ -1267,8 +1309,9 @@ impl RuntimeBackend {
             BridgeRuntimeEngine::Codex => {
                 if codex_enabled {
                     let app_server =
-                        AppServerBridge::start_codex(&config.cli_bin, hub.clone()).await?;
-                    spawn_rollout_live_sync(hub.clone());
+                        AppServerBridge::start_codex(&config.cli_bin, hub.clone(), metrics.clone())
+                            .await?;
+                    spawn_rollout_live_sync(hub.clone(), metrics.clone());
                     Self::store_codex_backend(&codex, app_server);
                 }
 
@@ -1282,7 +1325,7 @@ impl RuntimeBackend {
                 }
 
                 if cursor_enabled {
-                    match start_cursor_app_server_from_config(config, hub.clone()).await {
+                    match start_cursor_app_server_from_config(config, hub.clone(), metrics.clone()).await {
                         Ok(app_server) => Self::store_cursor_backend(&cursor, app_server),
                         Err(error) => eprintln!(
                             "cursor backend unavailable; continuing with selected harnesses only: {error}"
@@ -1300,11 +1343,12 @@ impl RuntimeBackend {
                     match AppServerBridge::start_codex(
                         &config.cli_bin,
                         hub.clone(),
+                        metrics.clone(),
                     )
                     .await
                     {
                         Ok(app_server) => {
-                            spawn_rollout_live_sync(hub.clone());
+                            spawn_rollout_live_sync(hub.clone(), metrics.clone());
                             Self::store_codex_backend(&codex, app_server);
                         }
                         Err(error) => eprintln!(
@@ -1314,7 +1358,7 @@ impl RuntimeBackend {
                 }
 
                 if cursor_enabled {
-                    match start_cursor_app_server_from_config(config, hub.clone()).await {
+                    match start_cursor_app_server_from_config(config, hub.clone(), metrics.clone()).await {
                         Ok(app_server) => Self::store_cursor_backend(&cursor, app_server),
                         Err(error) => eprintln!(
                             "cursor backend unavailable; continuing with selected harnesses only: {error}"
@@ -1325,14 +1369,15 @@ impl RuntimeBackend {
             BridgeRuntimeEngine::Cursor => {
                 if cursor_enabled {
                     let app_server =
-                        start_cursor_app_server_from_config(config, hub.clone()).await?;
+                        start_cursor_app_server_from_config(config, hub.clone(), metrics.clone())
+                            .await?;
                     Self::store_cursor_backend(&cursor, app_server);
                 }
 
                 if codex_enabled {
-                    match AppServerBridge::start_codex(&config.cli_bin, hub.clone()).await {
+                    match AppServerBridge::start_codex(&config.cli_bin, hub.clone(), metrics.clone()).await {
                         Ok(app_server) => {
-                            spawn_rollout_live_sync(hub.clone());
+                            spawn_rollout_live_sync(hub.clone(), metrics.clone());
                             Self::store_codex_backend(&codex, app_server);
                         }
                         Err(error) => eprintln!(
@@ -1357,6 +1402,7 @@ impl RuntimeBackend {
             codex,
             opencode,
             cursor,
+            metrics,
         }))
     }
 
@@ -1395,7 +1441,8 @@ impl RuntimeBackend {
             return Err("codex backend is not enabled".to_string());
         }
 
-        let next_backend = AppServerBridge::start_codex(&config.cli_bin, hub).await?;
+        let next_backend =
+            AppServerBridge::start_codex(&config.cli_bin, hub, self.metrics.clone()).await?;
         let previous_backend = self
             .codex
             .write()
@@ -2002,6 +2049,7 @@ struct ClientHub {
     client_infos: RwLock<HashMap<u64, BridgeDeviceConnection>>,
     notification_replay: NotificationReplay,
     notification_tx: broadcast::Sender<HubNotification>,
+    client_queue_drops: AtomicU64,
 }
 
 #[derive(Debug, Clone)]
@@ -2055,6 +2103,7 @@ impl ClientHub {
             client_infos: RwLock::new(HashMap::new()),
             notification_replay: NotificationReplay::new(replay_capacity, REPLAY_MAX_BYTES),
             notification_tx,
+            client_queue_drops: AtomicU64::new(0),
         }
     }
 
@@ -2183,6 +2232,7 @@ impl ClientHub {
                     }
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         // Keep the client and rely on replay to catch up dropped notifications.
+                        self.client_queue_drops.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -2263,6 +2313,12 @@ impl ClientHub {
     fn latest_event_id(&self) -> u64 {
         self.next_event_id.load(Ordering::Relaxed).saturating_sub(1)
     }
+
+    async fn replay_status(&self) -> replay::ReplayStatus {
+        self.notification_replay
+            .status(self.client_queue_drops.load(Ordering::Relaxed))
+            .await
+    }
 }
 
 impl BridgeQueuedMessageEntry {
@@ -2339,6 +2395,18 @@ impl BridgeQueueService {
         let threads = self.threads.read().await;
         let runtime = threads.get(normalized_thread_id);
         Self::snapshot_for_thread(normalized_thread_id, runtime)
+    }
+
+    async fn status(&self) -> QueueStatus {
+        let threads = self.threads.read().await;
+        QueueStatus {
+            tracked_threads: threads.len(),
+            depth: threads.values().map(|runtime| runtime.items.len()).sum(),
+            busy_threads: threads
+                .values()
+                .filter(|runtime| Self::runtime_is_blocked_or_occupied(runtime))
+                .count(),
+        }
     }
 
     async fn record_completion_disposition(
@@ -3180,6 +3248,8 @@ struct AppServerBridge {
     user_input_counter: AtomicU64,
     hub: Arc<ClientHub>,
     lifecycle: Arc<BackendRuntimeStatus>,
+    metrics: Arc<OperationalMetrics>,
+    timed_out_requests: AtomicU64,
 }
 
 struct PendingRequest {
@@ -3189,6 +3259,7 @@ struct PendingRequest {
     cached_chatgpt_auth: Option<BridgeChatGptAuthBundle>,
     clear_cached_chatgpt_auth_on_success: bool,
     _in_flight_permits: Option<InFlightRequestPermits>,
+    trace: RequestTrace,
 }
 
 struct InFlightRequestPermits {
@@ -3223,7 +3294,11 @@ struct PendingUserInputEntry {
 }
 
 impl AppServerBridge {
-    async fn start_codex(cli_bin: &str, hub: Arc<ClientHub>) -> Result<Arc<Self>, String> {
+    async fn start_codex(
+        cli_bin: &str,
+        hub: Arc<ClientHub>,
+        metrics: Arc<OperationalMetrics>,
+    ) -> Result<Arc<Self>, String> {
         let mut command = Command::new(cli_bin);
         command
             .arg("app-server")
@@ -3232,7 +3307,7 @@ impl AppServerBridge {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        Self::start_with_command(command, BridgeRuntimeEngine::Codex, hub).await
+        Self::start_with_command(command, BridgeRuntimeEngine::Codex, hub, metrics).await
     }
 
     async fn start_cursor(
@@ -3240,6 +3315,7 @@ impl AppServerBridge {
         api_key: &str,
         workdir: &Path,
         hub: Arc<ClientHub>,
+        metrics: Arc<OperationalMetrics>,
     ) -> Result<Arc<Self>, String> {
         let mut command = Command::new(cursor_app_server_bin);
         command
@@ -3248,13 +3324,14 @@ impl AppServerBridge {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        Self::start_with_command(command, BridgeRuntimeEngine::Cursor, hub).await
+        Self::start_with_command(command, BridgeRuntimeEngine::Cursor, hub, metrics).await
     }
 
     async fn start_with_command(
         mut command: Command,
         engine: BridgeRuntimeEngine,
         hub: Arc<ClientHub>,
+        metrics: Arc<OperationalMetrics>,
     ) -> Result<Arc<Self>, String> {
         configure_managed_child_command(&mut command);
 
@@ -3292,6 +3369,8 @@ impl AppServerBridge {
             user_input_counter: AtomicU64::new(1),
             hub,
             lifecycle: Arc::new(BackendRuntimeStatus::starting()),
+            metrics,
+            timed_out_requests: AtomicU64::new(0),
         });
 
         bridge.spawn_stdout_loop(stdout);
@@ -3397,9 +3476,16 @@ impl AppServerBridge {
 
                         match serde_json::from_str::<Value>(trimmed) {
                             Ok(value) => this.handle_incoming(value).await,
-                            Err(error) => {
-                                eprintln!("invalid app-server json: {error} | line={trimmed}");
-                            }
+                            Err(error) => eprintln!(
+                                "{}",
+                                json!({
+                                    "timestamp": now_iso(),
+                                    "level": "warn",
+                                    "event": "backend_protocol_parse_failed",
+                                    "backend": this.engine.as_str(),
+                                    "kind": format!("{:?}", error.classify()),
+                                })
+                            ),
                         }
                     }
                     Ok(None) => break,
@@ -3413,11 +3499,21 @@ impl AppServerBridge {
     }
 
     fn spawn_stderr_loop(self: &Arc<Self>, stderr: tokio::process::ChildStderr) {
+        let backend = self.engine.as_str();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             loop {
                 match lines.next_line().await {
-                    Ok(Some(line)) => eprintln!("[app-server] {line}"),
+                    Ok(Some(_)) => eprintln!(
+                        "{}",
+                        json!({
+                            "timestamp": now_iso(),
+                            "level": "warn",
+                            "event": "backend_stderr_line",
+                            "backend": backend,
+                            "redacted": true,
+                        })
+                    ),
                     Ok(None) => break,
                     Err(error) => {
                         eprintln!("app-server stderr read error: {error}");
@@ -3521,6 +3617,7 @@ impl AppServerBridge {
         permits: Option<InFlightRequestPermits>,
     ) -> Result<(), String> {
         let internal_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let trace = self.metrics.start_request(method, self.engine.as_str());
         let cached_chatgpt_auth =
             extract_chatgpt_auth_tokens_from_account_login_start(params.as_ref());
         let clear_cached_chatgpt_auth_on_success = method == "account/logout";
@@ -3536,6 +3633,7 @@ impl AppServerBridge {
                     cached_chatgpt_auth,
                     clear_cached_chatgpt_auth_on_success,
                     _in_flight_permits: permits,
+                    trace,
                 },
             );
         }
@@ -3549,7 +3647,15 @@ impl AppServerBridge {
         }
 
         if let Err(error) = self.write_json(payload).await {
-            self.pending_requests.lock().await.remove(&internal_id);
+            if let Some(pending) = self.pending_requests.lock().await.remove(&internal_id) {
+                self.metrics.finish_request(&pending.trace, "write_error");
+                self.metrics.record_error(
+                    Some(&pending.trace.request_id),
+                    Some(method),
+                    Some(self.engine.as_str()),
+                    "backend_write_error",
+                );
+            }
             return Err(format!("failed forwarding request to app-server: {error}"));
         }
 
@@ -3558,6 +3664,8 @@ impl AppServerBridge {
             sleep(APP_SERVER_REQUEST_TIMEOUT).await;
             let pending = this.pending_requests.lock().await.remove(&internal_id);
             if let Some(pending) = pending {
+                this.timed_out_requests.fetch_add(1, Ordering::Relaxed);
+                this.metrics.time_out_request(&pending.trace);
                 this.hub
                     .send_json(
                         pending.client_id,
@@ -4061,6 +4169,22 @@ impl AppServerBridge {
                 cache_bridge_chatgpt_auth(auth);
             }
         }
+        self.metrics.finish_request(
+            &pending.trace,
+            if object.get("error").is_none() {
+                "ok"
+            } else {
+                "backend_error"
+            },
+        );
+        if object.get("error").is_some() {
+            self.metrics.record_error(
+                Some(&pending.trace.request_id),
+                Some(&pending.method),
+                Some(self.engine.as_str()),
+                "backend_error",
+            );
+        }
 
         let client_payload = if let Some(error) = object.get("error") {
             json!({
@@ -4229,7 +4353,16 @@ impl OpencodeBackend {
             let mut lines = BufReader::new(stdout).lines();
             loop {
                 match lines.next_line().await {
-                    Ok(Some(line)) => eprintln!("[opencode] {line}"),
+                    Ok(Some(_)) => eprintln!(
+                        "{}",
+                        json!({
+                            "timestamp": now_iso(),
+                            "level": "info",
+                            "event": "backend_stdout_line",
+                            "backend": "opencode",
+                            "redacted": true,
+                        })
+                    ),
                     Ok(None) => break,
                     Err(error) => {
                         eprintln!("opencode stdout read error: {error}");
@@ -4245,7 +4378,16 @@ impl OpencodeBackend {
             let mut lines = BufReader::new(stderr).lines();
             loop {
                 match lines.next_line().await {
-                    Ok(Some(line)) => eprintln!("[opencode] {line}"),
+                    Ok(Some(_)) => eprintln!(
+                        "{}",
+                        json!({
+                            "timestamp": now_iso(),
+                            "level": "warn",
+                            "event": "backend_stderr_line",
+                            "backend": "opencode",
+                            "redacted": true,
+                        })
+                    ),
                     Ok(None) => break,
                     Err(error) => {
                         eprintln!("opencode stderr read error: {error}");
@@ -5817,11 +5959,9 @@ impl OpencodeBackend {
             .map_err(|error| format!("opencode request {path} failed: {error}"))?;
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
             return Err(format!(
-                "opencode request {path} failed with {}: {}",
-                status.as_u16(),
-                body.trim()
+                "opencode request {path} failed with HTTP {} (response body redacted)",
+                status.as_u16()
             ));
         }
         if status == reqwest::StatusCode::NO_CONTENT {
@@ -5888,7 +6028,11 @@ impl RolloutTrackedFile {
         })
     }
 
-    async fn poll(&mut self, hub: &Arc<ClientHub>) -> Result<(), std::io::Error> {
+    async fn poll(
+        &mut self,
+        hub: &Arc<ClientHub>,
+        metrics: &Arc<OperationalMetrics>,
+    ) -> Result<(), std::io::Error> {
         let mut file = match fs::File::open(&self.path).await {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -5952,6 +6096,7 @@ impl RolloutTrackedFile {
 
             let line_hash = hash_rollout_line(trimmed);
             if !self.remember_line_hash(line_hash) {
+                metrics.live_sync_deduplicated();
                 continue;
             }
 
@@ -5963,6 +6108,7 @@ impl RolloutTrackedFile {
                         .await;
                 }
                 hub.broadcast_notification(&method, params).await;
+                metrics.live_sync_event();
             }
         }
 
@@ -6027,7 +6173,7 @@ impl RolloutTrackedFile {
     }
 }
 
-fn spawn_rollout_live_sync(hub: Arc<ClientHub>) {
+fn spawn_rollout_live_sync(hub: Arc<ClientHub>, metrics: Arc<OperationalMetrics>) {
     tokio::spawn(async move {
         let Some(sessions_root) = resolve_codex_sessions_root() else {
             return;
@@ -6049,11 +6195,16 @@ fn spawn_rollout_live_sync(hub: Arc<ClientHub>) {
                 if let Err(error) =
                     rollout_live_sync_discover_files(&sessions_root, &mut state).await
                 {
+                    metrics.live_sync_error("live_sync_discovery_error");
                     eprintln!("rollout live sync discovery failed: {error}");
+                } else {
+                    metrics.live_sync_discovery(state.files.len());
                 }
             }
 
-            if let Err(error) = rollout_live_sync_poll_files(&hub, &mut state).await {
+            metrics.live_sync_poll();
+            if let Err(error) = rollout_live_sync_poll_files(&hub, &mut state, &metrics).await {
+                metrics.live_sync_error("live_sync_poll_error");
                 eprintln!("rollout live sync poll failed: {error}");
             }
         }
@@ -6092,6 +6243,7 @@ async fn rollout_live_sync_discover_files(
 async fn rollout_live_sync_poll_files(
     hub: &Arc<ClientHub>,
     state: &mut RolloutLiveSyncState,
+    metrics: &Arc<OperationalMetrics>,
 ) -> Result<(), std::io::Error> {
     let tracked_paths = state.files.keys().cloned().collect::<Vec<_>>();
     let mut removed_paths = Vec::new();
@@ -6101,7 +6253,7 @@ async fn rollout_live_sync_poll_files(
             continue;
         };
 
-        match tracked.poll(hub).await {
+        match tracked.poll(hub, metrics).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 removed_paths.push(path.clone());
@@ -7451,8 +7603,9 @@ async fn main() {
             "query-token auth is enabled (BRIDGE_ALLOW_QUERY_TOKEN_AUTH=true); prefer Authorization headers instead"
         );
     }
+    let metrics = Arc::new(OperationalMetrics::new());
     let hub = Arc::new(ClientHub::new());
-    let backend = match RuntimeBackend::start(&config, hub.clone()).await {
+    let backend = match RuntimeBackend::start(&config, hub.clone(), metrics.clone()).await {
         Ok(client) => client,
         Err(error) => {
             eprintln!("{error}");
@@ -7484,7 +7637,7 @@ async fn main() {
         .map(|name| name.to_string_lossy().to_string())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "Clawdex".to_string());
-    let push = PushService::load(&config.workdir, project_label).await;
+    let push = PushService::load(&config.workdir, project_label, metrics.clone()).await;
     push.spawn_event_loop_with_queue(&hub, backend.clone(), Some(queue.clone()));
 
     let state = Arc::new(AppState {
@@ -7507,6 +7660,7 @@ async fn main() {
         preview,
         push,
         ws_global_in_flight: Arc::new(Semaphore::new(config.ws_limits.global_in_flight)),
+        metrics,
     });
 
     let app = Router::new()
@@ -7606,7 +7760,15 @@ async fn health_handler(State(state): State<Arc<AppState>>) -> Response {
     } else {
         StatusCode::OK
     };
-    (http_status, Json(status)).into_response()
+    (
+        http_status,
+        Json(json!({
+            "status": status.status,
+            "at": now_iso(),
+            "uptimeSec": state.started_at.elapsed().as_secs(),
+        })),
+    )
+        .into_response()
 }
 
 async fn status_handler(
@@ -8508,14 +8670,23 @@ async fn handle_client_message(
     let params = request.params;
 
     if method.starts_with("bridge/") {
+        let trace = state.metrics.start_request(&method, "bridge");
         match handle_bridge_method(&method, params, state, client_id).await {
             Ok(result) => {
+                state.metrics.finish_request(&trace, "ok");
                 state
                     .hub
                     .send_json(client_id, json!({ "id": id, "result": result }))
                     .await;
             }
             Err(error) => {
+                state.metrics.finish_request(&trace, "bridge_error");
+                state.metrics.record_error(
+                    Some(&trace.request_id),
+                    Some(&method),
+                    Some("bridge"),
+                    "bridge_error",
+                );
                 send_rpc_error(state, client_id, id, error.code, &error.message, error.data).await;
             }
         }
@@ -14173,7 +14344,12 @@ mod tests {
     async fn take_reply_preview_uses_last_nonempty_line() {
         let dir = std::env::temp_dir().join(format!("clawdex-preview-{}", std::process::id()));
         let _ = tokio::fs::create_dir_all(&dir).await;
-        let service = PushService::load(&dir, "demo".to_string()).await;
+        let service = PushService::load(
+            &dir,
+            "demo".to_string(),
+            Arc::new(OperationalMetrics::new()),
+        )
+        .await;
         service
             .accumulate_reply(
                 "item/agentMessage/delta",
@@ -14191,7 +14367,12 @@ mod tests {
     async fn turn_completed_drains_reply_buffer_with_no_devices() {
         let dir = std::env::temp_dir().join(format!("clawdex-drain-{}", std::process::id()));
         let _ = tokio::fs::create_dir_all(&dir).await;
-        let service = PushService::load(&dir, "demo".to_string()).await;
+        let service = PushService::load(
+            &dir,
+            "demo".to_string(),
+            Arc::new(OperationalMetrics::new()),
+        )
+        .await;
         // Stream a reply with no devices registered.
         service
             .accumulate_reply(
@@ -14305,6 +14486,7 @@ mod tests {
             codex: Arc::new(StdRwLock::new(None)),
             opencode: Some(opencode),
             cursor: Arc::new(StdRwLock::new(None)),
+            metrics: Arc::new(OperationalMetrics::new()),
         });
         let queue = BridgeQueueService::new(backend.clone(), hub);
         {
@@ -14366,7 +14548,12 @@ mod tests {
     async fn queued_continuation_suppresses_push_and_drains_predecessor_preview() {
         let dir = std::env::temp_dir().join(format!("clawdex-queued-push-{}", std::process::id()));
         let _ = tokio::fs::create_dir_all(&dir).await;
-        let service = PushService::load(&dir, "demo".to_string()).await;
+        let service = PushService::load(
+            &dir,
+            "demo".to_string(),
+            Arc::new(OperationalMetrics::new()),
+        )
+        .await;
         service
             .register(
                 "profile-queued".to_string(),
@@ -14459,7 +14646,12 @@ mod tests {
     async fn push_service_registers_dedupes_and_unregisters() {
         let dir = std::env::temp_dir().join(format!("clawdex-push-test-{}", std::process::id()));
         let _ = tokio::fs::create_dir_all(&dir).await;
-        let service = PushService::load(&dir, "demo".to_string()).await;
+        let service = PushService::load(
+            &dir,
+            "demo".to_string(),
+            Arc::new(OperationalMetrics::new()),
+        )
+        .await;
 
         let prefs = PushEventPreferences::default();
         let count = service
@@ -14581,6 +14773,8 @@ mod tests {
             user_input_counter: AtomicU64::new(1),
             hub,
             lifecycle: Arc::new(BackendRuntimeStatus::starting()),
+            metrics: Arc::new(OperationalMetrics::new()),
+            timed_out_requests: AtomicU64::new(0),
         });
         bridge
             .lifecycle
@@ -14680,6 +14874,7 @@ mod tests {
             codex,
             opencode,
             cursor: Arc::new(StdRwLock::new(None)),
+            metrics: Arc::new(OperationalMetrics::new()),
         })
     }
 
@@ -14733,7 +14928,8 @@ mod tests {
             config.connect_url.clone(),
         ));
         let queue = BridgeQueueService::new(backend.clone(), hub.clone());
-        let push = PushService::load(&config.workdir, "Clawdex".to_string()).await;
+        let metrics = Arc::new(OperationalMetrics::new());
+        let push = PushService::load(&config.workdir, "Clawdex".to_string(), metrics.clone()).await;
 
         Arc::new(AppState {
             ws_global_in_flight: Arc::new(Semaphore::new(config.ws_limits.global_in_flight)),
@@ -14755,6 +14951,7 @@ mod tests {
             updater,
             preview,
             push,
+            metrics,
         })
     }
 
@@ -16004,7 +16201,7 @@ mod tests {
             status.engines[&BridgeRuntimeEngine::Opencode]
                 .last_error
                 .as_deref(),
-            Some("test exit")
+            Some("backend lifecycle error (details redacted)")
         );
         let capabilities = state.bridge_capabilities();
         assert_eq!(
@@ -17733,6 +17930,8 @@ mod tests {
             user_input_counter: AtomicU64::new(1),
             hub: hub.clone(),
             lifecycle: Arc::new(BackendRuntimeStatus::starting()),
+            metrics: Arc::new(OperationalMetrics::new()),
+            timed_out_requests: AtomicU64::new(0),
         });
 
         let (_client_id, mut rx) = add_test_client(&hub).await;

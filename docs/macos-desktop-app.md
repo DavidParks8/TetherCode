@@ -30,7 +30,7 @@ The npm package stays useful for source checkout development and non-Mac operato
 
 ## Status Contract
 
-The bridge exposes an authenticated `GET /status` endpoint and matching `bridge/status/read` RPC. The response is intentionally small:
+The bridge exposes an authenticated `GET /status` endpoint and matching `bridge/status/read` RPC. Alongside connection and engine lifecycle state, the response includes a bounded `operational` snapshot documented in `docs/setup-and-operations.md`.
 
 ```json
 {

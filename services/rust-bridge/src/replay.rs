@@ -1,5 +1,9 @@
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -14,6 +18,22 @@ pub(crate) struct NotificationReplay {
     capacity: usize,
     max_bytes: usize,
     entries: RwLock<VecDeque<ReplayableNotification>>,
+    dropped_oversize: AtomicU64,
+    evicted: AtomicU64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplayStatus {
+    pub(crate) capacity: usize,
+    pub(crate) max_bytes: usize,
+    pub(crate) entries: usize,
+    pub(crate) bytes: usize,
+    pub(crate) earliest_event_id: Option<u64>,
+    pub(crate) latest_event_id: Option<u64>,
+    pub(crate) dropped_oversize: u64,
+    pub(crate) evicted: u64,
+    pub(crate) client_queue_drops: u64,
 }
 
 impl NotificationReplay {
@@ -22,11 +42,14 @@ impl NotificationReplay {
             capacity,
             max_bytes,
             entries: RwLock::new(VecDeque::new()),
+            dropped_oversize: AtomicU64::new(0),
+            evicted: AtomicU64::new(0),
         }
     }
 
     pub(crate) async fn push(&self, event_id: u64, payload: Value, bytes: usize) {
         if self.capacity == 0 || bytes > self.max_bytes {
+            self.dropped_oversize.fetch_add(1, Ordering::Relaxed);
             return;
         }
 
@@ -40,6 +63,7 @@ impl NotificationReplay {
         while entries.len() > self.capacity || total_bytes > self.max_bytes {
             if let Some(removed) = entries.pop_front() {
                 total_bytes = total_bytes.saturating_sub(removed.bytes);
+                self.evicted.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -80,6 +104,21 @@ impl NotificationReplay {
             .front()
             .map(|entry| entry.event_id)
     }
+
+    pub(crate) async fn status(&self, client_queue_drops: u64) -> ReplayStatus {
+        let entries = self.entries.read().await;
+        ReplayStatus {
+            capacity: self.capacity,
+            max_bytes: self.max_bytes,
+            entries: entries.len(),
+            bytes: entries.iter().map(|entry| entry.bytes).sum(),
+            earliest_event_id: entries.front().map(|entry| entry.event_id),
+            latest_event_id: entries.back().map(|entry| entry.event_id),
+            dropped_oversize: self.dropped_oversize.load(Ordering::Relaxed),
+            evicted: self.evicted.load(Ordering::Relaxed),
+            client_queue_drops,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -108,5 +147,6 @@ mod tests {
         let replay = NotificationReplay::new(10, 4);
         replay.push(1, json!({ "id": 1 }), 5).await;
         assert_eq!(replay.earliest_event_id().await, None);
+        assert_eq!(replay.status(0).await.dropped_oversize, 1);
     }
 }

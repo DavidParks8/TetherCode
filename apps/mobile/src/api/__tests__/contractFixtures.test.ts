@@ -13,6 +13,11 @@ interface ContractManifest {
   errors: Array<{ code: number; name: string }>;
   fixtures: {
     capabilities: { protocolVersion: number; streamId: string };
+    operationalStatus: {
+      requests: { timedOut: number };
+      replay: { entries: number; capacity: number; clientQueueDrops: number };
+      recentErrors: Array<{ method: string; backend: string; kind: string }>;
+    };
     notification: { method: string; protocolVersion: number; eventId: number };
     overloadError: { error: { code: number; data: { retryable: boolean } } };
     resourceLimitError: { error: { code: number; data: { resource: string; limit: number; actual: number } } };
@@ -38,6 +43,14 @@ describe('bridge RPC contract fixtures', () => {
     expect(manifest.fixtureFormatVersion).toBe(1);
     expect(manifest.protocolVersion).toBe(HostBridgeWsClient.PROTOCOL_VERSION);
     expect(manifest.fixtures.capabilities.protocolVersion).toBe(manifest.protocolVersion);
+    expect(manifest.fixtures.operationalStatus.replay.entries).toBeLessThanOrEqual(
+      manifest.fixtures.operationalStatus.replay.capacity
+    );
+    expect(manifest.fixtures.operationalStatus).toMatchObject({
+      requests: { timedOut: 1 },
+      replay: { clientQueueDrops: 0 },
+      recentErrors: [{ method: 'thread/read', backend: 'codex', kind: 'request_timeout' }],
+    });
     expect(manifest.fixtures.notification).toMatchObject({
       protocolVersion: manifest.protocolVersion,
       eventId: 7,

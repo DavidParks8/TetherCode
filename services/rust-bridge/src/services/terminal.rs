@@ -2,10 +2,14 @@ use std::{
     collections::HashSet,
     path::PathBuf,
     process::Stdio,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
+use serde::Serialize;
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::Command,
@@ -84,6 +88,20 @@ pub(crate) struct TerminalService {
     path_policy: Arc<PathPolicy>,
     policies: HashSet<TerminalExecPolicy>,
     concurrency_limiter: Arc<Semaphore>,
+    running: Arc<AtomicU64>,
+    waiting: Arc<AtomicU64>,
+    saturated: Arc<AtomicU64>,
+    timed_out: Arc<AtomicU64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TerminalStatus {
+    pub(crate) max_concurrent: usize,
+    pub(crate) running: u64,
+    pub(crate) waiting: u64,
+    pub(crate) saturation_count: u64,
+    pub(crate) timed_out: u64,
 }
 
 impl TerminalService {
@@ -92,6 +110,10 @@ impl TerminalService {
             path_policy,
             policies,
             concurrency_limiter: Arc::new(Semaphore::new(DEFAULT_TERMINAL_MAX_CONCURRENT)),
+            running: Arc::new(AtomicU64::new(0)),
+            waiting: Arc::new(AtomicU64::new(0)),
+            saturated: Arc::new(AtomicU64::new(0)),
+            timed_out: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -274,12 +296,22 @@ impl TerminalService {
         timeout_ms: Option<u64>,
         max_output_bytes: usize,
     ) -> Result<TerminalExecResponse, BridgeError> {
-        let _permit = self
+        if self.concurrency_limiter.available_permits() == 0 {
+            self.saturated.fetch_add(1, Ordering::Relaxed);
+        }
+        self.waiting.fetch_add(1, Ordering::Relaxed);
+        let permit = self
             .concurrency_limiter
             .clone()
             .acquire_owned()
             .await
             .map_err(|_| BridgeError::server("terminal concurrency limiter is closed"))?;
+        self.waiting.fetch_sub(1, Ordering::Relaxed);
+        self.running.fetch_add(1, Ordering::Relaxed);
+        let _activity = TerminalActivityGuard {
+            running: self.running.clone(),
+            _permit: permit,
+        };
         let timeout_ms = timeout_ms.unwrap_or(30_000).clamp(100, 120_000);
         let started_at = Instant::now();
 
@@ -332,6 +364,7 @@ impl TerminalService {
             }
             Err(_) => {
                 timed_out = true;
+                self.timed_out.fetch_add(1, Ordering::Relaxed);
                 let _ = child.kill().await;
                 let _ = child.wait().await;
             }
@@ -358,6 +391,27 @@ impl TerminalService {
             timed_out,
             duration_ms: started_at.elapsed().as_millis() as u64,
         })
+    }
+
+    pub(crate) fn status(&self) -> TerminalStatus {
+        TerminalStatus {
+            max_concurrent: DEFAULT_TERMINAL_MAX_CONCURRENT,
+            running: self.running.load(Ordering::Relaxed),
+            waiting: self.waiting.load(Ordering::Relaxed),
+            saturation_count: self.saturated.load(Ordering::Relaxed),
+            timed_out: self.timed_out.load(Ordering::Relaxed),
+        }
+    }
+}
+
+struct TerminalActivityGuard {
+    running: Arc<AtomicU64>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl Drop for TerminalActivityGuard {
+    fn drop(&mut self) {
+        self.running.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

@@ -71,6 +71,8 @@ for (const { code, name } of manifest.errors) {
 
 const fixtures = manifest.fixtures;
 if (fixtures.capabilities.protocolVersion !== manifest.protocolVersion) fail('capability fixture version');
+if (fixtures.operationalStatus.replay.entries > fixtures.operationalStatus.replay.capacity) fail('operational replay bounds');
+if (!fixtures.operationalStatus.recentErrors.every((error) => error.method && error.backend && error.kind)) fail('operational error fixture');
 if (fixtures.notification.protocolVersion !== manifest.protocolVersion) fail('notification fixture version');
 if (!manifest.notifications.includes(fixtures.notification.method)) fail('notification fixture method');
 if (!manifest.errors.some((entry) => entry.code === fixtures.overloadError.error.code)) fail('error fixture code');

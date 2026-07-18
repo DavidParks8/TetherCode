@@ -35,6 +35,7 @@ import type {
   ApprovalMode,
   BridgeCapabilities,
   BridgeRuntimeInfo,
+  BridgeStatus,
   ChatEngine,
   CursorCredentialStatus,
   PlanType,
@@ -229,6 +230,9 @@ export function SettingsScreen({
   const [rateLimitsError, setRateLimitsError] = useState<string | null>(null);
   const [bridgeCapabilities, setBridgeCapabilities] = useState<BridgeCapabilities | null>(null);
   const [bridgeRuntime, setBridgeRuntime] = useState<BridgeRuntimeInfo | null>(null);
+  const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus | null>(null);
+  const [bridgeStatusLoading, setBridgeStatusLoading] = useState(false);
+  const [bridgeStatusError, setBridgeStatusError] = useState<string | null>(null);
   const [bridgeRuntimeLoading, setBridgeRuntimeLoading] = useState(false);
   const [bridgeRuntimeError, setBridgeRuntimeError] = useState<string | null>(null);
   const [cursorCredentials, setCursorCredentials] =
@@ -522,6 +526,18 @@ export function SettingsScreen({
     }
   }, [api]);
 
+  const loadBridgeStatus = useCallback(async () => {
+    setBridgeStatusLoading(true);
+    try {
+      setBridgeStatus(await api.readBridgeStatus());
+      setBridgeStatusError(null);
+    } catch (err) {
+      setBridgeStatusError((err as Error).message);
+    } finally {
+      setBridgeStatusLoading(false);
+    }
+  }, [api]);
+
   const loadCursorCredentials = useCallback(async () => {
     setCursorCredentialsLoading(true);
     try {
@@ -605,6 +621,7 @@ export function SettingsScreen({
         void checkHealth();
         void loadBridgeCapabilities();
         void loadBridgeRuntime();
+        void loadBridgeStatus();
       }
       if (shouldLoadEngineSettings) {
         void loadBridgeCapabilities();
@@ -626,6 +643,7 @@ export function SettingsScreen({
     loadAccount,
     loadBridgeCapabilities,
     loadBridgeRuntime,
+    loadBridgeStatus,
     loadCursorCredentials,
     loadRateLimits,
     shouldLoadAccountSettings,
@@ -644,6 +662,7 @@ export function SettingsScreen({
             void checkHealth();
             void loadBridgeCapabilities();
             void loadBridgeRuntime();
+            void loadBridgeStatus();
           }
           if (shouldLoadEngineSettings) {
             void loadBridgeCapabilities();
@@ -665,6 +684,7 @@ export function SettingsScreen({
       loadAccount,
       loadBridgeCapabilities,
       loadBridgeRuntime,
+      loadBridgeStatus,
       loadCursorCredentials,
       loadRateLimits,
       shouldLoadAccountSettings,
@@ -1531,6 +1551,64 @@ export function SettingsScreen({
               isLast
             />
 
+            <Text style={[styles.sectionLabel, styles.sectionLabelGap]}>Operational diagnostics</Text>
+            {bridgeStatusLoading && !bridgeStatus ? (
+              <View style={styles.accountLoadingState}>
+                <ActivityIndicator color={colors.textPrimary} />
+                <Text style={styles.settingValue}>Loading diagnostics…</Text>
+              </View>
+            ) : bridgeStatus ? (
+              <>
+                <Row
+                  label="RPC requests"
+                  value={`${String(bridgeStatus.operational.requests.pending)} pending · ${String(bridgeStatus.operational.requests.completed)} complete · ${String(bridgeStatus.operational.requests.failed)} failed · ${String(bridgeStatus.operational.requests.timedOut)} timed out`}
+                />
+                <Row
+                  label="Live sync"
+                  value={`${String(bridgeStatus.operational.liveSync.trackedFiles)} files · ${String(bridgeStatus.operational.liveSync.emittedEvents)} events · ${String(bridgeStatus.operational.liveSync.errors)} errors`}
+                />
+                <Row
+                  label="Replay buffer"
+                  value={`${String(bridgeStatus.operational.replay.entries)}/${String(bridgeStatus.operational.replay.capacity)} · ${String(bridgeStatus.operational.replay.evicted)} evicted · ${String(bridgeStatus.operational.replay.droppedOversize)} oversize · ${String(bridgeStatus.operational.replay.clientQueueDrops)} client drops`}
+                />
+                <Row
+                  label="Message queue"
+                  value={`${String(bridgeStatus.operational.queue.depth)} queued · ${String(bridgeStatus.operational.queue.busyThreads)} busy threads`}
+                />
+                <Row
+                  label="Push delivery"
+                  value={`${String(bridgeStatus.operational.push.accepted)} accepted · ${String(bridgeStatus.operational.push.failed)} failed`}
+                />
+                <Row
+                  label="Terminal"
+                  value={`${String(bridgeStatus.operational.terminal.running)}/${String(bridgeStatus.operational.terminal.maxConcurrent)} running · ${String(bridgeStatus.operational.terminal.waiting)} waiting · ${String(bridgeStatus.operational.terminal.saturationCount)} saturated`}
+                />
+                {Object.entries(bridgeStatus.engines).map(([engine, status]) => (
+                  <Row
+                    key={engine}
+                    label={`${getChatEngineLabel(engine as ChatEngine)} backend`}
+                    value={`${status.lifecycle} · ${String(status.pendingRequests)} pending · ${String(status.timedOutRequests)} timed out`}
+                  />
+                ))}
+                <Row
+                  label="Recent safe errors"
+                  value={
+                    bridgeStatus.operational.recentErrors.length === 0
+                      ? 'None'
+                      : bridgeStatus.operational.recentErrors
+                          .slice(-3)
+                          .map((entry) =>
+                            [entry.backend, entry.method, entry.kind].filter(Boolean).join(' · ')
+                          )
+                          .join('\n')
+                  }
+                  isLast
+                />
+              </>
+            ) : (
+              <Row label="Operational diagnostics" value="Unavailable" isLast />
+            )}
+
             <Pressable
               disabled={!canSafeRestartBridge || bridgeMaintenanceBusy || bridgeMaintenanceActive}
               onPress={() => setBridgeRestartModalVisible(true)}
@@ -1575,6 +1653,7 @@ export function SettingsScreen({
                 void checkHealth();
                 void loadBridgeCapabilities();
                 void loadBridgeRuntime();
+                void loadBridgeStatus();
                 void loadAccount();
                 void loadRateLimits();
               }}
@@ -1592,6 +1671,7 @@ export function SettingsScreen({
       {bridgeRestartActionError ? <Text style={styles.errorText}>{bridgeRestartActionError}</Text> : null}
       {bridgeUpdateActionError ? <Text style={styles.errorText}>{bridgeUpdateActionError}</Text> : null}
       {bridgeRuntimeError ? <Text style={styles.errorText}>{bridgeRuntimeError}</Text> : null}
+      {bridgeStatusError ? <Text style={styles.errorText}>{bridgeStatusError}</Text> : null}
     </>
   );
 

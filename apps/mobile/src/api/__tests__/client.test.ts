@@ -79,6 +79,11 @@ describe('HostBridgeApiClient', () => {
           lastSeenAt: '2026-01-01T00:00:01Z',
         },
       ],
+      engines: {},
+      operational: {
+        requests: { total: 1, completed: 1, failed: 0, timedOut: 0, pending: 0 },
+        replay: { entries: 0, capacity: 2000 },
+      },
     });
 
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
@@ -87,6 +92,7 @@ describe('HostBridgeApiClient', () => {
     expect(ws.request).toHaveBeenCalledWith('bridge/status/read');
     expect(result.connectedClients).toBe(1);
     expect(result.devices[0].clientName).toBe('Mohit iPhone');
+    expect(result.operational.replay.capacity).toBe(2000);
   });
 
   it('readAccountRateLimits() requests account/rateLimits/read and prefers codex bucket', async () => {

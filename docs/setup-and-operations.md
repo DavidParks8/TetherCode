@@ -142,6 +142,12 @@ Optional environment variables:
 - `EXPO_AUTO_REPAIR=true` — auto-repair React Native runtime on `npm run mobile`
 - `EXPO_CLEAR_CACHE=true` — force `expo start --clear` via `npm run mobile`
 
+## Operational Diagnostics
+
+The authenticated `GET /status` endpoint and `bridge/status/read` RPC expose the same live operational snapshot. In the app, open `Settings > Connections > Connection tools` to view it.
+
+The snapshot includes request completions/failures/timeouts, per-backend lifecycle and pending counts, rollout live-sync counters, replay event and byte bounds plus evictions/client drops, message queue depth, push ticket/receipt outcomes, terminal concurrency/saturation, and up to 32 recent operational errors. Recent errors contain only timestamps, generated request IDs, method names, backend labels, and stable error kinds. Logs use structured JSON metadata and deliberately omit request parameters, prompts, tokens, backend response bodies, and raw protocol or stderr lines.
+
 ## Local Browser Preview
 
 The mobile app includes a `Browser` screen that can open loopback-only web apps from the bridge
