@@ -1,6 +1,6 @@
-use std::{collections::HashSet, env, path::PathBuf};
+use std::{collections::HashSet, env, net::IpAddr, path::PathBuf};
 
-use axum::http::HeaderMap;
+use axum::http::{header::ORIGIN, HeaderMap};
 use reqwest::Url;
 
 use crate::{path_policy::PathPolicy, BridgeRuntimeEngine};
@@ -30,6 +30,7 @@ pub(crate) struct BridgeConfig {
     pub(crate) auth_token: Option<String>,
     pub(crate) auth_enabled: bool,
     pub(crate) allow_insecure_no_auth: bool,
+    pub(crate) no_auth_allowed_origins: HashSet<String>,
     pub(crate) allow_query_token_auth: bool,
     pub(crate) allow_outside_root_cwd: bool,
     pub(crate) disable_terminal_exec: bool,
@@ -114,8 +115,12 @@ impl BridgeConfig {
                     .to_string(),
             );
         }
+        if auth_token.is_none() {
+            validate_no_auth_listener(&host)?;
+        }
 
         let auth_enabled = auth_token.is_some();
+        let no_auth_allowed_origins = parse_origin_csv_env("BRIDGE_NO_AUTH_ALLOWED_ORIGINS")?;
         let allow_query_token_auth = parse_bool_env("BRIDGE_ALLOW_QUERY_TOKEN_AUTH");
         let allow_outside_root_cwd =
             parse_bool_env_with_default("BRIDGE_ALLOW_OUTSIDE_ROOT_CWD", true);
@@ -147,6 +152,7 @@ impl BridgeConfig {
             auth_token,
             auth_enabled,
             allow_insecure_no_auth,
+            no_auth_allowed_origins,
             allow_query_token_auth,
             allow_outside_root_cwd,
             disable_terminal_exec,
@@ -162,6 +168,29 @@ impl BridgeConfig {
         }
 
         self.is_authorized_with_bridge_token(headers, query_token)
+    }
+
+    pub(crate) fn is_browser_origin_allowed(&self, headers: &HeaderMap) -> bool {
+        if self.auth_enabled {
+            return true;
+        }
+
+        let mut origins = headers.get_all(ORIGIN).iter();
+        let Some(raw_origin) = origins.next() else {
+            return true;
+        };
+        if origins.next().is_some() {
+            return false;
+        }
+        let Ok(raw_origin) = raw_origin.to_str() else {
+            return false;
+        };
+        let Some(origin) = normalize_browser_origin(raw_origin) else {
+            return false;
+        };
+
+        origin == listener_origin(&self.host, self.port)
+            || self.no_auth_allowed_origins.contains(&origin)
     }
 
     pub(crate) fn is_authorized_with_bridge_token(
@@ -355,6 +384,73 @@ fn parse_csv_env(name: &str, fallback: &[&str]) -> HashSet<String> {
     }
 }
 
+fn parse_origin_csv_env(name: &str) -> Result<HashSet<String>, String> {
+    let Some(raw) = env::var(name).ok() else {
+        return Ok(HashSet::new());
+    };
+
+    raw.split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            normalize_browser_origin(entry).ok_or_else(|| {
+                format!(
+                    "{name} entries must be exact http:// or https:// origins without paths, credentials, queries, fragments, or wildcards: {entry}"
+                )
+            })
+        })
+        .collect()
+}
+
+fn normalize_browser_origin(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") || trimmed.contains('*') {
+        return None;
+    }
+
+    let parsed = Url::parse(trimmed).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || !matches!(parsed.path(), "" | "/")
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+
+    Some(parsed.origin().ascii_serialization())
+}
+
+fn listener_origin(host: &str, port: u16) -> String {
+    let host = host.trim();
+    let raw = if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("http://[{host}]:{port}")
+    } else {
+        format!("http://{host}:{port}")
+    };
+    normalize_browser_origin(&raw).expect("validated listener origin")
+}
+
+fn is_strict_loopback_listener(host: &str) -> bool {
+    host.trim()
+        .parse::<IpAddr>()
+        .map(|address| address.is_loopback())
+        .unwrap_or(false)
+}
+
+fn validate_no_auth_listener(host: &str) -> Result<(), String> {
+    if is_strict_loopback_listener(host) {
+        Ok(())
+    } else {
+        Err(
+            "BRIDGE_ALLOW_INSECURE_NO_AUTH=true requires BRIDGE_HOST to be a literal loopback IP address (for example 127.0.0.1 or ::1)"
+                .to_string(),
+        )
+    }
+}
+
 pub(crate) fn parse_enabled_bridge_engines_csv(
     raw: &str,
 ) -> Result<Vec<BridgeRuntimeEngine>, String> {
@@ -404,5 +500,138 @@ pub(crate) fn parse_bridge_runtime_engine(value: &str) -> Option<BridgeRuntimeEn
         "opencode" => Some(BridgeRuntimeEngine::Opencode),
         "cursor" => Some(BridgeRuntimeEngine::Cursor),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn no_auth_config(host: &str) -> BridgeConfig {
+        BridgeConfig {
+            host: host.to_string(),
+            port: 8787,
+            preview_port: 8788,
+            connect_url: None,
+            preview_connect_url: None,
+            workdir: PathBuf::from("/tmp/workdir"),
+            cli_bin: "codex".to_string(),
+            opencode_cli_bin: "opencode".to_string(),
+            cursor_app_server_bin: "cursor-app-server".to_string(),
+            active_engine: BridgeRuntimeEngine::Codex,
+            enabled_engines: vec![BridgeRuntimeEngine::Codex],
+            opencode_host: "127.0.0.1".to_string(),
+            opencode_port: 4090,
+            opencode_server_username: "opencode".to_string(),
+            opencode_server_password: None,
+            auth_token: None,
+            auth_enabled: false,
+            allow_insecure_no_auth: true,
+            no_auth_allowed_origins: HashSet::new(),
+            allow_query_token_auth: false,
+            allow_outside_root_cwd: false,
+            disable_terminal_exec: true,
+            terminal_allowed_commands: HashSet::new(),
+            show_pairing_qr: false,
+            ws_limits: WebSocketResourceLimits {
+                max_frame_bytes: DEFAULT_WS_MAX_FRAME_BYTES,
+                max_message_bytes: DEFAULT_WS_MAX_MESSAGE_BYTES,
+                per_client_in_flight: DEFAULT_WS_PER_CLIENT_IN_FLIGHT,
+                global_in_flight: DEFAULT_WS_GLOBAL_IN_FLIGHT,
+            },
+        }
+    }
+
+    fn headers_with_origin(origin: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(ORIGIN, origin.parse().expect("valid test header"));
+        headers
+    }
+
+    #[test]
+    fn no_auth_listener_requires_literal_loopback_ip() {
+        for host in ["127.0.0.1", "127.42.0.9", "::1"] {
+            assert!(
+                validate_no_auth_listener(host).is_ok(),
+                "expected {host} to pass"
+            );
+        }
+        for host in ["0.0.0.0", "::", "192.168.1.20", "10.0.0.4", "localhost"] {
+            assert!(
+                validate_no_auth_listener(host).is_err(),
+                "expected {host} to fail"
+            );
+        }
+    }
+
+    #[test]
+    fn no_auth_allows_originless_operator_and_native_clients() {
+        assert!(no_auth_config("127.0.0.1").is_browser_origin_allowed(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn no_auth_allows_only_same_or_explicit_exact_browser_origins() {
+        let mut config = no_auth_config("127.0.0.1");
+        config
+            .no_auth_allowed_origins
+            .insert("https://trusted.example".to_string());
+
+        assert!(config.is_browser_origin_allowed(&headers_with_origin("http://127.0.0.1:8787")));
+        assert!(config.is_browser_origin_allowed(&headers_with_origin("https://trusted.example")));
+        assert!(
+            !config.is_browser_origin_allowed(&headers_with_origin("https://trusted.example:444"))
+        );
+        assert!(!config.is_browser_origin_allowed(&headers_with_origin("https://evil.example")));
+        assert!(!config.is_browser_origin_allowed(&headers_with_origin("http://192.168.1.20:8787")));
+        assert!(!config.is_browser_origin_allowed(&headers_with_origin("*")));
+        assert!(!config.is_browser_origin_allowed(&headers_with_origin("null")));
+
+        let mut malformed_origin = HeaderMap::new();
+        malformed_origin.insert(
+            ORIGIN,
+            axum::http::HeaderValue::from_bytes(b"\xff").unwrap(),
+        );
+        assert!(!config.is_browser_origin_allowed(&malformed_origin));
+
+        let mut duplicate_origins = headers_with_origin("http://127.0.0.1:8787");
+        duplicate_origins.append(ORIGIN, "https://evil.example".parse().unwrap());
+        assert!(!config.is_browser_origin_allowed(&duplicate_origins));
+    }
+
+    #[test]
+    fn no_auth_recognizes_ipv6_listener_origin() {
+        let config = no_auth_config("::1");
+        assert!(config.is_browser_origin_allowed(&headers_with_origin("http://[::1]:8787")));
+        assert!(!config.is_browser_origin_allowed(&headers_with_origin("http://127.0.0.1:8787")));
+    }
+
+    #[test]
+    fn configured_origins_reject_wildcards_null_and_non_origins() {
+        assert_eq!(
+            normalize_browser_origin("https://trusted.example/"),
+            Some("https://trusted.example".to_string())
+        );
+        for origin in [
+            "*",
+            "null",
+            "https://*.example.com",
+            "https://user@example.com",
+            "https://example.com/path",
+            "https://example.com?query=1",
+            "file:///tmp/index.html",
+        ] {
+            assert!(
+                normalize_browser_origin(origin).is_none(),
+                "expected {origin} to fail"
+            );
+        }
+    }
+
+    #[test]
+    fn authenticated_mode_does_not_apply_no_auth_origin_policy() {
+        let mut config = no_auth_config("127.0.0.1");
+        config.auth_enabled = true;
+        config.auth_token = Some("secret".to_string());
+        assert!(config.is_browser_origin_allowed(&headers_with_origin("https://evil.example")));
     }
 }

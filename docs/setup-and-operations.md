@@ -196,6 +196,8 @@ npm run teardown -- --yes
 | `BRIDGE_CONNECT_URL` | externally reachable bridge base URL used for pairing/QR output |
 | `BRIDGE_PREVIEW_CONNECT_URL` | externally reachable browser preview base URL |
 | `BRIDGE_AUTH_TOKEN` | required auth token |
+| `BRIDGE_ALLOW_INSECURE_NO_AUTH` | local debugging escape hatch; without a token, startup requires a literal loopback `BRIDGE_HOST` |
+| `BRIDGE_NO_AUTH_ALLOWED_ORIGINS` | optional comma-separated exact browser origins allowed in no-auth mode; wildcards and `null` are rejected |
 | `BRIDGE_ALLOW_QUERY_TOKEN_AUTH` | query-token auth fallback |
 | `CODEX_CLI_BIN` | codex executable |
 | `BRIDGE_ACTIVE_ENGINE` | preferred backend for unqualified bridge requests; it must be one of the enabled harnesses |
@@ -216,6 +218,8 @@ npm run teardown -- --yes
 | `BRIDGE_WS_GLOBAL_IN_FLIGHT` | maximum concurrent client RPC requests bridge-wide (default `128`) |
 
 Resource-limit values are strict positive integers. Requests above concurrency limits receive retryable JSON-RPC error `-32005`; oversized frames/messages are closed by the WebSocket transport before JSON parsing.
+
+No-auth mode cannot listen on wildcard, hostname, LAN, or Tailscale addresses. Origin-less native and operator clients remain allowed on loopback, while `/rpc`, `/status`, and `/local-image` return `403 forbidden_origin` to browser requests unless the origin exactly matches the bridge listener or `BRIDGE_NO_AUTH_ALLOWED_ORIGINS`. Prefer a short-lived random `BRIDGE_AUTH_TOKEN` instead: leave `BRIDGE_ALLOW_INSECURE_NO_AUTH=false`, restart the bridge and client with the temporary token, then rotate or remove it when local debugging ends.
 
 Host paths are canonicalized before use. With `BRIDGE_ALLOW_OUTSIDE_ROOT_CWD=false`, absolute paths, relative paths, and symlinks must resolve within `BRIDGE_WORKDIR`. When enabled, existing paths may resolve outside the root for the listed interactive surfaces, but uploaded attachments always remain in root-owned `.clawdex-mobile-attachments` storage and reject symlink escapes.
 
@@ -246,7 +250,7 @@ If you enable the optional tip jar:
 - Keep bridge network-private only by default (Tailscale/private LAN/VPN + host firewall)
 - Require bridge auth with `BRIDGE_AUTH_TOKEN`
 - Keep `BRIDGE_ALLOW_QUERY_TOKEN_AUTH=true` only on private networks (required for Android WS auth fallback)
-- Do not set `BRIDGE_ALLOW_INSECURE_NO_AUTH=true` outside local debugging
+- Avoid `BRIDGE_ALLOW_INSECURE_NO_AUTH=true`; it is enforced as loopback-only and a short-lived random token is the safer debugging option
 - Scope `BRIDGE_WORKDIR` to minimal required root
 - Use strict default approvals on mobile
 - Treat `Session`/`Allow similar` approval actions as privileged

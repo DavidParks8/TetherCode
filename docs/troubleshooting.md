@@ -39,6 +39,13 @@ npm run stop:services
 - On secure-launcher installs, `Settings > Bridge Maintenance > Restart bridge safely` can do that from the phone.
 - If an in-app bridge update fails, inspect `.bridge-updater.log` and `.bridge-update-status.json` in the bridge install root.
 
+## Bridge exits when no-auth mode is enabled
+
+- No-auth startup requires `BRIDGE_HOST` to be a literal loopback IP such as `127.0.0.1` or `::1`. `localhost`, `0.0.0.0`, `::`, LAN addresses, and Tailscale addresses are refused.
+- A browser `403` with `error: "forbidden_origin"` means `/rpc`, `/status`, or `/local-image` received an untrusted `Origin` header. Origin-less native/operator requests are allowed; browser origins must exactly match the listener or an entry in `BRIDGE_NO_AUTH_ALLOWED_ORIGINS`.
+- Do not configure `*` or `null`; they are rejected. Use exact origins such as `http://127.0.0.1:3000` only when needed.
+- Prefer a short-lived local token: set a random `BRIDGE_AUTH_TOKEN`, set `BRIDGE_ALLOW_INSECURE_NO_AUTH=false`, restart bridge and client with that token, then rotate or remove it after debugging.
+
 - If Codex login just completed, restart the bridge once so it reloads the Codex auth home:
 
 ```bash

@@ -1096,14 +1096,6 @@ impl AppState {
             .await;
         bridge_status(self.started_at, devices, engines)
     }
-
-    async fn is_authorized(&self, headers: &HeaderMap, query_token: Option<&str>) -> bool {
-        if !self.config.auth_enabled {
-            return true;
-        }
-
-        self.config.is_authorized(headers, query_token)
-    }
 }
 
 fn sanitize_client_metadata(value: Option<&str>, fallback: &str, max_chars: usize) -> String {
@@ -7543,15 +7535,9 @@ async fn status_handler(
     headers: HeaderMap,
     Query(query): Query<RpcQuery>,
 ) -> Response {
-    if !state.is_authorized(&headers, query.token.as_deref()).await {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "error": "unauthorized",
-                "message": "Missing or invalid bridge credentials"
-            })),
-        )
-            .into_response();
+    if let Some(response) = protected_request_error(&state.config, &headers, query.token.as_deref())
+    {
+        return response;
     }
 
     Json(state.bridge_status().await).into_response()
@@ -7562,15 +7548,9 @@ async fn local_image_handler(
     headers: HeaderMap,
     Query(query): Query<LocalImageQuery>,
 ) -> Response {
-    if !state.is_authorized(&headers, query.token.as_deref()).await {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "error": "unauthorized",
-                "message": "Missing or invalid bridge credentials"
-            })),
-        )
-            .into_response();
+    if let Some(response) = protected_request_error(&state.config, &headers, query.token.as_deref())
+    {
+        return response;
     }
 
     let path = match resolve_local_image_preview_path(&state.path_policy, &query.path) {
@@ -8099,15 +8079,9 @@ async fn ws_handler(
     headers: HeaderMap,
     Query(query): Query<RpcQuery>,
 ) -> Response {
-    if !state.is_authorized(&headers, query.token.as_deref()).await {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "error": "unauthorized",
-                "message": "Missing or invalid bridge credentials"
-            })),
-        )
-            .into_response();
+    if let Some(response) = protected_request_error(&state.config, &headers, query.token.as_deref())
+    {
+        return response;
     }
 
     let client_metadata = ClientConnectionMetadata::from_query(&query);
@@ -8116,6 +8090,39 @@ async fn ws_handler(
         .max_message_size(state.config.ws_limits.max_message_bytes)
         .on_upgrade(move |socket| handle_socket(socket, state, client_metadata))
         .into_response()
+}
+
+fn protected_request_error(
+    config: &BridgeConfig,
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+) -> Option<Response> {
+    if !config.is_browser_origin_allowed(headers) {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "forbidden_origin",
+                    "message": "Browser origin is not allowed in no-auth mode"
+                })),
+            )
+                .into_response(),
+        );
+    }
+    if !config.is_authorized(headers, query_token) {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": "unauthorized",
+                    "message": "Missing or invalid bridge credentials"
+                })),
+            )
+                .into_response(),
+        );
+    }
+
+    None
 }
 
 async fn handle_socket(
@@ -14234,6 +14241,7 @@ mod tests {
             auth_token: Some("secret-token".to_string()),
             auth_enabled: true,
             allow_insecure_no_auth: false,
+            no_auth_allowed_origins: HashSet::new(),
             allow_query_token_auth: false,
             allow_outside_root_cwd: false,
             disable_terminal_exec: true,
@@ -16807,6 +16815,27 @@ mod tests {
         assert!(!constant_time_eq("secret-token", "secret-token-extra"));
     }
 
+    #[tokio::test]
+    async fn no_auth_origin_rejection_has_stable_forbidden_response() {
+        let state = build_test_state().await;
+        let mut config = state.config.as_ref().clone();
+        config.auth_enabled = false;
+        config.auth_token = None;
+        config.allow_insecure_no_auth = true;
+        let mut headers = HeaderMap::new();
+        headers.insert(ORIGIN, "https://evil.example".parse().unwrap());
+
+        let response = protected_request_error(&config, &headers, None)
+            .expect("cross-site origin should be rejected");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            to_bytes(response.into_body(), 1024).await.unwrap(),
+            r#"{"error":"forbidden_origin","message":"Browser origin is not allowed in no-auth mode"}"#
+        );
+
+        shutdown_test_backend(&state.backend).await;
+    }
+
     #[test]
     fn build_pairing_payload_includes_url_and_token_for_connectable_host() {
         let config = BridgeConfig {
@@ -16828,6 +16857,7 @@ mod tests {
             auth_token: Some("secret-token".to_string()),
             auth_enabled: true,
             allow_insecure_no_auth: false,
+            no_auth_allowed_origins: HashSet::new(),
             allow_query_token_auth: false,
             allow_outside_root_cwd: false,
             disable_terminal_exec: false,
@@ -16865,6 +16895,7 @@ mod tests {
             auth_token: Some("secret-token".to_string()),
             auth_enabled: true,
             allow_insecure_no_auth: false,
+            no_auth_allowed_origins: HashSet::new(),
             allow_query_token_auth: false,
             allow_outside_root_cwd: false,
             disable_terminal_exec: false,
@@ -16903,6 +16934,7 @@ mod tests {
             auth_token: Some("secret-token".to_string()),
             auth_enabled: true,
             allow_insecure_no_auth: false,
+            no_auth_allowed_origins: HashSet::new(),
             allow_query_token_auth: false,
             allow_outside_root_cwd: false,
             disable_terminal_exec: false,
@@ -16940,6 +16972,7 @@ mod tests {
             auth_token: Some("secret-token".to_string()),
             auth_enabled: true,
             allow_insecure_no_auth: false,
+            no_auth_allowed_origins: HashSet::new(),
             allow_query_token_auth: false,
             allow_outside_root_cwd: false,
             disable_terminal_exec: false,

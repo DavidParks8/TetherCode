@@ -33,6 +33,8 @@ We will acknowledge the report as soon as practical and work toward a fix and co
 ## Security Notes for Users
 
 - Prefer bearer-token auth.
-- Treat `BRIDGE_ALLOW_INSECURE_NO_AUTH=true` as local debugging only.
+- Prefer a short-lived random bearer token even for local debugging.
+- `BRIDGE_ALLOW_INSECURE_NO_AUTH=true` is restricted to literal loopback listeners. No-auth browser access to RPC, status, and local images accepts only the listener origin or exact `BRIDGE_NO_AUTH_ALLOWED_ORIGINS`; origin-less native/operator clients remain supported.
+- Never allow wildcard or `null` browser origins.
 - Do not expose the bridge directly to the public internet.
 - Review environment and runtime guidance in `docs/setup-and-operations.md` and `docs/troubleshooting.md`.
