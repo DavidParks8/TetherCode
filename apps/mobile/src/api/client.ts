@@ -2241,6 +2241,10 @@ function readFileSystemListResponse(value: unknown): FileSystemListResponse {
     bridgeRoot: normalizeCwd(readString(record.bridgeRoot)) ?? '',
     path: normalizeCwd(readString(record.path)) ?? '',
     parentPath: normalizeCwd(readString(record.parentPath)) ?? null,
+    truncated: record.truncated === true,
+    totalEntries: Math.max(0, Math.trunc(Number(record.totalEntries) || entriesRaw.length)),
+    omittedEntries: Math.max(0, Math.trunc(Number(record.omittedEntries) || 0)),
+    maxEntries: Math.max(0, Math.trunc(Number(record.maxEntries) || entriesRaw.length)),
     entries: entriesRaw
       .map((entry) => {
         const item = toRecord(entry);

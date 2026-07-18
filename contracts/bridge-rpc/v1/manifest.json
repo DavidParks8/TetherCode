@@ -25,7 +25,7 @@
   ],
   "notifications": [
     "bridge/approval.requested", "bridge/approval.resolved", "bridge/connection/state",
-    "bridge/git/updated", "bridge/terminal/completed", "bridge/thread/list/stream/batch",
+    "bridge/git/updated", "bridge/notification.truncated", "bridge/terminal/completed", "bridge/thread/list/stream/batch",
     "bridge/thread/list/stream/error", "bridge/thread/queue/updated", "bridge/ui.dismiss",
     "bridge/ui.present", "bridge/ui.resolved", "bridge/ui.update", "bridge/userInput.requested",
     "bridge/userInput.resolved"
@@ -64,6 +64,32 @@
         "message": "Bridge request capacity is exhausted",
         "data": { "error": "overloaded", "resource": "global_in_flight_requests", "limit": 128, "retryable": true }
       }
+    },
+    "resourceLimitError": {
+      "id": "fixture-2",
+      "error": {
+        "code": -32602,
+        "message": "attachment_bytes exceeds limit of 20971520",
+        "data": { "error": "resource_limit_exceeded", "resource": "attachment_bytes", "limit": 20971520, "actual": 20971521 }
+      }
+    },
+    "truncatedGitDiff": {
+      "diff": "diff --git a/a b/a\n",
+      "cwd": "/workspace",
+      "truncated": true,
+      "originalBytes": 3000000,
+      "returnedBytes": 2097152,
+      "maxBytes": 2097152
+    },
+    "truncatedFilesystemList": {
+      "bridgeRoot": "/workspace",
+      "path": "/workspace",
+      "parentPath": null,
+      "entries": [],
+      "truncated": true,
+      "totalEntries": 1001,
+      "omittedEntries": 1,
+      "maxEntries": 1000
     }
   }
 }

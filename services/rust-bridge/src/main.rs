@@ -61,8 +61,10 @@ mod path_policy;
 mod preview;
 mod push;
 mod replay;
+mod resource_limits;
 mod rpc;
 mod services;
+mod storage;
 
 #[cfg(test)]
 use attachments::{
@@ -99,6 +101,15 @@ use push::{
     PushEventPreferences, PushRegistryStore,
 };
 use replay::NotificationReplay;
+use resource_limits::{
+    FILESYSTEM_LIST_MAX_ENTRIES, LOCAL_IMAGE_MAX_BYTES, NOTIFICATION_MAX_BYTES,
+    PREVIEW_BUFFERED_RESPONSE_MAX_BYTES, PREVIEW_REQUEST_MAX_BYTES, PUSH_DEVICE_NAME_MAX_BYTES,
+    PUSH_PLATFORM_MAX_BYTES, PUSH_PREVIEW_MAX_BYTES, PUSH_PREVIEW_MAX_THREADS,
+    PUSH_TOKEN_MAX_BYTES, QUEUE_MAX_BYTES_PER_THREAD, QUEUE_MAX_CONTENT_BYTES,
+    QUEUE_MAX_ITEMS_PER_THREAD, QUEUE_MAX_ITEM_BYTES, REPLAY_MAX_BYTES, REPLAY_RESPONSE_MAX_BYTES,
+    UI_SURFACE_MAX_ACTIONS, UI_SURFACE_MAX_BLOCKS, UI_SURFACE_MAX_BYTES,
+    UI_SURFACE_MAX_ITEMS_PER_BLOCK, UI_SURFACE_MAX_TEXT_BYTES,
+};
 use rpc::{is_forwarded_method, parse_client_request_id, parse_request, RpcRequestParseError};
 
 const APPROVAL_COMMAND_METHOD: &str = "item/commandExecution/requestApproval";
@@ -136,8 +147,6 @@ const BROWSER_PREVIEW_COOKIE_NAME: &str = "clawdex_preview";
 const BROWSER_PREVIEW_VIEWPORT_COOKIE_NAME: &str = "clawdex_preview_vp";
 const BROWSER_PREVIEW_PROXY_PREFIX: &str = "/__clawdex_proxy__";
 const BROWSER_PREVIEW_RUNTIME_SCRIPT_PATH: &str = "/__clawdex_preview_runtime__.js";
-const BROWSER_PREVIEW_HTTP_BODY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
-const BROWSER_PREVIEW_HTML_REWRITE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const GITHUB_API_URL: &str = "https://api.github.com";
 const GITHUB_HOST: &str = "github.com";
@@ -377,21 +386,11 @@ async fn write_github_credentials_file(
         }
     }
 
-    fs::write(credentials_file, content)
+    storage::atomic_write_private(credentials_file, content.as_bytes())
         .await
         .map_err(|error| {
             BridgeError::server(&format!("failed to write GitHub credentials: {error}"))
         })?;
-    #[cfg(unix)]
-    {
-        fs::set_permissions(credentials_file, std::fs::Permissions::from_mode(0o600))
-            .await
-            .map_err(|error| {
-                BridgeError::server(&format!(
-                    "failed to secure GitHub credential permissions: {error}"
-                ))
-            })?;
-    }
     Ok(())
 }
 
@@ -410,7 +409,7 @@ const EXPO_PUSH_RECEIPTS_ENDPOINT: &str = "https://exp.host/--/api/v2/push/getRe
 const EXPO_PUSH_BATCH_SIZE: usize = 100;
 // Reply-preview tuning: cap how much streamed text we buffer per thread, and how
 // many characters of the first line we surface in the notification body.
-const PUSH_PREVIEW_ACCUMULATE_CAP: usize = 8000;
+const PUSH_PREVIEW_ACCUMULATE_CAP: usize = PUSH_PREVIEW_MAX_BYTES;
 const PUSH_PREVIEW_MAX_CHARS: usize = 140;
 const EXPO_RECEIPT_BATCH_SIZE: usize = 1000;
 // Expo asks senders to wait at least ~15 minutes before fetching delivery receipts.
@@ -418,7 +417,6 @@ const RECEIPT_CHECK_DELAY_SECS: u64 = 900;
 const PUSH_SEND_MAX_ATTEMPTS: u32 = 4;
 const QUEUE_COMPLETION_DISPOSITION_WAIT_MS: u64 = 2_000;
 const QUEUE_COMPLETION_DISPOSITION_LIMIT: usize = 1_024;
-const QUEUE_MAX_ITEMS_PER_THREAD: usize = 100;
 const QUEUE_STATUS_DISPATCH_FALLBACK_MS: u64 = 250;
 
 struct PushService {
@@ -481,14 +479,20 @@ impl PushService {
         platform: String,
         device_name: String,
         events: PushEventPreferences,
-    ) -> usize {
+    ) -> Result<usize, BridgeError> {
         self.registry
             .register(token, platform, device_name, events)
             .await
     }
 
     async fn unregister(&self, token: &str) -> bool {
-        self.registry.unregister(token).await
+        match self.registry.unregister(token).await {
+            Ok(removed) => removed,
+            Err(error) => {
+                eprintln!("failed to unregister push device: {}", error.message);
+                false
+            }
+        }
     }
 
     async fn list(&self) -> Vec<Value> {
@@ -541,10 +545,17 @@ impl PushService {
         }
         if let Some(thread_id) = Self::read_thread_id(params) {
             let mut replies = self.recent_replies.write().await;
+            if !replies.contains_key(&thread_id) && replies.len() >= PUSH_PREVIEW_MAX_THREADS {
+                if let Some(oldest_key) = replies.keys().next().cloned() {
+                    replies.remove(&oldest_key);
+                }
+            }
             let entry = replies.entry(thread_id).or_default();
             // Cap accumulation so a long turn cannot grow this unbounded.
             if entry.len() < PUSH_PREVIEW_ACCUMULATE_CAP {
-                entry.push_str(&delta);
+                let remaining = PUSH_PREVIEW_ACCUMULATE_CAP - entry.len();
+                let (bounded, _) = resource_limits::truncate_utf8_bytes(&delta, remaining);
+                entry.push_str(&bounded);
             }
         }
         true
@@ -2005,7 +2016,7 @@ impl ClientHub {
             stream_id: Uuid::new_v4().to_string(),
             clients: RwLock::new(HashMap::new()),
             client_infos: RwLock::new(HashMap::new()),
-            notification_replay: NotificationReplay::new(replay_capacity),
+            notification_replay: NotificationReplay::new(replay_capacity, REPLAY_MAX_BYTES),
             notification_tx,
         }
     }
@@ -2158,17 +2169,37 @@ impl ClientHub {
 
     async fn broadcast_notification(&self, method: &str, params: Value) {
         let event_id = self.next_event_id.fetch_add(1, Ordering::Relaxed);
-        let payload = json!({
+        let mut payload = json!({
             "method": method,
             "protocolVersion": BRIDGE_PROTOCOL_VERSION,
             "streamId": self.stream_id,
             "eventId": event_id,
             "params": params
         });
+        let mut payload_bytes = serde_json::to_vec(&payload)
+            .map(|value| value.len())
+            .unwrap_or(0);
+        if payload_bytes > NOTIFICATION_MAX_BYTES {
+            payload = json!({
+                "method": "bridge/notification.truncated",
+                "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+                "streamId": self.stream_id,
+                "eventId": event_id,
+                "params": {
+                    "originalMethod": method,
+                    "truncated": true,
+                    "originalBytes": payload_bytes,
+                    "maxBytes": NOTIFICATION_MAX_BYTES,
+                }
+            });
+            payload_bytes = serde_json::to_vec(&payload)
+                .map(|value| value.len())
+                .unwrap_or(0);
+        }
         let params = payload.get("params").cloned().unwrap_or(Value::Null);
 
         self.notification_replay
-            .push(event_id, payload.clone())
+            .push(event_id, payload.clone(), payload_bytes)
             .await;
         let _ = self.notification_tx.send(HubNotification {
             event_id,
@@ -2178,8 +2209,14 @@ impl ClientHub {
         self.broadcast_json(payload).await;
     }
 
-    async fn replay_since(&self, after_event_id: Option<u64>, limit: usize) -> (Vec<Value>, bool) {
-        self.notification_replay.since(after_event_id, limit).await
+    async fn replay_since(
+        &self,
+        after_event_id: Option<u64>,
+        limit: usize,
+    ) -> (Vec<Value>, bool, usize) {
+        self.notification_replay
+            .since(after_event_id, limit, REPLAY_RESPONSE_MAX_BYTES)
+            .await
     }
 
     async fn earliest_event_id(&self) -> Option<u64> {
@@ -2317,6 +2354,21 @@ impl BridgeQueueService {
         if content.is_empty() {
             return Err("content must not be empty".to_string());
         }
+        if content.len() > QUEUE_MAX_CONTENT_BYTES {
+            return Err(format!(
+                "queue content exceeds {QUEUE_MAX_CONTENT_BYTES} bytes (actual {})",
+                content.len()
+            ));
+        }
+        let item_bytes = serde_json::to_vec(&request.turn_start)
+            .map(|value| value.len())
+            .unwrap_or(usize::MAX)
+            .saturating_add(content.len());
+        if item_bytes > QUEUE_MAX_ITEM_BYTES {
+            return Err(format!(
+                "queue item exceeds {QUEUE_MAX_ITEM_BYTES} bytes (actual {item_bytes})"
+            ));
+        }
 
         let actor = self.thread_actor(&normalized_thread_id).await;
         let _actor_guard = actor.lock().await;
@@ -2345,6 +2397,22 @@ impl BridgeQueueService {
                 if runtime.items.len() >= QUEUE_MAX_ITEMS_PER_THREAD {
                     return Err(format!(
                         "queue limit reached for thread (max {QUEUE_MAX_ITEMS_PER_THREAD})"
+                    ));
+                }
+                let queued_bytes = runtime
+                    .items
+                    .iter()
+                    .map(|item| {
+                        item.content.len()
+                            + serde_json::to_vec(&item.turn_start)
+                                .map(|value| value.len())
+                                .unwrap_or(usize::MAX)
+                    })
+                    .sum::<usize>();
+                if queued_bytes.saturating_add(item_bytes) > QUEUE_MAX_BYTES_PER_THREAD {
+                    return Err(format!(
+                        "resource_limit:queue_thread_bytes:{QUEUE_MAX_BYTES_PER_THREAD}:{}",
+                        queued_bytes.saturating_add(item_bytes)
                     ));
                 }
                 runtime.items.push_back(queued_item);
@@ -6589,6 +6657,19 @@ impl BridgeError {
         }
     }
 
+    fn resource_limit(resource: &str, limit: usize, actual: usize) -> Self {
+        Self {
+            code: -32602,
+            message: format!("{resource} exceeds limit of {limit}"),
+            data: Some(json!({
+                "error": "resource_limit_exceeded",
+                "resource": resource,
+                "limit": limit,
+                "actual": actual,
+            })),
+        }
+    }
+
     fn server(message: &str) -> Self {
         Self {
             code: -32000,
@@ -6604,6 +6685,20 @@ impl BridgeError {
             data: Some(json!({ "error": error })),
         }
     }
+}
+
+fn queue_operation_error(error: String) -> BridgeError {
+    let mut parts = error.split(':');
+    if parts.next() == Some("resource_limit") {
+        if let (Some(resource), Some(limit), Some(actual)) =
+            (parts.next(), parts.next(), parts.next())
+        {
+            if let (Ok(limit), Ok(actual)) = (limit.parse::<usize>(), actual.parse::<usize>()) {
+                return BridgeError::resource_limit(resource, limit, actual);
+            }
+        }
+    }
+    BridgeError::server(&error)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -6639,6 +6734,11 @@ struct GitStatusResponse {
     raw: String,
     files: Vec<GitStatusEntry>,
     cwd: String,
+    truncated: bool,
+    total_files: usize,
+    omitted_files: usize,
+    max_files: usize,
+    max_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -6657,6 +6757,10 @@ struct GitStatusEntry {
 struct GitDiffResponse {
     diff: String,
     cwd: String,
+    truncated: bool,
+    original_bytes: usize,
+    returned_bytes: usize,
+    max_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -6914,6 +7018,10 @@ struct FileSystemListResponse {
     path: String,
     parent_path: Option<String>,
     entries: Vec<FileSystemEntry>,
+    truncated: bool,
+    total_entries: usize,
+    omitted_entries: usize,
+    max_entries: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7457,6 +7565,20 @@ async fn local_image_handler(
             .into_response();
     }
 
+    if metadata.len() > LOCAL_IMAGE_MAX_BYTES {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({
+                "error": "resource_limit_exceeded",
+                "resource": "local_image_bytes",
+                "limit": LOCAL_IMAGE_MAX_BYTES,
+                "actual": metadata.len(),
+                "message": format!("Image exceeds the {LOCAL_IMAGE_MAX_BYTES} byte limit")
+            })),
+        )
+            .into_response();
+    }
+
     let content_type = match infer_image_content_type_from_path(&path) {
         Some(content_type) => content_type,
         None => {
@@ -7471,8 +7593,8 @@ async fn local_image_handler(
         }
     };
 
-    let bytes = match fs::read(&path).await {
-        Ok(bytes) => bytes,
+    let mut file = match fs::File::open(&path).await {
+        Ok(file) => file,
         Err(error) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -7484,6 +7606,34 @@ async fn local_image_handler(
                 .into_response();
         }
     };
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    if let Err(error) = (&mut file)
+        .take(LOCAL_IMAGE_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "read_failed",
+                "message": format!("Failed to read image file: {error}")
+            })),
+        )
+            .into_response();
+    }
+    if bytes.len() as u64 > LOCAL_IMAGE_MAX_BYTES {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({
+                "error": "resource_limit_exceeded",
+                "resource": "local_image_bytes",
+                "limit": LOCAL_IMAGE_MAX_BYTES,
+                "actual": bytes.len(),
+                "message": format!("Image exceeds the {LOCAL_IMAGE_MAX_BYTES} byte limit")
+            })),
+        )
+            .into_response();
+    }
 
     Response::builder()
         .status(StatusCode::OK)
@@ -7619,7 +7769,7 @@ async fn handle_preview_http_request(
         }
     };
 
-    let body_bytes = match to_bytes(body, BROWSER_PREVIEW_HTTP_BODY_LIMIT_BYTES).await {
+    let body_bytes = match to_bytes(body, PREVIEW_REQUEST_MAX_BYTES).await {
         Ok(bytes) => bytes,
         Err(error) => {
             return preview_error_response(
@@ -7696,17 +7846,44 @@ async fn handle_preview_http_request(
     let rewrite_html = should_rewrite_preview_html_response(&upstream_headers);
 
     let mut response = if rewrite_html {
-        let upstream_body = match upstream_response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(error) => {
+        if upstream_response
+            .content_length()
+            .is_some_and(|length| length > PREVIEW_BUFFERED_RESPONSE_MAX_BYTES as u64)
+        {
+            return preview_error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                &format!(
+                    "preview buffered response exceeds {} bytes",
+                    PREVIEW_BUFFERED_RESPONSE_MAX_BYTES
+                ),
+            );
+        }
+        let mut upstream_body = Vec::new();
+        let mut body_stream = upstream_response.bytes_stream();
+        while let Some(chunk) = body_stream.next().await {
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    return preview_error_response(
+                        StatusCode::BAD_GATEWAY,
+                        &format!("failed to read preview document: {error}"),
+                    );
+                }
+            };
+            if upstream_body.len().saturating_add(chunk.len()) > PREVIEW_BUFFERED_RESPONSE_MAX_BYTES
+            {
                 return preview_error_response(
-                    StatusCode::BAD_GATEWAY,
-                    &format!("failed to read preview document: {error}"),
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &format!(
+                        "preview buffered response exceeds {} bytes",
+                        PREVIEW_BUFFERED_RESPONSE_MAX_BYTES
+                    ),
                 );
             }
-        };
+            upstream_body.extend_from_slice(&chunk);
+        }
         let rewritten_body = rewrite_preview_html_document(&upstream_body, effective_viewport)
-            .unwrap_or_else(|| upstream_body.to_vec());
+            .unwrap_or(upstream_body);
         let mut response = Response::new(Body::from(rewritten_body));
         *response.status_mut() = status;
         response
@@ -8240,10 +8417,31 @@ async fn handle_bridge_method(
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "Unknown device".to_string());
             let events = parse_push_event_preferences(params.get("events"));
+            if token.len() > PUSH_TOKEN_MAX_BYTES {
+                return Err(BridgeError::resource_limit(
+                    "push_token_bytes",
+                    PUSH_TOKEN_MAX_BYTES,
+                    token.len(),
+                ));
+            }
+            if platform.len() > PUSH_PLATFORM_MAX_BYTES {
+                return Err(BridgeError::resource_limit(
+                    "push_platform_bytes",
+                    PUSH_PLATFORM_MAX_BYTES,
+                    platform.len(),
+                ));
+            }
+            if device_name.len() > PUSH_DEVICE_NAME_MAX_BYTES {
+                return Err(BridgeError::resource_limit(
+                    "push_device_name_bytes",
+                    PUSH_DEVICE_NAME_MAX_BYTES,
+                    device_name.len(),
+                ));
+            }
             let count = state
                 .push
                 .register(token, platform, device_name, events)
-                .await;
+                .await?;
             Ok(json!({ "ok": true, "deviceCount": count }))
         }
         "bridge/push/unregister" => {
@@ -8252,6 +8450,13 @@ async fn handle_bridge_method(
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| BridgeError::invalid_params("push token is required"))?;
+            if token.len() > PUSH_TOKEN_MAX_BYTES {
+                return Err(BridgeError::resource_limit(
+                    "push_token_bytes",
+                    PUSH_TOKEN_MAX_BYTES,
+                    token.len(),
+                ));
+            }
             let removed = state.push.unregister(&token).await;
             Ok(json!({ "ok": true, "removed": removed }))
         }
@@ -8332,13 +8537,17 @@ async fn handle_bridge_method(
                 .limit
                 .unwrap_or(200)
                 .clamp(1, NOTIFICATION_REPLAY_MAX_LIMIT);
-            let (events, has_more) = state.hub.replay_since(request.after_event_id, limit).await;
+            let (events, has_more, returned_bytes) =
+                state.hub.replay_since(request.after_event_id, limit).await;
 
             Ok(json!({
                 "protocolVersion": BRIDGE_PROTOCOL_VERSION,
                 "streamId": state.hub.stream_id(),
                 "events": events,
                 "hasMore": has_more,
+                "truncatedByBytes": has_more && events.len() < limit,
+                "returnedBytes": returned_bytes,
+                "maxBytes": REPLAY_RESPONSE_MAX_BYTES,
                 "earliestEventId": state.hub.earliest_event_id().await,
                 "latestEventId": state.hub.latest_event_id(),
             }))
@@ -8448,11 +8657,30 @@ async fn handle_bridge_method(
             request.turn_start =
                 normalize_forwarded_path_params(Some(request.turn_start), &state.path_policy)?
                     .ok_or_else(|| BridgeError::invalid_params("turnStart payload is required"))?;
+            let content_bytes = request.content.trim().len();
+            if content_bytes > QUEUE_MAX_CONTENT_BYTES {
+                return Err(BridgeError::resource_limit(
+                    "queue_content_bytes",
+                    QUEUE_MAX_CONTENT_BYTES,
+                    content_bytes,
+                ));
+            }
+            let item_bytes = serde_json::to_vec(&request.turn_start)
+                .map(|value| value.len())
+                .unwrap_or(usize::MAX)
+                .saturating_add(content_bytes);
+            if item_bytes > QUEUE_MAX_ITEM_BYTES {
+                return Err(BridgeError::resource_limit(
+                    "queue_item_bytes",
+                    QUEUE_MAX_ITEM_BYTES,
+                    item_bytes,
+                ));
+            }
             let result = state
                 .queue
                 .send_message(request)
                 .await
-                .map_err(|error| BridgeError::server(&error))?;
+                .map_err(queue_operation_error)?;
             serde_json::to_value(result).map_err(|error| BridgeError::server(&error.to_string()))
         }
         "bridge/thread/queue/steer" => {
@@ -9213,6 +9441,7 @@ async fn list_filesystem_entries(
         .await
         .map_err(|error| BridgeError::server(&format!("failed to read directory: {error}")))?;
     let mut entries = Vec::new();
+    let mut total_entries = 0usize;
 
     while let Some(entry) = read_dir
         .next_entry()
@@ -9265,14 +9494,17 @@ async fn list_filesystem_entries(
             false
         };
 
-        entries.push(FileSystemEntry {
-            name,
-            path: path_to_string(&entry_path),
-            kind,
-            hidden,
-            selectable: is_directory,
-            is_git_repo,
-        });
+        total_entries += 1;
+        if entries.len() < FILESYSTEM_LIST_MAX_ENTRIES {
+            entries.push(FileSystemEntry {
+                name,
+                path: path_to_string(&entry_path),
+                kind,
+                hidden,
+                selectable: is_directory,
+                is_git_repo,
+            });
+        }
     }
 
     entries.sort_by(|left, right| {
@@ -9283,6 +9515,7 @@ async fn list_filesystem_entries(
                 .then_with(|| left.name.cmp(&right.name))
         })
     });
+    let truncated = total_entries > FILESYSTEM_LIST_MAX_ENTRIES;
 
     let parent_path = state
         .path_policy
@@ -9295,6 +9528,10 @@ async fn list_filesystem_entries(
         path: path_to_string(&current_path),
         parent_path,
         entries,
+        truncated,
+        total_entries,
+        omitted_entries: total_entries.saturating_sub(FILESYSTEM_LIST_MAX_ENTRIES),
+        max_entries: FILESYSTEM_LIST_MAX_ENTRIES,
     })
 }
 
@@ -10745,7 +10982,7 @@ fn rewrite_preview_html_document(
     body: &[u8],
     viewport: Option<PreviewViewportConfig>,
 ) -> Option<Vec<u8>> {
-    if body.len() > BROWSER_PREVIEW_HTML_REWRITE_LIMIT_BYTES {
+    if body.len() > PREVIEW_BUFFERED_RESPONSE_MAX_BYTES {
         return None;
     }
 
@@ -13458,6 +13695,30 @@ fn is_valid_user_input_answers(answers: &HashMap<String, UserInputAnswerPayload>
 }
 
 fn validate_bridge_ui_surface(surface: &BridgeUiSurface) -> Result<(), BridgeError> {
+    let encoded_bytes = serde_json::to_vec(surface)
+        .map_err(|error| BridgeError::invalid_params(&format!("invalid UI surface: {error}")))?
+        .len();
+    if encoded_bytes > UI_SURFACE_MAX_BYTES {
+        return Err(BridgeError::resource_limit(
+            "ui_surface_bytes",
+            UI_SURFACE_MAX_BYTES,
+            encoded_bytes,
+        ));
+    }
+    if surface.blocks.len() > UI_SURFACE_MAX_BLOCKS {
+        return Err(BridgeError::resource_limit(
+            "ui_surface_blocks",
+            UI_SURFACE_MAX_BLOCKS,
+            surface.blocks.len(),
+        ));
+    }
+    if surface.actions.len() > UI_SURFACE_MAX_ACTIONS {
+        return Err(BridgeError::resource_limit(
+            "ui_surface_actions",
+            UI_SURFACE_MAX_ACTIONS,
+            surface.actions.len(),
+        ));
+    }
     if surface.id.trim().is_empty() {
         return Err(BridgeError::invalid_params("id must not be empty"));
     }
@@ -13486,6 +13747,19 @@ fn validate_bridge_ui_surface(surface: &BridgeUiSurface) -> Result<(), BridgeErr
 }
 
 fn validate_bridge_ui_block(block: &BridgeUiBlock) -> Result<(), BridgeError> {
+    let text_bytes = match block {
+        BridgeUiBlock::Text { text } => text.len(),
+        BridgeUiBlock::Markdown { markdown } => markdown.len(),
+        BridgeUiBlock::Code { text, .. } => text.len(),
+        _ => 0,
+    };
+    if text_bytes > UI_SURFACE_MAX_TEXT_BYTES {
+        return Err(BridgeError::resource_limit(
+            "ui_surface_text_bytes",
+            UI_SURFACE_MAX_TEXT_BYTES,
+            text_bytes,
+        ));
+    }
     match block {
         BridgeUiBlock::Text { text } if text.trim().is_empty() => {
             Err(BridgeError::invalid_params("text block must not be empty"))
@@ -13497,6 +13771,13 @@ fn validate_bridge_ui_block(block: &BridgeUiBlock) -> Result<(), BridgeError> {
             "checklist block must contain at least one item",
         )),
         BridgeUiBlock::Checklist { items } => {
+            if items.len() > UI_SURFACE_MAX_ITEMS_PER_BLOCK {
+                return Err(BridgeError::resource_limit(
+                    "ui_surface_block_items",
+                    UI_SURFACE_MAX_ITEMS_PER_BLOCK,
+                    items.len(),
+                ));
+            }
             if items.iter().any(|item| item.label.trim().is_empty()) {
                 return Err(BridgeError::invalid_params(
                     "checklist item label must not be empty",
@@ -13508,6 +13789,13 @@ fn validate_bridge_ui_block(block: &BridgeUiBlock) -> Result<(), BridgeError> {
             "keyValue block must contain at least one item",
         )),
         BridgeUiBlock::KeyValue { items } => {
+            if items.len() > UI_SURFACE_MAX_ITEMS_PER_BLOCK {
+                return Err(BridgeError::resource_limit(
+                    "ui_surface_block_items",
+                    UI_SURFACE_MAX_ITEMS_PER_BLOCK,
+                    items.len(),
+                ));
+            }
             if items
                 .iter()
                 .any(|item| item.label.trim().is_empty() || item.value.trim().is_empty())
@@ -13797,7 +14085,8 @@ mod tests {
                 "Phone".to_string(),
                 PushEventPreferences::default(),
             )
-            .await;
+            .await
+            .expect("register queued push device");
         service
             .accumulate_reply(
                 "item/agentMessage/delta",
@@ -13886,7 +14175,7 @@ mod tests {
                 prefs.clone(),
             )
             .await;
-        assert_eq!(count, 1);
+        assert_eq!(count.expect("register device"), 1);
 
         // Re-registering the same token updates in place rather than duplicating.
         let count = service
@@ -13897,7 +14186,7 @@ mod tests {
                 prefs,
             )
             .await;
-        assert_eq!(count, 1);
+        assert_eq!(count.expect("update device"), 1);
 
         let listed = service.list().await;
         assert_eq!(listed.len(), 1);
@@ -14298,7 +14587,7 @@ mod tests {
             Some("token-1"),
         );
 
-        let body = to_bytes(response.into_body(), BROWSER_PREVIEW_HTTP_BODY_LIMIT_BYTES)
+        let body = to_bytes(response.into_body(), PREVIEW_REQUEST_MAX_BYTES)
             .await
             .expect("read desktop shell body");
         let body = String::from_utf8(body.to_vec()).expect("desktop shell is utf-8");
@@ -15811,7 +16100,7 @@ mod tests {
         hub.broadcast_notification("turn/completed", json!({ "threadId": "thr_1" }))
             .await;
 
-        let (events, has_more) = hub.replay_since(Some(1), 10).await;
+        let (events, has_more, _) = hub.replay_since(Some(1), 10).await;
         assert_eq!(events.len(), 1);
         assert!(!has_more);
         assert_eq!(events[0]["method"], "turn/completed");
@@ -15867,7 +16156,7 @@ mod tests {
         hub.broadcast_notification("event/2", json!({})).await;
         hub.broadcast_notification("event/3", json!({})).await;
 
-        let (events, has_more) = hub.replay_since(Some(0), 2).await;
+        let (events, has_more, _) = hub.replay_since(Some(0), 2).await;
         assert_eq!(events.len(), 2);
         assert!(has_more);
         assert_eq!(events[0]["eventId"], 1);
@@ -15881,12 +16170,82 @@ mod tests {
         hub.broadcast_notification("event/2", json!({})).await;
         hub.broadcast_notification("event/3", json!({})).await;
 
-        let (events, has_more) = hub.replay_since(Some(0), 10).await;
+        let (events, has_more, _) = hub.replay_since(Some(0), 10).await;
         assert_eq!(events.len(), 2);
         assert!(!has_more);
         assert_eq!(hub.earliest_event_id().await, Some(2));
         assert_eq!(events[0]["eventId"], 2);
         assert_eq!(events[1]["eventId"], 3);
+    }
+
+    #[tokio::test]
+    async fn oversized_notification_is_replaced_with_truncation_metadata() {
+        let hub = ClientHub::with_replay_capacity(2);
+        hub.broadcast_notification(
+            "event/large",
+            json!({ "content": "x".repeat(NOTIFICATION_MAX_BYTES) }),
+        )
+        .await;
+
+        let (events, has_more, bytes) = hub.replay_since(None, 2).await;
+        assert!(!has_more);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["method"], "bridge/notification.truncated");
+        assert_eq!(events[0]["params"]["originalMethod"], "event/large");
+        assert_eq!(events[0]["params"]["truncated"], true);
+        assert!(bytes < NOTIFICATION_MAX_BYTES);
+    }
+
+    #[test]
+    fn ui_surface_rejects_collection_and_text_boundaries() {
+        let surface = BridgeUiSurface {
+            id: "surface".to_string(),
+            thread_id: "thread".to_string(),
+            turn_id: None,
+            kind: None,
+            presentation: BridgeUiPresentation::Modal,
+            tone: None,
+            title: "title".to_string(),
+            subtitle: None,
+            body_markdown: None,
+            blocks: vec![BridgeUiBlock::Text {
+                text: "x".to_string(),
+            }],
+            actions: Vec::new(),
+            dismissible: None,
+            created_at: None,
+            updated_at: None,
+        };
+        assert!(validate_bridge_ui_surface(&surface).is_ok());
+
+        let exact_text = BridgeUiBlock::Text {
+            text: "x".repeat(UI_SURFACE_MAX_TEXT_BYTES),
+        };
+        assert!(validate_bridge_ui_block(&exact_text).is_ok());
+
+        let mut oversized_text = surface.clone();
+        oversized_text.blocks = vec![BridgeUiBlock::Text {
+            text: "x".repeat(UI_SURFACE_MAX_TEXT_BYTES + 1),
+        }];
+        assert_eq!(
+            validate_bridge_ui_surface(&oversized_text)
+                .unwrap_err()
+                .code,
+            -32602
+        );
+
+        let mut too_many_blocks = surface;
+        too_many_blocks.blocks = (0..=UI_SURFACE_MAX_BLOCKS)
+            .map(|_| BridgeUiBlock::Text {
+                text: "x".to_string(),
+            })
+            .collect();
+        assert_eq!(
+            validate_bridge_ui_surface(&too_many_blocks)
+                .unwrap_err()
+                .code,
+            -32602
+        );
     }
 
     #[tokio::test]

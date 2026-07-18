@@ -31,6 +31,7 @@ interface WorkspacePickerModalProps {
   entries: FileSystemEntry[];
   loadingEntries?: boolean;
   error?: string | null;
+  truncationMessage?: string | null;
   onBrowsePath: (path: string | null) => void;
   onSelectPath: (path: string | null) => void;
   onToggleFavorite?: (path: string | null) => void;
@@ -55,6 +56,7 @@ export function WorkspacePickerModal({
   entries,
   loadingEntries = false,
   error = null,
+  truncationMessage = null,
   onBrowsePath,
   onSelectPath,
   onToggleFavorite,
@@ -316,6 +318,9 @@ export function WorkspacePickerModal({
                 </View>
 
                 {error ? <Text style={styles.errorText}>{error}</Text> : null}
+                {truncationMessage ? (
+                  <Text style={styles.errorText}>{truncationMessage}</Text>
+                ) : null}
               </ScrollView>
 
               <View style={styles.browserCard}>

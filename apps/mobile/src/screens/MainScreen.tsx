@@ -410,6 +410,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [workspaceBrowseEntries, setWorkspaceBrowseEntries] = useState<FileSystemEntry[]>([]);
     const [loadingWorkspaceBrowse, setLoadingWorkspaceBrowse] = useState(false);
     const [workspaceBrowseError, setWorkspaceBrowseError] = useState<string | null>(null);
+    const [workspaceBrowseTruncation, setWorkspaceBrowseTruncation] = useState<string | null>(null);
     const workspaceBrowseCacheRef = useRef<Record<string, FileSystemListResponse>>({});
     const workspaceBrowseRequestRef = useRef(0);
     const [favoriteWorkspacePaths, setFavoriteWorkspacePaths] = useState<string[]>([]);
@@ -2712,6 +2713,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           setWorkspaceBrowsePath(normalizedPath);
           setWorkspaceBrowseParentPath(normalizeWorkspacePath(response.parentPath));
           setWorkspaceBrowseEntries(response.entries);
+          setWorkspaceBrowseTruncation(
+            response.truncated
+              ? `Showing ${String(response.entries.length)} of ${String(response.totalEntries)} entries.`
+              : null
+          );
         };
 
         if (cached) {
@@ -2719,6 +2725,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           setWorkspaceBrowsePath(normalizeWorkspacePath(cached.path));
           setWorkspaceBrowseParentPath(normalizeWorkspacePath(cached.parentPath));
           setWorkspaceBrowseEntries(cached.entries);
+          setWorkspaceBrowseTruncation(
+            cached.truncated
+              ? `Showing ${String(cached.entries.length)} of ${String(cached.totalEntries)} entries.`
+              : null
+          );
           setWorkspaceBrowseError(null);
         }
 
@@ -9365,6 +9376,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           entries={workspaceBrowseEntries}
           loadingEntries={loadingWorkspaceBrowse}
           error={workspaceBrowseError}
+          truncationMessage={workspaceBrowseTruncation}
           onBrowsePath={(path) => void browseWorkspacePath(path)}
           onSelectPath={handleWorkspaceSelection}
           onToggleFavorite={toggleWorkspaceFavorite}

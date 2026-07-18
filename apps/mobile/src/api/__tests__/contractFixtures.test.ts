@@ -14,6 +14,9 @@ interface ContractManifest {
     capabilities: { protocolVersion: number; streamId: string };
     notification: { method: string; protocolVersion: number; eventId: number };
     overloadError: { error: { code: number; data: { retryable: boolean } } };
+    resourceLimitError: { error: { code: number; data: { resource: string; limit: number; actual: number } } };
+    truncatedGitDiff: { truncated: boolean; returnedBytes: number; maxBytes: number };
+    truncatedFilesystemList: { truncated: boolean; totalEntries: number; maxEntries: number };
   };
 }
 
@@ -36,6 +39,17 @@ describe('bridge RPC contract fixtures', () => {
     expect(manifest.notifications).toContain(manifest.fixtures.notification.method);
     expect(manifest.fixtures.overloadError).toMatchObject({
       error: { code: -32005, data: { retryable: true } },
+    });
+    expect(manifest.fixtures.resourceLimitError).toMatchObject({
+      error: { code: -32602, data: { resource: 'attachment_bytes', limit: 20971520 } },
+    });
+    expect(manifest.fixtures.truncatedGitDiff.returnedBytes).toBeLessThanOrEqual(
+      manifest.fixtures.truncatedGitDiff.maxBytes
+    );
+    expect(manifest.fixtures.truncatedFilesystemList).toMatchObject({
+      truncated: true,
+      totalEntries: 1001,
+      maxEntries: 1000,
     });
   });
 

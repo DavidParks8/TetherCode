@@ -203,6 +203,10 @@ export interface FileSystemListResponse {
   path: string;
   parentPath: string | null;
   entries: FileSystemEntry[];
+  truncated: boolean;
+  totalEntries: number;
+  omittedEntries: number;
+  maxEntries: number;
 }
 
 export type ReasoningEffort =
@@ -345,6 +349,11 @@ export interface GitStatusResponse {
   raw: string;
   files: GitStatusFile[];
   cwd?: string;
+  truncated: boolean;
+  totalFiles: number;
+  omittedFiles: number;
+  maxFiles: number;
+  maxBytes: number;
 }
 
 export interface GitStatusFile {
@@ -360,6 +369,10 @@ export interface GitStatusFile {
 export interface GitDiffResponse {
   diff: string;
   cwd?: string;
+  truncated: boolean;
+  originalBytes: number;
+  returnedBytes: number;
+  maxBytes: number;
 }
 
 export interface GitHistoryCommit {

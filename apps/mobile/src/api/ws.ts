@@ -76,6 +76,9 @@ interface ReplayEventsResponse {
   hasMore?: boolean;
   earliestEventId?: number;
   latestEventId?: number;
+  truncatedByBytes?: boolean;
+  returnedBytes?: number;
+  maxBytes?: number;
 }
 
 export class HostBridgeWsClient {

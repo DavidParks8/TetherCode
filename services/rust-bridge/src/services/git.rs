@@ -6,6 +6,9 @@ use std::{
 
 use reqwest::Url;
 
+use crate::resource_limits::{
+    truncate_utf8_bytes, GIT_DIFF_MAX_BYTES, GIT_STATUS_MAX_BYTES, GIT_STATUS_MAX_FILES,
+};
 use crate::{
     normalize_path, path_policy::PathPolicy, BridgeError, GitBranchSummary, GitBranchesResponse,
     GitCloneResponse, GitCommitResponse, GitDiffResponse, GitHistoryCommit, GitHistoryResponse,
@@ -84,13 +87,35 @@ impl GitService {
             .to_string();
 
         let clean = porcelain_entries.is_empty();
+        let total_files = porcelain_entries.len();
+        let mut files = porcelain_entries;
+        let mut used_bytes = 0usize;
+        let mut returned_files = Vec::new();
+        for entry in files.drain(..).take(GIT_STATUS_MAX_FILES) {
+            let entry_bytes = serde_json::to_vec(&entry)
+                .map(|value| value.len())
+                .unwrap_or(0);
+            if used_bytes.saturating_add(entry_bytes) > GIT_STATUS_MAX_BYTES {
+                break;
+            }
+            used_bytes += entry_bytes;
+            returned_files.push(entry);
+        }
+        let (raw, raw_truncated) = truncate_utf8_bytes(&result.stdout, GIT_STATUS_MAX_BYTES);
+        let truncated = raw_truncated || returned_files.len() < total_files;
+        let returned_file_count = returned_files.len();
 
         Ok(GitStatusResponse {
             branch,
             clean,
-            raw: result.stdout,
-            files: porcelain_entries,
+            raw,
+            files: returned_files,
             cwd: repo_path.to_string_lossy().to_string(),
+            truncated,
+            total_files,
+            omitted_files: total_files.saturating_sub(returned_file_count),
+            max_files: GIT_STATUS_MAX_FILES,
+            max_bytes: GIT_STATUS_MAX_BYTES,
         })
     }
 
@@ -101,9 +126,11 @@ impl GitService {
         let repo_path = self.resolve_repo_path(raw_cwd)?;
         self.validate_repository_helpers(&repo_path).await?;
         let entries = self.get_porcelain_status_entries(&repo_path).await?;
+        let total_entries = entries.len();
         let mut sections = Vec::new();
+        let mut stopped_early = false;
 
-        for entry in entries {
+        for (entry_index, entry) in entries.into_iter().enumerate() {
             if entry.untracked {
                 let untracked_patch = self
                     .run_git_diff_command(
@@ -122,6 +149,10 @@ impl GitService {
                     .await?;
                 if !untracked_patch.trim().is_empty() {
                     sections.push(untracked_patch);
+                }
+                if sections.iter().map(String::len).sum::<usize>() >= GIT_DIFF_MAX_BYTES {
+                    stopped_early = entry_index + 1 < total_entries;
+                    break;
                 }
                 continue;
             }
@@ -181,6 +212,10 @@ impl GitService {
                     }
                 }
             }
+            if sections.iter().map(String::len).sum::<usize>() >= GIT_DIFF_MAX_BYTES {
+                stopped_early = entry_index + 1 < total_entries;
+                break;
+            }
         }
 
         let diff_output = sections
@@ -189,9 +224,22 @@ impl GitService {
             .collect::<Vec<_>>()
             .join("\n\n");
 
+        let measured_bytes = diff_output.len();
+        let (diff, text_truncated) = truncate_utf8_bytes(&diff_output, GIT_DIFF_MAX_BYTES);
+        let truncated = text_truncated || stopped_early;
+        let original_bytes = if stopped_early {
+            measured_bytes.max(GIT_DIFF_MAX_BYTES + 1)
+        } else {
+            measured_bytes
+        };
+        let returned_bytes = diff.len();
         Ok(GitDiffResponse {
-            diff: diff_output,
+            diff,
             cwd: repo_path.to_string_lossy().to_string(),
+            truncated,
+            original_bytes,
+            returned_bytes,
+            max_bytes: GIT_DIFF_MAX_BYTES,
         })
     }
 

@@ -124,6 +124,7 @@ Also update Expo Go on your phone.
 - Ensure mobile app has file/photo permissions
 - File limit is `20 MB` per upload
 - Uploads persist under `BRIDGE_WORKDIR/.clawdex-mobile-attachments`
+- `resource_limit_exceeded` includes the rejected `resource`, configured `limit`, and observed `actual` size. Git, filesystem, and replay responses may instead return `truncated`/count or byte metadata; narrow the workspace/request when the omitted data is needed.
 - Ensure `BRIDGE_WORKDIR` is writable
 
 ## Worklets/Reanimated mismatch

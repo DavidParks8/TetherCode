@@ -1160,6 +1160,10 @@ describe('HostBridgeApiClient', () => {
       bridgeRoot: '/Users/mohit/work',
       path: '/Users/mohit/work',
       parentPath: '/Users/mohit',
+      truncated: true,
+      totalEntries: 3,
+      omittedEntries: 2,
+      maxEntries: 1,
       entries: [
         {
           name: 'apps',
@@ -1184,6 +1188,10 @@ describe('HostBridgeApiClient', () => {
       bridgeRoot: '/Users/mohit/work',
       path: '/Users/mohit/work',
       parentPath: '/Users/mohit',
+      truncated: true,
+      totalEntries: 3,
+      omittedEntries: 2,
+      maxEntries: 1,
       entries: [
         {
           name: 'apps',

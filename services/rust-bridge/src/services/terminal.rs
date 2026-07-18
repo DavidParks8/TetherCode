@@ -16,6 +16,7 @@ use tokio::{
 use crate::{
     contains_disallowed_control_chars,
     path_policy::{PathKind, PathPolicy},
+    resource_limits::GIT_COMMAND_MAX_OUTPUT_BYTES,
     BridgeError, TerminalExecRequest, TerminalExecResponse,
 };
 
@@ -158,6 +159,7 @@ impl TerminalService {
             command.to_string(),
             cwd,
             request.timeout_ms,
+            DEFAULT_TERMINAL_MAX_OUTPUT_BYTES,
         )
         .await
     }
@@ -179,8 +181,15 @@ impl TerminalService {
 
         let hardened_args = hardened_git_args(args);
 
-        self.execute_binary_internal("git", &hardened_args, display, cwd, timeout_ms)
-            .await
+        self.execute_binary_internal(
+            "git",
+            &hardened_args,
+            display,
+            cwd,
+            timeout_ms,
+            GIT_COMMAND_MAX_OUTPUT_BYTES,
+        )
+        .await
     }
 
     fn validate_policy_args(
@@ -263,6 +272,7 @@ impl TerminalService {
         display_command: String,
         cwd: PathBuf,
         timeout_ms: Option<u64>,
+        max_output_bytes: usize,
     ) -> Result<TerminalExecResponse, BridgeError> {
         let _permit = self
             .concurrency_limiter
@@ -302,13 +312,11 @@ impl TerminalService {
             .take()
             .ok_or_else(|| BridgeError::server("failed to capture stderr"))?;
 
-        let stdout_task = tokio::spawn(async move {
-            read_stream_limited(stdout, DEFAULT_TERMINAL_MAX_OUTPUT_BYTES).await
-        });
+        let stdout_task =
+            tokio::spawn(async move { read_stream_limited(stdout, max_output_bytes).await });
 
-        let stderr_task = tokio::spawn(async move {
-            read_stream_limited(stderr, DEFAULT_TERMINAL_MAX_OUTPUT_BYTES).await
-        });
+        let stderr_task =
+            tokio::spawn(async move { read_stream_limited(stderr, max_output_bytes).await });
 
         let mut timed_out = false;
         let mut exit_code = None;

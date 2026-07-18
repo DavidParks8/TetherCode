@@ -368,6 +368,20 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
       })),
     [changedFiles, diffStatsByPath, parsedDiff.files]
   );
+  const truncationNotice = useMemo(() => {
+    const notices: string[] = [];
+    if (status?.truncated) {
+      notices.push(
+        `Showing ${String(status.files.length)} of ${String(status.totalFiles)} changed files.`
+      );
+    }
+    if (diff?.truncated) {
+      notices.push(
+        `Diff preview is limited to ${String(Math.round(diff.maxBytes / 1024))} KB.`
+      );
+    }
+    return notices.join(' ');
+  }, [diff, status]);
   const hasChanges = changedFiles.length > 0;
   const hasStagedFiles = useMemo(
     () => changedFiles.some((entry) => entry.staged),
@@ -1243,6 +1257,10 @@ export function GitScreen({ api, chat, onBack, onChatUpdated }: GitScreenProps) 
                     ))}
                   </ScrollView>
                 </View>
+
+                {truncationNotice ? (
+                  <Text style={styles.errorText}>{truncationNotice}</Text>
+                ) : null}
 
                 {parsedDiff.files.length > 0 ? (
                   <>

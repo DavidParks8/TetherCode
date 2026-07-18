@@ -1,14 +1,15 @@
 use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose, Engine as _};
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tokio::fs;
+use uuid::Uuid;
 
-use crate::{decode_engine_qualified_id, path_policy::PathPolicy, BridgeError};
+use crate::{
+    decode_engine_qualified_id, path_policy::PathPolicy, resource_limits::ATTACHMENT_MAX_BYTES,
+    storage::write_private_new, BridgeError,
+};
 
 const MOBILE_ATTACHMENTS_DIR: &str = ".clawdex-mobile-attachments";
-const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,10 +41,12 @@ pub(crate) async fn save_uploaded_attachment(
     }
 
     let estimated_size = estimate_base64_decoded_size(encoded)?;
-    if estimated_size > MAX_ATTACHMENT_BYTES {
-        return Err(BridgeError::invalid_params(&format!(
-            "attachment exceeds max size of {MAX_ATTACHMENT_BYTES} bytes"
-        )));
+    if estimated_size > ATTACHMENT_MAX_BYTES {
+        return Err(BridgeError::resource_limit(
+            "attachment_bytes",
+            ATTACHMENT_MAX_BYTES,
+            estimated_size,
+        ));
     }
 
     let bytes = decode_base64_payload(encoded)?;
@@ -51,10 +54,12 @@ pub(crate) async fn save_uploaded_attachment(
         return Err(BridgeError::invalid_params("attachment payload is empty"));
     }
 
-    if bytes.len() > MAX_ATTACHMENT_BYTES {
-        return Err(BridgeError::invalid_params(&format!(
-            "attachment exceeds max size of {MAX_ATTACHMENT_BYTES} bytes"
-        )));
+    if bytes.len() > ATTACHMENT_MAX_BYTES {
+        return Err(BridgeError::resource_limit(
+            "attachment_bytes",
+            ATTACHMENT_MAX_BYTES,
+            bytes.len(),
+        ));
     }
 
     let normalized_kind =
@@ -75,11 +80,10 @@ pub(crate) async fn save_uploaded_attachment(
 
     let attachment_dir = path_policy.resolve_root_owned_directory(&attachment_relative)?;
 
-    let timestamp = Utc::now().format("%Y%m%d-%H%M%S-%3f").to_string();
-    let unique_name = format!("{timestamp}-{}-{file_name}", std::process::id());
+    let unique_name = format!("{}-{file_name}", Uuid::new_v4());
     let target_path = attachment_dir.join(unique_name);
 
-    fs::write(&target_path, &bytes)
+    write_private_new(&target_path, &bytes)
         .await
         .map_err(|error| BridgeError::server(&format!("failed to persist attachment: {error}")))?;
 
@@ -257,8 +261,12 @@ pub(crate) fn infer_image_content_type_from_path(path: &Path) -> Option<&'static
 
 #[cfg(test)]
 mod tests {
-    use super::{save_uploaded_attachment, AttachmentUploadRequest, MOBILE_ATTACHMENTS_DIR};
+    use super::{
+        estimate_base64_decoded_size, save_uploaded_attachment, AttachmentUploadRequest,
+        MOBILE_ATTACHMENTS_DIR,
+    };
     use crate::path_policy::PathPolicy;
+    use crate::resource_limits::ATTACHMENT_MAX_BYTES;
     use base64::{engine::general_purpose, Engine as _};
     use std::{fs, path::PathBuf};
     use uuid::Uuid;
@@ -287,6 +295,21 @@ mod tests {
             thread_id: Some("codex:thread/one".to_string()),
             kind: Some("file".to_string()),
         }
+    }
+
+    #[test]
+    fn base64_estimate_distinguishes_exact_and_over_limit_boundaries() {
+        let exact_encoded_len = ATTACHMENT_MAX_BYTES.div_ceil(3) * 4;
+        let exact_padding = (3 - ATTACHMENT_MAX_BYTES % 3) % 3;
+        let mut exact = "A".repeat(exact_encoded_len);
+        for index in 0..exact_padding {
+            exact.replace_range(exact.len() - index - 1..exact.len() - index, "=");
+        }
+        assert_eq!(
+            estimate_base64_decoded_size(&exact).unwrap(),
+            ATTACHMENT_MAX_BYTES
+        );
+        assert!(estimate_base64_decoded_size(&(exact + "AAAA")).unwrap() > ATTACHMENT_MAX_BYTES);
     }
 
     #[tokio::test]

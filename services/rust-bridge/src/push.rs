@@ -2,9 +2,17 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
-use crate::{now_iso, read_bool, read_string};
+use crate::{
+    now_iso, read_bool, read_string,
+    resource_limits::{
+        PUSH_DEVICE_NAME_MAX_BYTES, PUSH_PLATFORM_MAX_BYTES, PUSH_REGISTRY_MAX_BYTES,
+        PUSH_REGISTRY_MAX_DEVICES, PUSH_TOKEN_MAX_BYTES,
+    },
+    storage::atomic_write_private,
+    BridgeError,
+};
 
 const PUSH_REGISTRY_FILE_NAME: &str = ".clawdex-push-registry.json";
 
@@ -53,18 +61,34 @@ pub(crate) struct PushRegistry {
 
 pub(crate) struct PushRegistryStore {
     registry: RwLock<PushRegistry>,
+    persist_lock: Mutex<()>,
     path: PathBuf,
 }
 
 impl PushRegistryStore {
     pub(crate) async fn load(workdir: &Path) -> Self {
         let path = workdir.join(PUSH_REGISTRY_FILE_NAME);
-        let registry = match tokio::fs::read_to_string(&path).await {
-            Ok(contents) => serde_json::from_str::<PushRegistry>(&contents).unwrap_or_default(),
+        let registry = match tokio::fs::read(&path).await {
+            Ok(contents) if contents.len() <= PUSH_REGISTRY_MAX_BYTES => {
+                serde_json::from_slice::<PushRegistry>(&contents)
+                    .map(|mut registry| {
+                        registry.devices.retain(|device| {
+                            !device.token.is_empty()
+                                && device.token.len() <= PUSH_TOKEN_MAX_BYTES
+                                && device.platform.len() <= PUSH_PLATFORM_MAX_BYTES
+                                && device.device_name.len() <= PUSH_DEVICE_NAME_MAX_BYTES
+                        });
+                        registry.devices.truncate(PUSH_REGISTRY_MAX_DEVICES);
+                        registry
+                    })
+                    .unwrap_or_default()
+            }
             Err(_) => PushRegistry::default(),
+            Ok(_) => PushRegistry::default(),
         };
         Self {
             registry: RwLock::new(registry),
+            persist_lock: Mutex::new(()),
             path,
         }
     }
@@ -79,58 +103,74 @@ impl PushRegistryStore {
         platform: String,
         device_name: String,
         events: PushEventPreferences,
-    ) -> usize {
+    ) -> Result<usize, BridgeError> {
+        let _persist_guard = self.persist_lock.lock().await;
         let now = now_iso();
-        let count = {
-            let mut registry = self.registry.write().await;
-            if let Some(existing) = registry
-                .devices
-                .iter_mut()
-                .find(|device| device.token == token)
-            {
-                existing.platform = platform;
-                existing.device_name = device_name;
-                existing.events = events;
-                existing.updated_at = now;
-            } else {
-                registry.devices.push(PushDeviceRegistration {
-                    token,
-                    platform,
-                    device_name,
-                    events,
-                    created_at: now.clone(),
-                    updated_at: now,
-                });
+        let mut registry = self.registry.write().await;
+        let mut candidate = registry.clone();
+        if let Some(existing) = candidate
+            .devices
+            .iter_mut()
+            .find(|device| device.token == token)
+        {
+            existing.platform = platform;
+            existing.device_name = device_name;
+            existing.events = events;
+            existing.updated_at = now;
+        } else {
+            if candidate.devices.len() >= PUSH_REGISTRY_MAX_DEVICES {
+                return Err(BridgeError::resource_limit(
+                    "push_registry_devices",
+                    PUSH_REGISTRY_MAX_DEVICES,
+                    candidate.devices.len() + 1,
+                ));
             }
-            registry.devices.len()
-        };
-        self.persist().await;
-        count
+            candidate.devices.push(PushDeviceRegistration {
+                token,
+                platform,
+                device_name,
+                events,
+                created_at: now.clone(),
+                updated_at: now,
+            });
+        }
+        let count = candidate.devices.len();
+        self.persist_snapshot(&candidate).await?;
+        *registry = candidate;
+        Ok(count)
     }
 
-    pub(crate) async fn unregister(&self, token: &str) -> bool {
-        let removed = {
-            let mut registry = self.registry.write().await;
-            let before = registry.devices.len();
-            registry.devices.retain(|device| device.token != token);
-            registry.devices.len() != before
-        };
-        if removed {
-            self.persist().await;
+    pub(crate) async fn unregister(&self, token: &str) -> Result<bool, BridgeError> {
+        let _persist_guard = self.persist_lock.lock().await;
+        let mut registry = self.registry.write().await;
+        let mut candidate = registry.clone();
+        let before = candidate.devices.len();
+        candidate.devices.retain(|device| device.token != token);
+        let removed = candidate.devices.len() != before;
+        if !removed {
+            return Ok(false);
         }
-        removed
+        self.persist_snapshot(&candidate).await?;
+        *registry = candidate;
+        Ok(true)
     }
 
-    async fn persist(&self) {
-        let snapshot = self.snapshot().await;
-        match serde_json::to_string_pretty(&snapshot) {
-            Ok(contents) => {
-                if let Err(error) = tokio::fs::write(&self.path, contents).await {
-                    eprintln!("failed to persist push registry: {error}");
-                }
-            }
-            Err(error) => eprintln!("failed to serialize push registry: {error}"),
+    async fn persist_snapshot(&self, snapshot: &PushRegistry) -> Result<(), BridgeError> {
+        let contents = serde_json::to_vec_pretty(snapshot).map_err(|error| {
+            BridgeError::server(&format!("failed to serialize push registry: {error}"))
+        })?;
+        if contents.len() > PUSH_REGISTRY_MAX_BYTES {
+            return Err(BridgeError::resource_limit(
+                "push_registry_bytes",
+                PUSH_REGISTRY_MAX_BYTES,
+                contents.len(),
+            ));
         }
+        atomic_write_private(&self.path, &contents)
+            .await
+            .map_err(|error| {
+                BridgeError::server(&format!("failed to persist push registry: {error}"))
+            })
     }
 }
 

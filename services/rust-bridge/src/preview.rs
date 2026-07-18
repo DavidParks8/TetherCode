@@ -178,7 +178,7 @@ impl BrowserPreviewService {
         let candidate_ports =
             discover_loopback_listening_ports(&[self.bridge_port, self.preview_port]).await;
         let http = self.http.clone();
-        let mut suggestions = stream::iter(candidate_ports.into_iter())
+        let suggestions = stream::iter(candidate_ports.into_iter())
             .map(|port| {
                 let http = http.clone();
                 async move {
@@ -194,9 +194,9 @@ impl BrowserPreviewService {
                 }
             })
             .buffer_unordered(24)
-            .filter_map(async move |suggestion| suggestion)
-            .collect::<Vec<_>>()
+            .collect::<Vec<Option<BrowserPreviewDiscoverySuggestion>>>()
             .await;
+        let mut suggestions = suggestions.into_iter().flatten().collect::<Vec<_>>();
         suggestions.sort_by_key(|suggestion| suggestion.port);
         BrowserPreviewDiscoveryResponse {
             scanned_at: now_iso(),

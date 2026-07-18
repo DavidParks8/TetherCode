@@ -68,5 +68,8 @@ if (fixtures.capabilities.protocolVersion !== manifest.protocolVersion) fail('ca
 if (fixtures.notification.protocolVersion !== manifest.protocolVersion) fail('notification fixture version');
 if (!manifest.notifications.includes(fixtures.notification.method)) fail('notification fixture method');
 if (!manifest.errors.some((entry) => entry.code === fixtures.overloadError.error.code)) fail('error fixture code');
+if (fixtures.resourceLimitError.error.data.actual <= fixtures.resourceLimitError.error.data.limit) fail('resource limit fixture boundary');
+if (!fixtures.truncatedGitDiff.truncated || fixtures.truncatedGitDiff.returnedBytes > fixtures.truncatedGitDiff.maxBytes) fail('git truncation fixture');
+if (!fixtures.truncatedFilesystemList.truncated || fixtures.truncatedFilesystemList.totalEntries <= fixtures.truncatedFilesystemList.maxEntries) fail('filesystem truncation fixture');
 
 process.stdout.write('RPC contract fixtures are valid.\n');
