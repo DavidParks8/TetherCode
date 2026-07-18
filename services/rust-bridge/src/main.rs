@@ -42,7 +42,9 @@ use tokio::{
     fs,
     io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
-    sync::{broadcast, mpsc, oneshot, watch, Mutex, Notify, RwLock},
+    sync::{
+        broadcast, mpsc, oneshot, watch, Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore,
+    },
     time::{sleep, timeout},
 };
 use tokio_tungstenite::{
@@ -69,6 +71,11 @@ const NOTIFICATION_REPLAY_BUFFER_SIZE: usize = 2_000;
 const NOTIFICATION_REPLAY_MAX_LIMIT: usize = 1_000;
 const INTERNAL_NOTIFICATION_CHANNEL_CAPACITY: usize = 1_024;
 const WS_CLIENT_QUEUE_CAPACITY: usize = 256;
+const DEFAULT_WS_MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
+const DEFAULT_WS_MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+const DEFAULT_WS_PER_CLIENT_IN_FLIGHT: usize = 16;
+const DEFAULT_WS_GLOBAL_IN_FLIGHT: usize = 128;
+const RPC_SERVER_OVERLOADED: i64 = -32005;
 const BRIDGE_THREAD_LIST_CURSOR_PREFIX: &str = "bridge:";
 const THREAD_LIST_STREAM_BATCH_METHOD: &str = "bridge/thread/list/stream/batch";
 const THREAD_LIST_STREAM_ERROR_METHOD: &str = "bridge/thread/list/stream/error";
@@ -128,6 +135,15 @@ struct BridgeConfig {
     disable_terminal_exec: bool,
     terminal_allowed_commands: HashSet<String>,
     show_pairing_qr: bool,
+    ws_limits: WebSocketResourceLimits,
+}
+
+#[derive(Debug, Clone)]
+struct WebSocketResourceLimits {
+    max_frame_bytes: usize,
+    max_message_bytes: usize,
+    per_client_in_flight: usize,
+    global_in_flight: usize,
 }
 
 impl BridgeConfig {
@@ -205,6 +221,7 @@ impl BridgeConfig {
             parse_bool_env_with_default("BRIDGE_ALLOW_OUTSIDE_ROOT_CWD", true);
         let disable_terminal_exec = parse_bool_env("BRIDGE_DISABLE_TERMINAL_EXEC");
         let show_pairing_qr = parse_bool_env_with_default("BRIDGE_SHOW_PAIRING_QR", true);
+        let ws_limits = WebSocketResourceLimits::from_env()?;
 
         let terminal_allowed_commands = parse_csv_env(
             "BRIDGE_TERMINAL_ALLOWED_COMMANDS",
@@ -235,6 +252,7 @@ impl BridgeConfig {
             disable_terminal_exec,
             terminal_allowed_commands,
             show_pairing_qr,
+            ws_limits,
         })
     }
 
@@ -263,6 +281,46 @@ impl BridgeConfig {
         }
 
         false
+    }
+}
+
+impl WebSocketResourceLimits {
+    fn from_env() -> Result<Self, String> {
+        let limits = Self {
+            max_frame_bytes: parse_positive_usize_env(
+                "BRIDGE_WS_MAX_FRAME_BYTES",
+                DEFAULT_WS_MAX_FRAME_BYTES,
+            )?,
+            max_message_bytes: parse_positive_usize_env(
+                "BRIDGE_WS_MAX_MESSAGE_BYTES",
+                DEFAULT_WS_MAX_MESSAGE_BYTES,
+            )?,
+            per_client_in_flight: parse_positive_usize_env(
+                "BRIDGE_WS_PER_CLIENT_IN_FLIGHT",
+                DEFAULT_WS_PER_CLIENT_IN_FLIGHT,
+            )?,
+            global_in_flight: parse_positive_usize_env(
+                "BRIDGE_WS_GLOBAL_IN_FLIGHT",
+                DEFAULT_WS_GLOBAL_IN_FLIGHT,
+            )?,
+        };
+        limits.validate()?;
+        Ok(limits)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.max_frame_bytes > self.max_message_bytes {
+            return Err(
+                "BRIDGE_WS_MAX_FRAME_BYTES must not exceed BRIDGE_WS_MAX_MESSAGE_BYTES".to_string(),
+            );
+        }
+        if self.per_client_in_flight > self.global_in_flight {
+            return Err(
+                "BRIDGE_WS_PER_CLIENT_IN_FLIGHT must not exceed BRIDGE_WS_GLOBAL_IN_FLIGHT"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -1332,6 +1390,7 @@ struct AppState {
     updater: Arc<UpdateService>,
     preview: Arc<BrowserPreviewService>,
     push: Arc<PushService>,
+    ws_global_in_flight: Arc<Semaphore>,
 }
 
 #[allow(dead_code)]
@@ -2124,12 +2183,14 @@ impl RuntimeBackend {
         route_engine_from_params(raw_params).unwrap_or_else(|| self.engine())
     }
 
+    #[allow(dead_code)]
     async fn forward_request(
         &self,
         client_id: u64,
         client_request_id: Value,
         method: &str,
         raw_params: Option<Value>,
+        permits: Option<InFlightRequestPermits>,
     ) -> Result<(), String> {
         if is_dual_engine_aggregate_method(method) {
             let result = self.request_internal(method, raw_params).await?;
@@ -2143,17 +2204,28 @@ impl RuntimeBackend {
         match self.backend_for_engine(target_engine)? {
             RuntimeBackendRef::Codex(bridge) => {
                 bridge
-                    .forward_request(client_id, client_request_id, method, normalized_params)
+                    .forward_request_with_permits(
+                        client_id,
+                        client_request_id,
+                        method,
+                        normalized_params,
+                        permits,
+                    )
                     .await
             }
-            RuntimeBackendRef::Opencode(backend) => {
-                backend
-                    .forward_request(client_id, client_request_id, method, normalized_params)
-                    .await
-            }
+            RuntimeBackendRef::Opencode(backend) => backend
+                .forward_request(client_id, client_request_id, method, normalized_params)
+                .await
+                .map(|()| drop(permits)),
             RuntimeBackendRef::Cursor(bridge) => {
                 bridge
-                    .forward_request(client_id, client_request_id, method, normalized_params)
+                    .forward_request_with_permits(
+                        client_id,
+                        client_request_id,
+                        method,
+                        normalized_params,
+                        permits,
+                    )
                     .await
             }
         }
@@ -3611,6 +3683,12 @@ struct PendingRequest {
     method: String,
     cached_chatgpt_auth: Option<BridgeChatGptAuthBundle>,
     clear_cached_chatgpt_auth_on_success: bool,
+    _in_flight_permits: Option<InFlightRequestPermits>,
+}
+
+struct InFlightRequestPermits {
+    _client: OwnedSemaphorePermit,
+    _global: OwnedSemaphorePermit,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3858,12 +3936,25 @@ impl AppServerBridge {
         }
     }
 
+    #[allow(dead_code)]
     async fn forward_request(
         &self,
         client_id: u64,
         client_request_id: Value,
         method: &str,
         params: Option<Value>,
+    ) -> Result<(), String> {
+        self.forward_request_with_permits(client_id, client_request_id, method, params, None)
+            .await
+    }
+
+    async fn forward_request_with_permits(
+        &self,
+        client_id: u64,
+        client_request_id: Value,
+        method: &str,
+        params: Option<Value>,
+        permits: Option<InFlightRequestPermits>,
     ) -> Result<(), String> {
         let internal_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let cached_chatgpt_auth =
@@ -3880,6 +3971,7 @@ impl AppServerBridge {
                     method: method.to_string(),
                     cached_chatgpt_auth,
                     clear_cached_chatgpt_auth_on_success,
+                    _in_flight_permits: permits,
                 },
             );
         }
@@ -7841,6 +7933,7 @@ async fn main() {
         updater,
         preview,
         push,
+        ws_global_in_flight: Arc::new(Semaphore::new(config.ws_limits.global_in_flight)),
     });
 
     let app = Router::new()
@@ -8434,6 +8527,8 @@ async fn handle_preview_websocket_request(
     };
 
     websocket_upgrade
+        .max_frame_size(state.config.ws_limits.max_frame_bytes)
+        .max_message_size(state.config.ws_limits.max_message_bytes)
         .on_upgrade(move |socket| async move {
             proxy_preview_websocket(socket, upstream_socket).await;
         })
@@ -8515,7 +8610,9 @@ async fn ws_handler(
 
     let client_metadata = ClientConnectionMetadata::from_query(&query);
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, client_metadata))
+    ws.max_frame_size(state.config.ws_limits.max_frame_bytes)
+        .max_message_size(state.config.ws_limits.max_message_bytes)
+        .on_upgrade(move |socket| handle_socket(socket, state, client_metadata))
         .into_response()
 }
 
@@ -8526,6 +8623,7 @@ async fn handle_socket(
 ) {
     let (mut socket_tx, mut socket_rx) = socket.split();
     let (tx, mut rx) = mpsc::channel::<Message>(WS_CLIENT_QUEUE_CAPACITY);
+    let client_in_flight = Arc::new(Semaphore::new(state.config.ws_limits.per_client_in_flight));
     let client_id = state
         .hub
         .add_client_with_metadata(tx, client_metadata)
@@ -8559,9 +8657,48 @@ async fn handle_socket(
 
                 match message {
                     Ok(Message::Text(text)) => {
+                        let request_id = parse_client_request_id(&text);
+                        let client_permit = match client_in_flight.clone().try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                send_overload_error(
+                                    &state,
+                                    client_id,
+                                    request_id,
+                                    "client_in_flight_requests",
+                                    state.config.ws_limits.per_client_in_flight,
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
+                        let global_permit = match state.ws_global_in_flight.clone().try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                drop(client_permit);
+                                send_overload_error(
+                                    &state,
+                                    client_id,
+                                    request_id,
+                                    "global_in_flight_requests",
+                                    state.config.ws_limits.global_in_flight,
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
                         let state = Arc::clone(&state);
                         tokio::spawn(async move {
-                            handle_client_message(client_id, text.to_string(), &state).await;
+                            handle_client_message(
+                                client_id,
+                                text.to_string(),
+                                &state,
+                                Some(InFlightRequestPermits {
+                                    _client: client_permit,
+                                    _global: global_permit,
+                                }),
+                            )
+                            .await;
                         });
                     }
                     Ok(Message::Close(_)) => break,
@@ -8610,7 +8747,12 @@ async fn handle_socket(
     }
 }
 
-async fn handle_client_message(client_id: u64, text: String, state: &Arc<AppState>) {
+async fn handle_client_message(
+    client_id: u64,
+    text: String,
+    state: &Arc<AppState>,
+    permits: Option<InFlightRequestPermits>,
+) {
     state.hub.mark_client_seen(client_id).await;
 
     let parsed = match serde_json::from_str::<Value>(&text) {
@@ -8692,7 +8834,7 @@ async fn handle_client_message(client_id: u64, text: String, state: &Arc<AppStat
 
     if let Err(error) = state
         .backend
-        .forward_request(client_id, id.clone(), method, params)
+        .forward_request(client_id, id.clone(), method, params, permits)
         .await
     {
         send_rpc_error(state, client_id, id, -32000, &error, None).await;
@@ -9925,6 +10067,36 @@ async fn send_rpc_error(
     }
 
     state.hub.send_json(client_id, payload).await;
+}
+
+fn parse_client_request_id(text: &str) -> Value {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|value| value.get("id").cloned())
+        .unwrap_or(Value::Null)
+}
+
+async fn send_overload_error(
+    state: &Arc<AppState>,
+    client_id: u64,
+    id: Value,
+    resource: &str,
+    limit: usize,
+) {
+    send_rpc_error(
+        state,
+        client_id,
+        id,
+        RPC_SERVER_OVERLOADED,
+        "Bridge request capacity is exhausted",
+        Some(json!({
+            "error": "overloaded",
+            "resource": resource,
+            "limit": limit,
+            "retryable": true,
+        })),
+    )
+    .await;
 }
 
 fn resolve_bridge_workdir(raw_workdir: PathBuf) -> Result<PathBuf, String> {
@@ -12123,6 +12295,20 @@ fn parse_bool_env_with_default(name: &str, default: bool) -> bool {
             }
         })
         .unwrap_or(default)
+}
+
+fn parse_positive_usize_env(name: &str, default: usize) -> Result<usize, String> {
+    let Some(raw) = env::var(name).ok() else {
+        return Ok(default);
+    };
+    let value = raw
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| format!("{name} must be a positive integer"))?;
+    if value == 0 {
+        return Err(format!("{name} must be greater than zero"));
+    }
+    Ok(value)
 }
 
 fn read_non_empty_env(name: &str) -> Option<String> {
@@ -15263,6 +15449,7 @@ mod tests {
             disable_terminal_exec: true,
             terminal_allowed_commands: HashSet::new(),
             show_pairing_qr: false,
+            ws_limits: test_ws_limits(),
         });
 
         let hub = Arc::new(ClientHub::new());
@@ -15289,6 +15476,7 @@ mod tests {
         let push = PushService::load(&config.workdir, "Clawdex".to_string()).await;
 
         Arc::new(AppState {
+            ws_global_in_flight: Arc::new(Semaphore::new(config.ws_limits.global_in_flight)),
             config,
             started_at: Instant::now(),
             hub,
@@ -15301,6 +15489,86 @@ mod tests {
             preview,
             push,
         })
+    }
+
+    fn test_ws_limits() -> WebSocketResourceLimits {
+        WebSocketResourceLimits {
+            max_frame_bytes: DEFAULT_WS_MAX_FRAME_BYTES,
+            max_message_bytes: DEFAULT_WS_MAX_MESSAGE_BYTES,
+            per_client_in_flight: DEFAULT_WS_PER_CLIENT_IN_FLIGHT,
+            global_in_flight: DEFAULT_WS_GLOBAL_IN_FLIGHT,
+        }
+    }
+
+    #[test]
+    fn websocket_resource_limits_reject_invalid_relationships() {
+        let mut limits = test_ws_limits();
+        limits.max_frame_bytes = limits.max_message_bytes + 1;
+        assert!(limits.validate().is_err());
+
+        let mut limits = test_ws_limits();
+        limits.per_client_in_flight = limits.global_in_flight + 1;
+        assert!(limits.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn overload_errors_are_structured_and_retryable() {
+        let state = build_test_state().await;
+        let (client_id, mut rx) = add_test_client(&state.hub).await;
+
+        send_overload_error(
+            &state,
+            client_id,
+            json!("req-overload"),
+            "global_in_flight_requests",
+            1,
+        )
+        .await;
+
+        let payload = recv_client_json(&mut rx).await;
+        assert_eq!(payload["id"], "req-overload");
+        assert_eq!(payload["error"]["code"], RPC_SERVER_OVERLOADED);
+        assert_eq!(payload["error"]["data"]["error"], "overloaded");
+        assert_eq!(
+            payload["error"]["data"]["resource"],
+            "global_in_flight_requests"
+        );
+        assert_eq!(payload["error"]["data"]["retryable"], true);
+
+        shutdown_test_backend(&state.backend).await;
+    }
+
+    #[tokio::test]
+    async fn forwarded_requests_hold_in_flight_permits_until_response() {
+        let state = build_test_state().await;
+        let client_limit = Arc::new(Semaphore::new(1));
+        let global_limit = Arc::new(Semaphore::new(1));
+        let permits = InFlightRequestPermits {
+            _client: client_limit
+                .clone()
+                .try_acquire_owned()
+                .expect("client permit"),
+            _global: global_limit
+                .clone()
+                .try_acquire_owned()
+                .expect("global permit"),
+        };
+
+        state
+            .backend
+            .forward_request(999, json!("req-held"), "thread/start", None, Some(permits))
+            .await
+            .expect("forward request");
+        assert!(client_limit.clone().try_acquire_owned().is_err());
+        assert!(global_limit.clone().try_acquire_owned().is_err());
+
+        test_codex_backend(&state.backend)
+            .handle_response(json!({ "id": 1, "result": { "threadId": "thr_held" } }))
+            .await;
+        assert!(client_limit.try_acquire_owned().is_ok());
+        assert!(global_limit.try_acquire_owned().is_ok());
+
+        shutdown_test_backend(&state.backend).await;
     }
 
     #[test]
@@ -17632,6 +17900,7 @@ mod tests {
             disable_terminal_exec: false,
             terminal_allowed_commands: HashSet::new(),
             show_pairing_qr: true,
+            ws_limits: test_ws_limits(),
         };
 
         let payload = build_pairing_payload(&config).expect("pairing payload");
@@ -17668,6 +17937,7 @@ mod tests {
             disable_terminal_exec: false,
             terminal_allowed_commands: HashSet::new(),
             show_pairing_qr: true,
+            ws_limits: test_ws_limits(),
         };
 
         assert!(build_pairing_payload(&config).is_none());
@@ -17705,6 +17975,7 @@ mod tests {
             disable_terminal_exec: false,
             terminal_allowed_commands: HashSet::new(),
             show_pairing_qr: true,
+            ws_limits: test_ws_limits(),
         };
 
         let payload = build_pairing_payload(&config).expect("pairing payload");
@@ -17741,6 +18012,7 @@ mod tests {
             disable_terminal_exec: false,
             terminal_allowed_commands: HashSet::new(),
             show_pairing_qr: false,
+            ws_limits: test_ws_limits(),
         };
 
         let mut headers = HeaderMap::new();
@@ -17993,7 +18265,7 @@ mod tests {
         let state = build_test_state().await;
         let (client_id, mut rx) = add_test_client(&state.hub).await;
 
-        handle_client_message(client_id, "{invalid-json".to_string(), &state).await;
+        handle_client_message(client_id, "{invalid-json".to_string(), &state, None).await;
 
         let payload = recv_client_json(&mut rx).await;
         assert_eq!(payload["id"], Value::Null);
@@ -18007,7 +18279,7 @@ mod tests {
         let state = build_test_state().await;
         let (client_id, mut rx) = add_test_client(&state.hub).await;
 
-        handle_client_message(client_id, json!({ "id": "abc" }).to_string(), &state).await;
+        handle_client_message(client_id, json!({ "id": "abc" }).to_string(), &state, None).await;
 
         let payload = recv_client_json(&mut rx).await;
         assert_eq!(payload["id"], "abc");
@@ -18030,6 +18302,7 @@ mod tests {
             })
             .to_string(),
             &state,
+            None,
         )
         .await;
 
@@ -18054,6 +18327,7 @@ mod tests {
             })
             .to_string(),
             &state,
+            None,
         )
         .await;
 

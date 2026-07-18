@@ -210,6 +210,12 @@ npm run teardown -- --yes
 | `BRIDGE_OPENCODE_SERVER_PASSWORD` | basic-auth password passed to opencode server |
 | `BRIDGE_WORKDIR` | absolute working directory for terminal/git |
 | `BRIDGE_ALLOW_OUTSIDE_ROOT_CWD` | allow terminal/git `cwd` outside `BRIDGE_WORKDIR` |
+| `BRIDGE_WS_MAX_FRAME_BYTES` | maximum inbound WebSocket frame size (default 32 MiB) |
+| `BRIDGE_WS_MAX_MESSAGE_BYTES` | maximum reassembled inbound WebSocket message size (default 32 MiB) |
+| `BRIDGE_WS_PER_CLIENT_IN_FLIGHT` | maximum concurrent RPC requests per WebSocket client (default `16`) |
+| `BRIDGE_WS_GLOBAL_IN_FLIGHT` | maximum concurrent client RPC requests bridge-wide (default `128`) |
+
+Resource-limit values are strict positive integers. Requests above concurrency limits receive retryable JSON-RPC error `-32005`; oversized frames/messages are closed by the WebSocket transport before JSON parsing.
 
 ### Mobile runtime (`apps/mobile/.env`, generated/updated)
 

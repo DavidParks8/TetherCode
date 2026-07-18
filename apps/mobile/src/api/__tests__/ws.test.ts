@@ -172,6 +172,42 @@ describe('HostBridgeWsClient', () => {
     });
   });
 
+  it('preserves structured bridge overload errors', async () => {
+    const client = new HostBridgeWsClient('http://localhost:8787');
+    client.connect();
+    const socket = latestMockSocket();
+    socket.simulateOpen();
+    const requestPromise = client.request('bridge/health/read');
+    await Promise.resolve();
+    const sentPayload = JSON.parse(String(socket.send.mock.calls[0][0])) as { id: string };
+
+    socket.simulateMessage(
+      JSON.stringify({
+        id: sentPayload.id,
+        error: {
+          code: -32005,
+          message: 'Bridge request capacity is exhausted',
+          data: {
+            error: 'overloaded',
+            resource: 'global_in_flight_requests',
+            limit: 128,
+            retryable: true,
+          },
+        },
+      })
+    );
+
+    await expect(requestPromise).rejects.toMatchObject({
+      code: -32005,
+      method: 'bridge/health/read',
+      data: {
+        error: 'overloaded',
+        resource: 'global_in_flight_requests',
+        retryable: true,
+      },
+    });
+  });
+
   it('onStatus emits open/close state changes', () => {
     const client = new HostBridgeWsClient('http://localhost:8787');
     const listener = jest.fn();
