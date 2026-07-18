@@ -234,7 +234,7 @@ export class CodexAppServerClient {
       this.writeJson(payload).catch((error) => {
         clearTimeout(timeout);
         this.pending.delete(id);
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       });
     });
 

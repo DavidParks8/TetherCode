@@ -12,11 +12,26 @@ module.exports = [
       globals: globals.node,
       parserOptions: {
         ecmaVersion: 'latest',
-        sourceType: 'module'
+        sourceType: 'module',
+        projectService: true,
+        tsconfigRootDir: __dirname
       }
     },
     rules: {
-      '@typescript-eslint/consistent-type-imports': ['warn', { prefer: 'type-imports' }]
+      '@typescript-eslint/await-thenable': 'error',
+      '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-misused-promises': 'error',
+      '@typescript-eslint/prefer-promise-reject-errors': 'error'
+    }
+  },
+  {
+    files: ['**/__tests__/**/*.ts'],
+    rules: {
+      '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/unbound-method': 'off',
+      '@typescript-eslint/await-thenable': 'off',
+      '@typescript-eslint/no-misused-promises': 'off'
     }
   }
 ];

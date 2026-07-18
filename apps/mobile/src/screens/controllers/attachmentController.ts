@@ -122,7 +122,7 @@ export function useAttachmentController({
   const [preparedAttachments, setPreparedAttachments] = useState<PreparedAttachment[]>([]);
   const uploading = preparedAttachments.some((attachment) => attachment.status === 'uploading');
   const cacheRef = useRef<Record<string, string[]>>({});
-  const inFlightRef = useRef<Record<string, Promise<string[]>>>({});
+  const inFlightRef = useRef<Partial<Record<string, Promise<string[]>>>>({});
   const workspaceRef = useRef<string | null>(workspace);
   const pickerInProgressRef = useRef(false);
   const submissionPendingRef = useRef(false);

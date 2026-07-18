@@ -4802,9 +4802,13 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         const running = summary
           ? buildAgentThreadDisplayState(summary, snapshot).isActive
           : false;
-        timer = setTimeout(poll, running ? ACTIVE_CHAT_SYNC_INTERVAL_MS : IDLE_CHAT_SYNC_INTERVAL_MS);
+        timer = setTimeout(() => {
+          void poll();
+        }, running ? ACTIVE_CHAT_SYNC_INTERVAL_MS : IDLE_CHAT_SYNC_INTERVAL_MS);
       };
-      timer = setTimeout(poll, ACTIVE_CHAT_SYNC_INTERVAL_MS);
+      timer = setTimeout(() => {
+        void poll();
+      }, ACTIVE_CHAT_SYNC_INTERVAL_MS);
       return () => {
         stopped = true;
         if (timer) {
@@ -7966,7 +7970,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               <BridgeUiBanner
                 key={surface.id}
                 surface={surface}
-                onAction={handleBridgeUiAction}
+                onAction={(nextSurface, action) => {
+                  void handleBridgeUiAction(nextSurface, action);
+                }}
                 onDismiss={(nextSurface) => {
                   void dismissBridgeUiSurface(nextSurface);
                 }}
@@ -8420,7 +8426,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 key={surface.id}
                 surface={surface}
                 scrollMaxHeight={Math.max(176, Math.min(Math.floor(windowHeight * 0.4), 360))}
-                onAction={handleBridgeUiAction}
+                onAction={(nextSurface, action) => {
+                  void handleBridgeUiAction(nextSurface, action);
+                }}
                 onDismiss={(nextSurface) => {
                   void dismissBridgeUiSurface(nextSurface);
                 }}
@@ -9144,7 +9152,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         {modalBridgeUiSurface ? (
           <BridgeUiModal
             surface={modalBridgeUiSurface}
-            onAction={handleBridgeUiAction}
+            onAction={(nextSurface, action) => {
+              void handleBridgeUiAction(nextSurface, action);
+            }}
             onDismiss={(surface) => {
               void dismissBridgeUiSurface(surface);
             }}

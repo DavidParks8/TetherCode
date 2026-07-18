@@ -357,7 +357,7 @@ export class CodexCliAdapter {
         } catch (error) {
           clearTimeout(timeout);
           unsubscribe();
-          reject(error);
+          reject(error instanceof Error ? error : new Error(String(error)));
         }
       });
     });
