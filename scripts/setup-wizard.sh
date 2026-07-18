@@ -1224,6 +1224,18 @@ has_packaged_bridge_binary() {
   node "$SCRIPT_DIR/bridge-binary.js" has-current-packaged >/dev/null 2>&1
 }
 
+has_bridge_source() {
+  [[ -f "$PACKAGE_ROOT/services/rust-bridge/Cargo.toml" ]]
+}
+
+source_build_requested() {
+  local configured="${CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD:-}"
+  if [[ -z "$configured" ]]; then
+    configured="$(extract_env_value "$SECURE_ENV_FILE" "CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD")"
+  fi
+  [[ "$configured" == "true" ]]
+}
+
 ensure_local_rust_build_toolchain() {
   if ! ensure_or_install_command "cc" "C compiler/linker (cc)" install_c_toolchain_cli "Y"; then
     fail "C compiler/linker is required for Rust crate builds."
@@ -1756,10 +1768,19 @@ choose_flow
 
 section "Prerequisites"
 ensure_core_tools
-if has_packaged_bridge_binary; then
+if source_build_requested; then
+  if ! has_bridge_source; then
+    abort_wizard "CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=true requires bridge Rust sources, but none were found in $PACKAGE_ROOT."
+  fi
+  info "Bridge source build requested."
+  ensure_local_rust_build_toolchain
+elif has_packaged_bridge_binary; then
   ok "Found packaged Rust bridge binary for this host."
+elif has_bridge_source; then
+  info "No packaged bridge binary found; the bridge will be built from this source checkout."
+  ensure_local_rust_build_toolchain
 else
-  abort_wizard "No packaged bridge binary found for this host. Reinstall clawdex-mobile so npm installs the bundled bridge binary, then rerun setup."
+  abort_wizard "No packaged bridge binary or bridge Rust source was found for this host. Reinstall clawdex-mobile, then rerun setup."
 fi
 
 section "Config handling"
@@ -1843,6 +1864,9 @@ else
     section "Write secure config"
     BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" BRIDGE_ACTIVE_ENGINE="$ACTIVE_ENGINE" BRIDGE_ENABLED_ENGINES="$(selected_engines_csv)" "$SCRIPT_DIR/setup-secure-dev.sh"
   elif [[ "$CURSOR_CONFIG_NEEDS_WRITE" == "true" ]]; then
+    section "Write secure config"
+    BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" BRIDGE_ACTIVE_ENGINE="$ACTIVE_ENGINE" BRIDGE_ENABLED_ENGINES="$(selected_engines_csv)" "$SCRIPT_DIR/setup-secure-dev.sh"
+  elif [[ -n "${CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD:-}" ]] && [[ "$(extract_env_value "$SECURE_ENV_FILE" "CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD")" != "$CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD" ]]; then
     section "Write secure config"
     BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" BRIDGE_ACTIVE_ENGINE="$ACTIVE_ENGINE" BRIDGE_ENABLED_ENGINES="$(selected_engines_csv)" "$SCRIPT_DIR/setup-secure-dev.sh"
   fi

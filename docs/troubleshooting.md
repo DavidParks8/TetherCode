@@ -6,7 +6,7 @@
 - Published npm installs should use a bundled bridge binary on `darwin-arm64`, `darwin-x64`, `linux-x64`, and `win32-x64`.
 - `clawdex init` should not run a repo `npm install` on the published CLI path.
 - Published CLI installs should not pull Expo/React Native or ship the mobile source tree.
-- If startup is still compiling Rust, you are usually on a source checkout, an unsupported host, or a package without bundled bridge binaries.
+- If startup is compiling Rust, you are usually on a source checkout, an unsupported host, a package without a bundled bridge binary, or have `CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=true` in `.env.secure`.
 - The slow parts are usually npm dependency install/repair or the first Rust bridge build on source-based setups.
 - If you want to skip the interactive wizard after initial setup, use `npm run secure:bridge`.
 
@@ -37,7 +37,7 @@ npm run stop:services
 - For a local dev build, also ensure `BRIDGE_AUTH_TOKEN` in `.env.secure` matches `EXPO_PUBLIC_HOST_BRIDGE_TOKEN` in `apps/mobile/.env`.
 - Restart the bridge after token changes.
 - On secure-launcher installs, `Settings > Bridge Maintenance > Restart bridge safely` can do that from the phone.
-- If an in-app bridge update fails, inspect `.bridge-updater.log` and `.bridge-update-status.json` in the bridge install root.
+- If an in-app bridge update fails, inspect `.bridge-updater.log` and `.bridge-update-status.json` beside the `.env.secure` used to launch the bridge. For a published CLI this is the directory where `clawdex init` was invoked, not the global npm package directory.
 
 ## Bridge exits when no-auth mode is enabled
 
@@ -93,6 +93,16 @@ sudo apt-get update && sudo apt-get install -y build-essential
 ```
 
 Then retry `npm run secure:bridge`.
+
+From a clean checkout, setup intentionally builds the bridge when no packaged binary exists. To
+force a source build even if a packaged binary is present:
+
+```bash
+CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=true npm run setup:wizard
+```
+
+The wizard saves that setting in `.env.secure`; set it to `false` there to return to packaged-binary
+startup.
 
 ## iOS bundling error: `Unable to resolve "./BoundingDimensions"`
 

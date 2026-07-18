@@ -41,6 +41,11 @@ Published npm releases bundle prebuilt bridge binaries for `darwin-arm64`, `darw
 
 Published CLI installs are bridge-only. They do not include the Expo workspace or mobile app source files.
 
+A clean source checkout does not contain a bundled bridge binary. The setup wizard detects
+`services/rust-bridge/Cargo.toml`, installs/checks the Cargo and C toolchains, and builds the bridge
+with `cargo build --locked --release`. Set `CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=true` before setup to
+force this path even when a packaged binary exists; setup persists that choice in `.env.secure`.
+
 ## Manual Secure Setup (No Wizard)
 
 ### 1) Install dependencies
@@ -99,6 +104,11 @@ Published `clawdex-mobile` CLI installs also expose `Update bridge`.
 
 Source checkouts expose only the restart action because repo-specific update logic is not safe to automate generically from mobile.
 
+Maintenance keeps the package/source root separate from the invocation workspace root. Launcher
+scripts come from the package root, while `.env.secure`, PID, log, and updater status files remain in
+the directory where `clawdex init` or the source-checkout command was invoked. Restart and update
+persist both roots explicitly, so neither path is inferred from the bridge executable location.
+
 ## Local Mobile Development Only
 
 If you are developing the mobile app from this repo, start Expo separately:
@@ -126,7 +136,7 @@ want the same flow but to open a native Expo run command instead of the default 
 Optional environment variables:
 
 - `CLAWDEX_SETUP_VERBOSE=true` — show full installer output
-- `CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=true` — ignore a bundled bridge binary and build from local Rust sources instead
+- `CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=true` — ignore a bundled bridge binary and build the included Rust sources with Cargo; setup persists this in `.env.secure`
 - `EXPO_AUTO_REPAIR=true` — auto-repair React Native runtime on `npm run mobile`
 - `EXPO_CLEAR_CACHE=true` — force `expo start --clear` via `npm run mobile`
 

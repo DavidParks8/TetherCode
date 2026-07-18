@@ -16,6 +16,8 @@ function parseArgs(argv) {
     version: "latest",
     statusPath: "",
     logPath: "",
+    packageRoot: "",
+    workspaceRoot: "",
     startedAt: new Date().toISOString(),
   };
 
@@ -48,12 +50,24 @@ function parseArgs(argv) {
       case "--started-at":
         parsed.startedAt = value;
         break;
+      case "--package-root":
+        parsed.packageRoot = path.resolve(value);
+        break;
+      case "--workspace-root":
+        parsed.workspaceRoot = path.resolve(value);
+        break;
       default:
         throw new Error(`unknown updater flag: ${flag}`);
     }
   }
 
-  if (!parsed.jobId || !parsed.bridgePid || !parsed.statusPath) {
+  if (
+    !parsed.jobId ||
+    !parsed.bridgePid ||
+    !parsed.statusPath ||
+    !parsed.packageRoot ||
+    !parsed.workspaceRoot
+  ) {
     throw new Error("missing updater arguments");
   }
 
@@ -114,8 +128,8 @@ function formatHostForUrl(host) {
   return host;
 }
 
-function backupSecureEnv(packageRoot, jobId) {
-  const secureEnvPath = path.join(packageRoot, ".env.secure");
+function backupSecureEnv(workspaceRoot, jobId) {
+  const secureEnvPath = path.join(workspaceRoot, ".env.secure");
   if (!fs.existsSync(secureEnvPath)) {
     return null;
   }
@@ -252,8 +266,8 @@ function buildOpencodeServePattern(port) {
   return new RegExp(`\\bopencode(?:\\.cmd|\\.exe)?\\b.*\\bserve\\b.*--port\\s+${normalizedPort}\\b`);
 }
 
-async function stopLingeringOpencodeServer(packageRoot) {
-  const secureEnvPath = path.join(packageRoot, ".env.secure");
+async function stopLingeringOpencodeServer(workspaceRoot) {
+  const secureEnvPath = path.join(workspaceRoot, ".env.secure");
   if (!fs.existsSync(secureEnvPath)) {
     return;
   }
@@ -317,16 +331,21 @@ async function waitForBridgeExit(pid) {
   throw new Error("bridge process did not exit in time");
 }
 
-function startBridge(packageRoot, logPath) {
-  const bridgeLogPath = path.join(packageRoot, ".bridge.log");
+function startBridge(packageRoot, workspaceRoot, logPath) {
+  const bridgeLogPath = path.join(workspaceRoot, ".bridge.log");
   const output = fs.openSync(bridgeLogPath, "a");
   const error = fs.openSync(bridgeLogPath, "a");
   const child = spawn(
     nodeCommand(),
     [path.join(packageRoot, "scripts", "start-bridge-secure.js")],
     {
-      cwd: packageRoot,
-      env: process.env,
+      cwd: workspaceRoot,
+      env: {
+        ...process.env,
+        CLAWDEX_PACKAGE_ROOT: packageRoot,
+        CLAWDEX_WORKSPACE_ROOT: workspaceRoot,
+        INIT_CWD: workspaceRoot,
+      },
       detached: true,
       stdio: ["ignore", output, error],
     }
@@ -373,20 +392,20 @@ async function waitForHealth(envFilePath, timeoutMs) {
   throw new Error("bridge health check did not recover in time");
 }
 
-async function restartBridge(packageRoot, statusPath, payload, message) {
-  await stopLingeringOpencodeServer(packageRoot);
+async function restartBridge(packageRoot, workspaceRoot, statusPath, payload, message) {
+  await stopLingeringOpencodeServer(workspaceRoot);
   writeStatus(statusPath, {
     ...payload,
     state: "starting",
     message,
   });
-  startBridge(packageRoot, payload.logPath);
+  startBridge(packageRoot, workspaceRoot, payload.logPath);
   writeStatus(statusPath, {
     ...payload,
     state: "waitingForHealth",
     message: "Waiting for bridge health to recover.",
   });
-  await waitForHealth(path.join(packageRoot, ".env.secure"), 45_000);
+  await waitForHealth(path.join(workspaceRoot, ".env.secure"), 45_000);
 }
 
 async function stopCurrentBridge(statusPath, payload, bridgePid) {
@@ -401,8 +420,8 @@ async function stopCurrentBridge(statusPath, payload, bridgePid) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const packageRoot = path.resolve(__dirname, "..");
-  const secureEnvBackup = backupSecureEnv(packageRoot, args.jobId);
+  const { packageRoot, workspaceRoot } = args;
+  const secureEnvBackup = backupSecureEnv(workspaceRoot, args.jobId);
   const baseStatus = {
     jobId: args.jobId,
     targetVersion: args.action === "restart" ? args.version || "current" : args.version,
@@ -426,6 +445,7 @@ async function main() {
       try {
         await restartBridge(
           packageRoot,
+          workspaceRoot,
           args.statusPath,
           baseStatus,
           "Starting the bridge process."
@@ -466,6 +486,7 @@ async function main() {
       upgraded = true;
       await restartBridge(
         packageRoot,
+        workspaceRoot,
         args.statusPath,
         baseStatus,
         "Starting the updated bridge process."
@@ -482,6 +503,7 @@ async function main() {
         restoreSecureEnv(secureEnvBackup);
         await restartBridge(
           packageRoot,
+          workspaceRoot,
           args.statusPath,
           baseStatus,
           upgraded
@@ -525,4 +547,8 @@ async function main() {
   }
 }
 
-void main();
+module.exports = { parseArgs };
+
+if (require.main === module) {
+  void main();
+}

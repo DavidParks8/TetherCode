@@ -137,6 +137,10 @@ function resolveBridgeBuildProfile(env) {
   return "release";
 }
 
+function hasBridgeSource(packageDir) {
+  return fs.existsSync(path.join(packageDir, "services", "rust-bridge", "Cargo.toml"));
+}
+
 function resolveBridgeAccessUrl(env, endpoint) {
   const configured = normalizeBaseUrl(readNonEmptyEnv(env, "BRIDGE_CONNECT_URL"));
   if (configured) {
@@ -574,14 +578,14 @@ function resolveLaunch(workspaceDir, packageDir, env, { devMode, forceSourceBuil
 
   const builtBinary = builtBinaryPath(packageDir, os.platform(), buildProfile);
 
-  if (!forceSourceBuild) {
+  if (!forceSourceBuild && !hasBridgeSource(packageDir)) {
     console.error("error: no packaged bridge binary was found for this host.");
-    console.error("Reinstall a published clawdex-mobile package with bundled bridge binaries.");
+    console.error("Reinstall a published clawdex-mobile package with a bundled bridge binary.");
     process.exit(1);
   }
 
   if (!commandExists("cargo")) {
-    console.error("error: CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=true was set, but cargo is not installed.");
+    console.error("error: bridge source build is required, but cargo is not installed.");
     process.exit(1);
   }
 
@@ -621,6 +625,7 @@ async function start() {
   const env = {
     ...process.env,
     ...fileEnv,
+    CLAWDEX_PACKAGE_ROOT: packageDir,
     CLAWDEX_WORKSPACE_ROOT: workspaceDir,
     INIT_CWD: process.env.INIT_CWD || workspaceDir,
   };
@@ -630,7 +635,10 @@ async function start() {
   }
   const backgroundMode = process.argv.includes("--background");
   const prepareOnly = process.argv.includes("--prepare-only");
-  const forceSourceBuild = env.CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD === "true";
+  const forceSourceBuild =
+    (process.env.CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD ?? fileEnv.CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD) ===
+    "true";
+  env.CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD = String(forceSourceBuild);
   const launch = resolveLaunch(workspaceDir, packageDir, env, { devMode, forceSourceBuild });
 
   if (prepareOnly) {
@@ -651,7 +659,17 @@ async function start() {
   spawnAndRelay(launch.command, launch.args, { cwd: launch.cwd, env: launch.env });
 }
 
-start().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+module.exports = {
+  hasBridgeSource,
+  readEnvFile,
+  resolveBridgeBuildProfile,
+  resolvePackageDir,
+  resolveWorkspaceDir,
+};
+
+if (require.main === module) {
+  start().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}

@@ -92,6 +92,7 @@ struct BridgeMaintenanceJobStart {
 #[derive(Clone)]
 pub(crate) struct UpdateService {
     package_root: Option<PathBuf>,
+    workspace_root: Option<PathBuf>,
     install_kind: BridgeInstallKind,
     status_path: Option<PathBuf>,
     log_path: Option<PathBuf>,
@@ -102,15 +103,20 @@ pub(crate) struct UpdateService {
 
 impl UpdateService {
     pub(crate) fn discover() -> Self {
-        let package_root = find_package_root();
+        let package_root = explicit_root("CLAWDEX_PACKAGE_ROOT", looks_like_package_root);
+        let workspace_root = explicit_root("CLAWDEX_WORKSPACE_ROOT", |root| root.is_dir());
+        Self::from_roots(package_root, workspace_root)
+    }
+
+    fn from_roots(package_root: Option<PathBuf>, workspace_root: Option<PathBuf>) -> Self {
         let install_kind = package_root
             .as_ref()
             .map(|root| detect_install_kind(root))
             .unwrap_or(BridgeInstallKind::Unknown);
-        let status_path = package_root
+        let status_path = workspace_root
             .as_ref()
             .map(|root| root.join(".bridge-update-status.json"));
-        let log_path = package_root
+        let log_path = workspace_root
             .as_ref()
             .map(|root| root.join(".bridge-updater.log"));
         let script_path = package_root
@@ -119,10 +125,11 @@ impl UpdateService {
         let launcher_path = package_root
             .as_ref()
             .map(|root| root.join("scripts").join("start-bridge-secure.js"));
-        let secure_env_path = package_root.as_ref().map(|root| root.join(".env.secure"));
+        let secure_env_path = workspace_root.as_ref().map(|root| root.join(".env.secure"));
 
         Self {
             package_root,
+            workspace_root,
             install_kind,
             status_path,
             log_path,
@@ -134,6 +141,7 @@ impl UpdateService {
 
     pub(crate) fn is_safe_restart_supported(&self) -> bool {
         self.package_root.is_some()
+            && self.workspace_root.is_some()
             && self.script_path.as_ref().is_some_and(|path| path.is_file())
             && self
                 .launcher_path
@@ -246,6 +254,10 @@ impl UpdateService {
             .log_path
             .as_ref()
             .ok_or_else(|| "bridge updater log path is missing".to_string())?;
+        let workspace_root = self
+            .workspace_root
+            .as_ref()
+            .ok_or_else(|| "unable to resolve bridge workspace root".to_string())?;
 
         let target_version = normalize_target_version(version)?;
         let job_id = create_job_id(action.job_prefix());
@@ -276,7 +288,11 @@ impl UpdateService {
             .arg(log_path)
             .arg("--started-at")
             .arg(now_iso)
-            .current_dir(package_root)
+            .arg("--package-root")
+            .arg(package_root)
+            .arg("--workspace-root")
+            .arg(workspace_root)
+            .current_dir(workspace_root)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_file_err));
@@ -331,15 +347,13 @@ async fn fetch_latest_npm_version() -> Option<String> {
     Some(latest.to_string())
 }
 
-fn find_package_root() -> Option<PathBuf> {
-    let current_exe = env::current_exe().ok()?;
-    for ancestor in current_exe.ancestors() {
-        if looks_like_package_root(ancestor) {
-            return Some(ancestor.to_path_buf());
-        }
+fn explicit_root(name: &str, validate: impl FnOnce(&Path) -> bool) -> Option<PathBuf> {
+    let root = env::var_os(name).map(PathBuf::from)?;
+    if validate(&root) {
+        Some(root)
+    } else {
+        None
     }
-
-    None
 }
 
 fn looks_like_package_root(path: &Path) -> bool {
@@ -424,3 +438,56 @@ fn configure_detached_command(_command: &mut std::process::Command) {}
 
 #[allow(dead_code)]
 fn _ensure_send_sync(_: &UpdateService) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_dir(label: &str) -> PathBuf {
+        env::temp_dir().join(format!(
+            "clawdex-update-{label}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ))
+    }
+
+    #[test]
+    fn package_scripts_and_workspace_state_use_distinct_roots() {
+        let package_root = test_dir("package");
+        let workspace_root = test_dir("workspace");
+        fs::create_dir_all(package_root.join("bin")).expect("create package bin");
+        fs::create_dir_all(package_root.join("scripts")).expect("create package scripts");
+        fs::write(package_root.join("package.json"), "{}").expect("write package manifest");
+        fs::write(package_root.join("bin/clawdex.js"), "").expect("write cli");
+        fs::write(package_root.join("scripts/start-bridge-secure.js"), "").expect("write launcher");
+        fs::write(package_root.join("scripts/bridge-self-update.js"), "").expect("write updater");
+        fs::create_dir_all(&workspace_root).expect("create workspace");
+        fs::write(
+            workspace_root.join(".env.secure"),
+            "BRIDGE_HOST=127.0.0.1\n",
+        )
+        .expect("write secure env");
+
+        let service =
+            UpdateService::from_roots(Some(package_root.clone()), Some(workspace_root.clone()));
+
+        assert_eq!(service.install_kind, BridgeInstallKind::PublishedCli);
+        assert_eq!(
+            service.script_path,
+            Some(package_root.join("scripts/bridge-self-update.js"))
+        );
+        assert_eq!(
+            service.secure_env_path,
+            Some(workspace_root.join(".env.secure"))
+        );
+        assert_eq!(
+            service.status_path,
+            Some(workspace_root.join(".bridge-update-status.json"))
+        );
+        assert!(service.is_safe_restart_supported());
+        assert!(service.is_self_update_supported());
+
+        fs::remove_dir_all(package_root).expect("remove package root");
+        fs::remove_dir_all(workspace_root).expect("remove workspace root");
+    }
+}

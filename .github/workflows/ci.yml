@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Validate release workflow and ownership
-        run: npm run test:release
+        run: npm run test:scripts
 
   rpc-contract:
     name: RPC Contract
@@ -117,8 +117,8 @@ jobs:
 
       - name: Rust check
         working-directory: services/rust-bridge
-        run: cargo check
+        run: cargo check --locked
 
       - name: Rust test
         working-directory: services/rust-bridge
-        run: cargo test
+        run: cargo test --locked
