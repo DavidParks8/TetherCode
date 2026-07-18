@@ -38,6 +38,7 @@ npm run stop:services
 - Restart the bridge after token changes.
 - On secure-launcher installs, `Settings > Bridge Maintenance > Restart bridge safely` can do that from the phone.
 - If an in-app bridge update fails, inspect `.bridge-updater.log` and `.bridge-update-status.json` beside the `.env.secure` used to launch the bridge. For a published CLI this is the directory where `clawdex init` was invoked, not the global npm package directory.
+- A `recovered` updater status means the exact `previousVersion` npm package was reinstalled and passed the background launch health check. A `stopped` status means no healthy bridge was recovered; run its `recoveryCommand` from that same directory. The command is version-pinned and normally reinstalls the previous package before `clawdex init`.
 
 ## Bridge exits when no-auth mode is enabled
 

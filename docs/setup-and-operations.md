@@ -99,8 +99,10 @@ For secure-launcher installs, the mobile Settings screen can trigger bridge main
 
 Published `clawdex-mobile` CLI installs also expose `Update bridge`.
 
-- `Update bridge` stops the current bridge, runs `npm install -g clawdex-mobile@latest`, and starts the bridge again
-- If the upgrade step fails, the helper attempts to restart the previous bridge automatically
+- `Update bridge` records the installed package version, stops the current bridge, runs `npm install -g clawdex-mobile@latest`, and relaunches through the same background launcher used by `clawdex init`
+- The background launcher atomically replaces `.bridge.pid`, waits for health, and removes only its own PID state if startup fails
+- If updated startup fails, the helper reinstalls the exact recorded npm package version before trying one recovery launch
+- If rollback or recovery launch fails, status is `stopped` and includes a version-pinned recovery command; it never reports recovery based only on restoring environment files
 
 Source checkouts expose only the restart action because repo-specific update logic is not safe to automate generically from mobile.
 

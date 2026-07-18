@@ -2318,6 +2318,10 @@ function formatBridgeUpdaterState(state: string): string {
       return 'Stopping bridge';
     case 'upgrading':
       return 'Installing update';
+    case 'rollingBack':
+      return 'Restoring previous version';
+    case 'startingPrevious':
+      return 'Starting previous version';
     case 'starting':
       return 'Starting bridge';
     case 'waitingForHealth':
@@ -2326,8 +2330,12 @@ function formatBridgeUpdaterState(state: string): string {
       return 'Completed';
     case 'recovered':
       return 'Recovered previous bridge';
+    case 'unchanged':
+      return 'Previous bridge unchanged';
     case 'failed':
       return 'Failed';
+    case 'stopped':
+      return 'Stopped, recovery available';
     default:
       return state;
   }
@@ -2338,6 +2346,8 @@ function isBridgeMaintenanceInProgress(state: string): boolean {
     state === 'scheduled' ||
     state === 'stopping' ||
     state === 'upgrading' ||
+    state === 'rollingBack' ||
+    state === 'startingPrevious' ||
     state === 'starting' ||
     state === 'waitingForHealth'
   );

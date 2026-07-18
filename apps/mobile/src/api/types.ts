@@ -783,6 +783,11 @@ export interface BridgeUpdaterStatus {
   startedAt?: string | null;
   completedAt?: string | null;
   logPath?: string | null;
+  previousVersion?: string | null;
+  runningVersion?: string | null;
+  recoverable?: boolean | null;
+  recoveryCommand?: string | null;
+  failure?: string | null;
 }
 
 export interface BridgeRuntimeInfo {

@@ -14,6 +14,11 @@ const {
   packagedBinaryPath,
   resolveRuntimeTarget,
 } = require("./bridge-binary");
+const {
+  readPidFile,
+  removePidFile,
+  writePidFile,
+} = require("./bridge-runtime-state");
 
 const DEFAULT_HEALTH_TIMEOUT_MS = 15000;
 const DEV_HEALTH_TIMEOUT_MS = 60000;
@@ -289,32 +294,8 @@ function printBridgeAccessDetails(env, endpoint) {
   return bridgeUrl;
 }
 
-function bridgePidFile(rootDir) {
-  return path.join(rootDir, ".bridge.pid");
-}
-
 function bridgeLogFile(rootDir) {
   return path.join(rootDir, ".bridge.log");
-}
-
-function readPidFile(rootDir) {
-  try {
-    const raw = fs.readFileSync(bridgePidFile(rootDir), "utf8").trim();
-    const pid = Number.parseInt(raw, 10);
-    return Number.isFinite(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-}
-
-function writePidFile(rootDir, pid) {
-  fs.writeFileSync(bridgePidFile(rootDir), `${pid}\n`);
-}
-
-function removePidFile(rootDir) {
-  try {
-    fs.unlinkSync(bridgePidFile(rootDir));
-  } catch {}
 }
 
 function isProcessAlive(pid) {
@@ -455,7 +436,7 @@ async function spawnDetachedAndWait(command, args, options) {
       return;
     }
   } else if (existingPid) {
-    removePidFile(rootDir);
+    removePidFile(rootDir, existingPid);
   }
 
   if (await probeHealth(healthUrl)) {
@@ -477,7 +458,9 @@ async function spawnDetachedAndWait(command, args, options) {
 
   child.on("error", (spawnError) => {
     console.error(`error: failed to start ${command}: ${spawnError.message}`);
-    removePidFile(rootDir);
+    if (child.pid) {
+      removePidFile(rootDir, child.pid);
+    }
     process.exit(1);
   });
 
@@ -501,10 +484,38 @@ async function spawnDetachedAndWait(command, args, options) {
       printPairingQrUnavailableMessage(env);
     }
   } catch (error) {
-    removePidFile(rootDir);
+    await stopStartedProcess(child.pid);
+    removePidFile(rootDir, child.pid);
     console.error(`error: ${error.message}. Check logs: ${logPath}`);
     process.exit(1);
   }
+}
+
+async function stopStartedProcess(pid) {
+  if (!isProcessAlive(pid)) {
+    return;
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (!isProcessAlive(pid)) {
+      return;
+    }
+    await sleep(250);
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {}
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (!isProcessAlive(pid)) {
+      return;
+    }
+    await sleep(100);
+  }
+  throw new Error(`started bridge process ${pid} could not be stopped after startup failure`);
 }
 
 function buildBridgeFromSource(packageDir, env, profile) {

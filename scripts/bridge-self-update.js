@@ -3,10 +3,14 @@
 
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
-const http = require("node:http");
-const https = require("node:https");
+const { removePidFile } = require("./bridge-runtime-state");
+const {
+  bridgeLauncher,
+  performUpdateTransaction,
+  readPackageVersion,
+  writeStatus,
+} = require("./bridge-updater-helpers");
 
 function parseArgs(argv) {
   const parsed = {
@@ -107,58 +111,9 @@ function readEnvFile(filePath) {
   return nextEnv;
 }
 
-function writeStatus(statusPath, payload) {
-  const nextPayload = {
-    ...payload,
-    updatedAt: new Date().toISOString(),
-  };
-  fs.mkdirSync(path.dirname(statusPath), { recursive: true });
-  fs.writeFileSync(statusPath, `${JSON.stringify(nextPayload, null, 2)}\n`);
-}
-
 function readNonEmptyEnv(env, key) {
   const value = env?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : "";
-}
-
-function formatHostForUrl(host) {
-  if (host.includes(":") && !host.startsWith("[")) {
-    return `[${host}]`;
-  }
-  return host;
-}
-
-function backupSecureEnv(workspaceRoot, jobId) {
-  const secureEnvPath = path.join(workspaceRoot, ".env.secure");
-  if (!fs.existsSync(secureEnvPath)) {
-    return null;
-  }
-
-  const backupPath = path.join(os.tmpdir(), `${jobId}.env.secure.backup`);
-  fs.copyFileSync(secureEnvPath, backupPath);
-  return {
-    originalPath: secureEnvPath,
-    backupPath,
-  };
-}
-
-function restoreSecureEnv(backup) {
-  if (!backup || !fs.existsSync(backup.backupPath)) {
-    return;
-  }
-
-  fs.mkdirSync(path.dirname(backup.originalPath), { recursive: true });
-  fs.copyFileSync(backup.backupPath, backup.originalPath);
-}
-
-function cleanupSecureEnvBackup(backup) {
-  if (!backup) {
-    return;
-  }
-
-  try {
-    fs.unlinkSync(backup.backupPath);
-  } catch {}
 }
 
 function sleep(ms) {
@@ -167,10 +122,6 @@ function sleep(ms) {
 
 function npmCommand() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
-}
-
-function nodeCommand() {
-  return process.execPath || (process.platform === "win32" ? "node.exe" : "node");
 }
 
 async function runCommand(command, args, options = {}) {
@@ -317,8 +268,12 @@ async function waitForBridgeExit(pid) {
 
   try {
     forceKillBridgeProcess(pid);
-  } catch {
-    return;
+  } catch (error) {
+    throw new Error(
+      `bridge process did not stop and could not be force-stopped: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
   }
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -331,84 +286,26 @@ async function waitForBridgeExit(pid) {
   throw new Error("bridge process did not exit in time");
 }
 
-function startBridge(packageRoot, workspaceRoot, logPath) {
-  const bridgeLogPath = path.join(workspaceRoot, ".bridge.log");
-  const output = fs.openSync(bridgeLogPath, "a");
-  const error = fs.openSync(bridgeLogPath, "a");
-  const child = spawn(
-    nodeCommand(),
-    [path.join(packageRoot, "scripts", "start-bridge-secure.js")],
-    {
-      cwd: workspaceRoot,
-      env: {
-        ...process.env,
-        CLAWDEX_PACKAGE_ROOT: packageRoot,
-        CLAWDEX_WORKSPACE_ROOT: workspaceRoot,
-        INIT_CWD: workspaceRoot,
-      },
-      detached: true,
-      stdio: ["ignore", output, error],
-    }
-  );
-  child.unref();
-  if (logPath) {
-    console.log(`Bridge restart command launched. Logs: ${bridgeLogPath}`);
-  }
-}
-
-async function waitForHealth(envFilePath, timeoutMs) {
-  const secureEnv = readEnvFile(envFilePath);
-  const host = secureEnv.BRIDGE_HOST || "127.0.0.1";
-  const port = secureEnv.BRIDGE_PORT || "8787";
-  const url = new URL(`http://${formatHostForUrl(host)}:${port}/health`);
-  const client = url.protocol === "https:" ? https : http;
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const ok = await new Promise((resolve) => {
-      const req = client.request(
-        url,
-        { method: "GET", timeout: 3000 },
-        (response) => {
-          resolve(response.statusCode === 200);
-          response.resume();
-        }
-      );
-      req.on("error", () => resolve(false));
-      req.on("timeout", () => {
-        req.destroy();
-        resolve(false);
-      });
-      req.end();
-    });
-
-    if (ok) {
-      return;
-    }
-
-    await sleep(750);
-  }
-
-  throw new Error("bridge health check did not recover in time");
-}
-
-async function restartBridge(packageRoot, workspaceRoot, statusPath, payload, message) {
+async function startBridge(packageRoot, workspaceRoot, statusPath, payload, message) {
   await stopLingeringOpencodeServer(workspaceRoot);
   writeStatus(statusPath, {
     ...payload,
     state: "starting",
     message,
   });
-  startBridge(packageRoot, workspaceRoot, payload.logPath);
-  writeStatus(statusPath, {
-    ...payload,
-    state: "waitingForHealth",
-    message: "Waiting for bridge health to recover.",
+  const launcher = bridgeLauncher(packageRoot);
+  await runCommand(process.execPath, [launcher.scriptPath, ...launcher.args], {
+    cwd: workspaceRoot,
+    env: {
+      ...process.env,
+      CLAWDEX_PACKAGE_ROOT: packageRoot,
+      CLAWDEX_WORKSPACE_ROOT: workspaceRoot,
+      INIT_CWD: workspaceRoot,
+    },
   });
-  await waitForHealth(path.join(workspaceRoot, ".env.secure"), 45_000);
 }
 
-async function stopCurrentBridge(statusPath, payload, bridgePid) {
+async function stopCurrentBridge(statusPath, payload, bridgePid, workspaceRoot) {
   writeStatus(statusPath, {
     ...payload,
     state: "stopping",
@@ -416,15 +313,17 @@ async function stopCurrentBridge(statusPath, payload, bridgePid) {
   });
   killBridgeProcess(bridgePid);
   await waitForBridgeExit(bridgePid);
+  removePidFile(workspaceRoot, bridgePid);
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const { packageRoot, workspaceRoot } = args;
-  const secureEnvBackup = backupSecureEnv(workspaceRoot, args.jobId);
+  const previousVersion = readPackageVersion(packageRoot);
   const baseStatus = {
     jobId: args.jobId,
     targetVersion: args.action === "restart" ? args.version || "current" : args.version,
+    previousVersion,
     startedAt: args.startedAt,
     logPath: args.logPath || null,
   };
@@ -439,11 +338,11 @@ async function main() {
   });
   try {
     await sleep(800);
-    await stopCurrentBridge(args.statusPath, baseStatus, args.bridgePid);
+    await stopCurrentBridge(args.statusPath, baseStatus, args.bridgePid, workspaceRoot);
 
     if (args.action === "restart") {
       try {
-        await restartBridge(
+        await startBridge(
           packageRoot,
           workspaceRoot,
           args.statusPath,
@@ -459,11 +358,13 @@ async function main() {
       } catch (error) {
         writeStatus(args.statusPath, {
           ...baseStatus,
-          state: "failed",
+          state: "stopped",
           message:
             error instanceof Error
               ? error.message
-              : "Bridge restart failed and the bridge did not recover automatically.",
+              : "Bridge restart failed. The bridge is stopped and can be started with clawdex init.",
+          recoverable: true,
+          recoveryCommand: "clawdex init",
           completedAt: new Date().toISOString(),
         });
         process.exitCode = 1;
@@ -471,79 +372,53 @@ async function main() {
       return;
     }
 
-    let upgraded = false;
-    try {
-      writeStatus(args.statusPath, {
-        ...baseStatus,
-        state: "upgrading",
-        message: `Installing clawdex-mobile@${args.version}.`,
-      });
-      await runCommand(npmCommand(), ["install", "-g", `clawdex-mobile@${args.version}`], {
-        cwd: packageRoot,
-        env: process.env,
-      });
-      restoreSecureEnv(secureEnvBackup);
-      upgraded = true;
-      await restartBridge(
-        packageRoot,
-        workspaceRoot,
-        args.statusPath,
-        baseStatus,
-        "Starting the updated bridge process."
-      );
-      writeStatus(args.statusPath, {
-        ...baseStatus,
-        state: "completed",
-        message: `Bridge updated to ${args.version} and restarted successfully.`,
-        completedAt: new Date().toISOString(),
-      });
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      try {
-        restoreSecureEnv(secureEnvBackup);
-        await restartBridge(
+    const result = await performUpdateTransaction({
+      targetVersion: args.version,
+      previousVersion,
+      installVersion: async (version) => {
+        await runCommand(npmCommand(), ["install", "-g", `clawdex-mobile@${version}`], {
+          cwd: workspaceRoot,
+          env: process.env,
+        });
+      },
+      launchBridge: async () => {
+        await startBridge(
           packageRoot,
           workspaceRoot,
           args.statusPath,
           baseStatus,
-          upgraded
-            ? "Updated bridge failed to come up; restarting the previous bridge."
-            : "Upgrade failed; restarting the previous bridge."
+          "Starting the bridge through the canonical background launcher."
         );
-        writeStatus(args.statusPath, {
-          ...baseStatus,
-          state: "recovered",
-          message: upgraded
-            ? "Bridge update failed after install. The previous bridge was restarted."
-            : "Bridge upgrade failed. The previous bridge was restarted.",
-          completedAt: new Date().toISOString(),
-        });
-      } catch (restartError) {
-        writeStatus(args.statusPath, {
-          ...baseStatus,
-          state: "failed",
-          message:
-            restartError instanceof Error
-              ? restartError.message
-              : "Bridge update failed and automatic recovery did not complete.",
-          completedAt: new Date().toISOString(),
-        });
-        process.exitCode = 1;
-      }
-    }
-  } catch (error) {
+      },
+      setStatus: (state, message, extra = {}) => {
+        writeStatus(args.statusPath, { ...baseStatus, ...extra, state, message });
+      },
+    });
     writeStatus(args.statusPath, {
       ...baseStatus,
-      state: "failed",
-      message:
-        error instanceof Error
-          ? error.message
-          : "Bridge maintenance failed before restart or recovery could begin.",
+      ...result,
+      completedAt: new Date().toISOString(),
+    });
+    if (result.state === "stopped") {
+      process.exitCode = 1;
+    }
+  } catch (error) {
+    const previousBridgeStillRunning = isProcessAlive(args.bridgePid);
+    writeStatus(args.statusPath, {
+      ...baseStatus,
+      state: previousBridgeStillRunning ? "unchanged" : "stopped",
+      message: previousBridgeStillRunning
+        ? `Bridge maintenance did not proceed; clawdex-mobile@${previousVersion} is still running.`
+        : `Bridge maintenance failed. The bridge is stopped; reinstall clawdex-mobile@${previousVersion} and initialize it again.`,
+      runningVersion: previousBridgeStillRunning ? previousVersion : null,
+      recoverable: !previousBridgeStillRunning,
+      recoveryCommand: previousBridgeStillRunning
+        ? null
+        : `npm install -g clawdex-mobile@${previousVersion} && clawdex init`,
+      failure: error instanceof Error ? error.message : String(error),
       completedAt: new Date().toISOString(),
     });
     process.exitCode = 1;
-  } finally {
-    cleanupSecureEnvBackup(secureEnvBackup);
   }
 }
 

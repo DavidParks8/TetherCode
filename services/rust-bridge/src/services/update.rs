@@ -28,6 +28,11 @@ pub(crate) struct BridgeUpdaterStatus {
     pub(crate) started_at: Option<String>,
     pub(crate) completed_at: Option<String>,
     pub(crate) log_path: Option<String>,
+    pub(crate) previous_version: Option<String>,
+    pub(crate) running_version: Option<String>,
+    pub(crate) recoverable: Option<bool>,
+    pub(crate) recovery_command: Option<String>,
+    pub(crate) failure: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -488,6 +493,45 @@ mod tests {
         assert!(service.is_self_update_supported());
 
         fs::remove_dir_all(package_root).expect("remove package root");
+        fs::remove_dir_all(workspace_root).expect("remove workspace root");
+    }
+
+    #[test]
+    fn reads_recoverable_stopped_updater_status() {
+        let workspace_root = test_dir("status");
+        fs::create_dir_all(&workspace_root).expect("create workspace");
+        fs::write(
+            workspace_root.join(".bridge-update-status.json"),
+            r#"{
+                "state":"stopped",
+                "jobId":"bridge-update-1",
+                "targetVersion":"6.0.0",
+                "previousVersion":"5.2.3",
+                "message":"Automatic rollback failed.",
+                "updatedAt":"2026-07-18T00:00:00Z",
+                "startedAt":"2026-07-18T00:00:00Z",
+                "completedAt":"2026-07-18T00:01:00Z",
+                "logPath":"/tmp/updater.log",
+                "runningVersion":null,
+                "recoverable":true,
+                "recoveryCommand":"npm install -g clawdex-mobile@5.2.3 && clawdex init",
+                "failure":"startup failed; rollback: npm failed"
+            }"#,
+        )
+        .expect("write status");
+
+        let service = UpdateService::from_roots(None, Some(workspace_root.clone()));
+        let status = service.read_status().expect("read status");
+
+        assert_eq!(status.state, "stopped");
+        assert_eq!(status.previous_version.as_deref(), Some("5.2.3"));
+        assert_eq!(status.running_version, None);
+        assert_eq!(status.recoverable, Some(true));
+        assert_eq!(
+            status.recovery_command.as_deref(),
+            Some("npm install -g clawdex-mobile@5.2.3 && clawdex init")
+        );
+
         fs::remove_dir_all(workspace_root).expect("remove workspace root");
     }
 }
