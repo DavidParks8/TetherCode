@@ -128,4 +128,80 @@ describe('parseUnifiedGitDiff', () => {
       content: 'newValue',
     });
   });
+
+  it('ignores content before the first file and malformed hunk headers', () => {
+    const parsed = parseUnifiedGitDiff([
+      'preamble',
+      'diff --git a/a.ts b/a.ts',
+      '@@ malformed @@',
+      '+not counted',
+    ].join('\n'));
+    expect(parsed.files[0]).toMatchObject({ additions: 0, deletions: 0, hunks: [] });
+  });
+
+  it('records no-newline markers and unexpected hunk content as metadata', () => {
+    const parsed = parseUnifiedGitDiff([
+      'diff --git a/a.ts b/a.ts',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+      '\\ No newline at end of file',
+      'unexpected',
+    ].join('\n'));
+    expect(parsed.files[0].hunks[0].lines.slice(2)).toEqual([
+      { kind: 'meta', prefix: '\\', content: 'No newline at end of file', oldLineNumber: null, newLineNumber: null },
+      { kind: 'meta', prefix: ' ', content: 'unexpected', oldLineNumber: null, newLineNumber: null },
+    ]);
+  });
+
+  it('marks deleted and binary files from metadata', () => {
+    const parsed = parseUnifiedGitDiff([
+      'diff --git a/old.ts b/old.ts',
+      'deleted file mode 100644',
+      '--- a/old.ts',
+      '+++ /dev/null',
+      'diff --git a/image.png b/image.png',
+      'Binary files a/image.png and b/image.png differ',
+      'diff --git a/patch.bin b/patch.bin',
+      'GIT binary patch',
+    ].join('\n'));
+    expect(parsed.files.map((file) => file.status)).toEqual(['deleted', 'binary', 'binary']);
+    expect(parsed.files[0]).toMatchObject({ oldPath: 'old.ts', newPath: null, displayPath: 'old.ts' });
+  });
+
+  it('decodes quoted escaped paths and handles incomplete diff headers', () => {
+    const parsed = parseUnifiedGitDiff([
+      'diff --git "a/src/a\\tname.ts" "b/src/b\\nname.ts"',
+      'rename from "src/a\\tname.ts"',
+      'rename to "src/b\\nname.ts"',
+      'diff --git  ',
+    ].join('\n'));
+    expect(parsed.files[0]).toMatchObject({
+      oldPath: 'src/a\tname.ts',
+      newPath: 'src/b\nname.ts',
+      status: 'renamed',
+    });
+    expect(parsed.files[1]).toMatchObject({ oldPath: null, newPath: null, displayPath: 'unknown' });
+  });
+
+  it('infers added, deleted, and renamed states from patch paths', () => {
+    const parsed = parseUnifiedGitDiff([
+      'diff --git a/new.ts b/new.ts',
+      '--- /dev/null',
+      '+++ b/new.ts',
+      'diff --git a/old.ts b/old.ts',
+      '--- a/old.ts',
+      '+++ /dev/null',
+      'diff --git a/old-name.ts b/new-name.ts',
+      '--- a/old-name.ts',
+      '+++ b/new-name.ts',
+    ].join('\n'));
+    expect(parsed.files.map((file) => file.status)).toEqual(['added', 'deleted', 'renamed']);
+    expect(parsed.files[2].displayPath).toBe('old-name.ts -> new-name.ts');
+  });
+
+  it('defaults omitted hunk counts to one and normalizes CR line endings', () => {
+    const parsed = parseUnifiedGitDiff('diff --git a/a b/a\r--- a/a\r+++ b/a\r@@ -3 +4 @@\r old\r+new');
+    expect(parsed.files[0].hunks[0]).toMatchObject({ oldStart: 3, oldCount: 1, newStart: 4, newCount: 1 });
+  });
 });

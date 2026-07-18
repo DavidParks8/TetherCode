@@ -188,4 +188,52 @@ describe('agentThreads', () => {
       ])
     ).toEqual([]);
   });
+
+  it('returns no related threads without a focused chat and includes an omitted focus chat', () => {
+    expect(collectRelatedAgentThreads([], null)).toEqual({ rootThreadId: null, threads: [] });
+    const focus = chat('child', { parentThreadId: 'missing-root' });
+    expect(collectRelatedAgentThreads([], focus)).toEqual({
+      rootThreadId: 'missing-root',
+      threads: [focus],
+    });
+  });
+
+  it('terminates cyclic ancestry without pulling in a separate cyclic root', () => {
+    const first = chat('first', { parentThreadId: 'second', subAgentDepth: 1 });
+    const second = chat('second', { parentThreadId: 'first', subAgentDepth: 2 });
+    const result = collectRelatedAgentThreads([first, second], first);
+    expect(result.rootThreadId).toBe('first');
+    expect(result.threads.map((entry) => entry.id)).toEqual(['first']);
+  });
+
+  it('sorts shallower completed children before deeper children', () => {
+    const root = chat('root');
+    const deep = chat('deep', { parentThreadId: 'root', subAgentDepth: 2 });
+    const shallow = chat('shallow', { parentThreadId: 'root', subAgentDepth: 1 });
+    expect(collectRelatedAgentThreads([root, deep, shallow], root).threads.map((entry) => entry.id)).toEqual([
+      'root', 'shallow', 'deep',
+    ]);
+  });
+
+  it('returns null for empty or unmatched agent searches', () => {
+    expect(findMatchingAgentThread([chat('one')], ' ')).toBeNull();
+    expect(findMatchingAgentThread([chat('one')], 'missing')).toBeNull();
+  });
+
+  it.each([
+    ['subAgentCompact', 'Compaction agent'],
+    ['subAgentThreadSpawn', 'Spawned sub-agent'],
+    ['subAgent', 'Spawned sub-agent'],
+    ['subAgentOther', 'Sub-agent'],
+    ['appServer', 'Agent thread'],
+  ] as const)('describes %s threads', (sourceKind, expected) => {
+    expect(describeAgentThreadSource(chat('child', { sourceKind }), 'root')).toBe(expected);
+  });
+
+  it('falls through all activity summary sources and trims values', () => {
+    const base = { sourceDescription: 'Agent thread' };
+    expect(resolveAgentActivitySummary({ ...base, runtimeDetail: ' ', latestCommandDetail: ' ', role: ' Explorer ' })).toBe('Explorer');
+    expect(resolveAgentActivitySummary({ ...base, preview: ' Preview ' })).toBe('Preview');
+    expect(resolveAgentActivitySummary(base)).toBe('Agent thread');
+  });
 });

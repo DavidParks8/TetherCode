@@ -125,5 +125,5 @@ function normalizeIsoTimestamp(value: unknown): string | null {
   }
 
   const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  return trimmed.length > 0 && Number.isFinite(Date.parse(trimmed)) ? trimmed : null;
 }

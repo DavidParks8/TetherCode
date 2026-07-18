@@ -53,4 +53,38 @@ describe('chatImageSource', () => {
       toMarkdownImageSource('./relative.png', 'http://192.168.1.26:8787', 'secret-token')
     ).toBeNull();
   });
+
+  it('rejects blank sources and local paths without a bridge URL', () => {
+    expect(toMarkdownImageSource('   ', 'http://bridge.test', 'token')).toBeNull();
+    expect(toMarkdownImageSource('/tmp/image.png', '   ', 'token')).toBeNull();
+    expect(toMarkdownImageSource('file://', 'http://bridge.test', 'token')).toBeNull();
+  });
+
+  it('normalizes Windows paths, encoded characters, and bridge slashes', () => {
+    expect(
+      toMarkdownImageSource(
+        'C:\\Users\\me\\My%20Image.png',
+        'http://bridge.test/',
+        '  '
+      )
+    ).toEqual({
+      uri: 'http://bridge.test/local-image?path=%2FC%3A%2FUsers%2Fme%2FMy%20Image.png',
+    });
+  });
+
+  it('keeps malformed URI escapes instead of rejecting an otherwise valid path', () => {
+    expect(toMarkdownImageSource('/tmp/%E0%A4%A.png', 'http://bridge.test', undefined)).toEqual({
+      uri: 'http://bridge.test/local-image?path=%2Ftmp%2F%25E0%25A4%25A.png',
+    });
+  });
+
+  it.each([
+    'http://example.com/image.png',
+    'content://images/1',
+    'assets-library://asset/1',
+    'ph://asset/1',
+    'blob:image-id',
+  ])('keeps supported remote source %s direct', (source) => {
+    expect(toMarkdownImageSource(source, null, null)).toEqual({ uri: source });
+  });
 });

@@ -1,9 +1,14 @@
 import type { Chat } from '../api/types';
+import * as FileSystem from 'expo-file-system/legacy';
 import {
+  CHAT_SNAPSHOT_CACHE_MAX_BYTES,
   CHAT_SNAPSHOT_CACHE_MAX_ENTRIES,
   createEmptyChatSnapshotCache,
+  deleteChatSnapshotCache,
   getChatSnapshotCachePath,
+  loadChatSnapshotCache,
   parseChatSnapshotCache,
+  saveChatSnapshotCache,
   updateChatSnapshotCache,
 } from '../chatSnapshotCache';
 
@@ -60,6 +65,7 @@ describe('chatSnapshotCache', () => {
         'profile-a'
       ).entries
     ).toEqual([]);
+    expect(parseChatSnapshotCache('{', 'profile-a').entries).toEqual([]);
   });
 
   it('bounds entries while retaining the selected snapshot', () => {
@@ -99,5 +105,100 @@ describe('chatSnapshotCache', () => {
     expect(path).toBe('file:///documents/clawdex-chat-cache/profile-a/snapshots.json');
     expect(path).not.toContain('token');
     expect(path).not.toContain('http');
+    expect(getChatSnapshotCachePath('', 'file:///documents/')).toBeNull();
+    expect(getChatSnapshotCachePath('profile', null)).toBeNull();
+    expect(getChatSnapshotCachePath('a/b', 'file:///documents/')).toContain('a%2Fb');
+  });
+
+  it('normalizes metadata, selection, and malformed entries', () => {
+    const valid = updateChatSnapshotCache(
+      createEmptyChatSnapshotCache('profile-a'), 'one', chat('one'), '2026-07-17T00:00:00.000Z'
+    );
+    const parsed = parseChatSnapshotCache(JSON.stringify({
+      ...valid,
+      selectedChatId: 'missing',
+      updatedAt: 'invalid',
+      entries: [
+        null,
+        { chat: chat('bad-role'), cachedAt: 'bad', lastAccessedAt: 'bad' },
+        ...valid.entries,
+      ],
+    }), 'profile-a', Date.parse('2026-07-18T00:00:00.000Z'));
+    expect(parsed.selectedChatId).toBeNull();
+    expect(parsed.updatedAt).toBe('2026-07-18T00:00:00.000Z');
+    expect(parsed.entries).toHaveLength(1);
+  });
+
+  it('updates access time without replacing an existing snapshot', () => {
+    const initial = updateChatSnapshotCache(
+      createEmptyChatSnapshotCache('profile-a'), 'one', chat('one'), '2026-07-17T00:00:00.000Z'
+    );
+    const updated = updateChatSnapshotCache(initial, 'one', null, '2026-07-18T00:00:00.000Z');
+    expect(updated.entries[0]?.lastAccessedAt).toBe('2026-07-18T00:00:00.000Z');
+    expect(updated.entries[0]?.chat).not.toBe(initial.entries[0]?.chat);
+    expect(updateChatSnapshotCache(initial, ' missing ', null).selectedChatId).toBeNull();
+  });
+
+  it('rejects malformed chat fields and messages', () => {
+    const base = chat('one');
+    const invalidChats = [
+      null,
+      {},
+      { ...base, id: '' },
+      { ...base, title: 1 },
+      { ...base, status: 1 },
+      { ...base, createdAt: 1 },
+      { ...base, updatedAt: 1 },
+      { ...base, statusUpdatedAt: 1 },
+      { ...base, lastMessagePreview: 1 },
+      { ...base, messages: 'invalid' },
+      { ...base, messages: [null] },
+      { ...base, messages: [{ ...base.messages[0], role: 'tool' }] },
+      { ...base, messages: [{ ...base.messages[0], content: 1 }] },
+      { ...base, messages: [{ ...base.messages[0], createdAt: 1 }] },
+    ];
+    const raw = JSON.stringify({
+      version: 1,
+      profileId: 'profile-a',
+      entries: invalidChats.map((value) => ({
+        chat: value, cachedAt: '2026-07-17T00:00:00.000Z', lastAccessedAt: '2026-07-17T00:00:00.000Z',
+      })),
+    });
+    expect(parseChatSnapshotCache(raw, 'profile-a').entries).toEqual([]);
+  });
+
+  it('skips snapshots that exceed the byte budget', () => {
+    const huge = chat('huge', 'x'.repeat(CHAT_SNAPSHOT_CACHE_MAX_BYTES));
+    const cache = updateChatSnapshotCache(createEmptyChatSnapshotCache('profile-a'), 'huge', huge);
+    expect(cache.entries).toEqual([]);
+    expect(cache.selectedChatId).toBeNull();
+  });
+
+  it('loads, saves, serializes writes, and deletes snapshots', async () => {
+    const originalDirectory = FileSystem.documentDirectory;
+    Object.defineProperty(FileSystem, 'documentDirectory', {
+      configurable: true,
+      value: 'file:///documents/',
+    });
+    const read = jest.spyOn(FileSystem, 'readAsStringAsync');
+    const mkdir = jest.spyOn(FileSystem, 'makeDirectoryAsync').mockResolvedValue(undefined);
+    const write = jest.spyOn(FileSystem, 'writeAsStringAsync').mockResolvedValue(undefined);
+    const remove = jest.spyOn(FileSystem, 'deleteAsync').mockResolvedValue(undefined);
+    const cache = updateChatSnapshotCache(createEmptyChatSnapshotCache('profile-a'), 'one', chat('one'));
+    read.mockResolvedValueOnce(JSON.stringify(cache));
+    await expect(loadChatSnapshotCache('profile-a')).resolves.toMatchObject({ selectedChatId: 'one' });
+    read.mockRejectedValueOnce(new Error('missing'));
+    await expect(loadChatSnapshotCache('profile-a')).resolves.toMatchObject({ entries: [] });
+    await Promise.all([saveChatSnapshotCache(cache), saveChatSnapshotCache(cache)]);
+    expect(mkdir).toHaveBeenCalledTimes(2);
+    expect(write).toHaveBeenCalledTimes(2);
+    await deleteChatSnapshotCache('profile-a');
+    expect(remove).toHaveBeenCalledWith(expect.stringContaining('profile-a'), { idempotent: true });
+    remove.mockRejectedValueOnce(new Error('missing'));
+    await expect(deleteChatSnapshotCache('profile-a')).resolves.toBeUndefined();
+    Object.defineProperty(FileSystem, 'documentDirectory', {
+      configurable: true,
+      value: originalDirectory,
+    });
   });
 });

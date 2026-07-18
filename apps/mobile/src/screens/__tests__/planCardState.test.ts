@@ -119,4 +119,14 @@ describe('planCardState', () => {
       })
     ).toBe(false);
   });
+
+  it('treats null and whitespace-only plans as unstructured', () => {
+    expect(hasStructuredPlanCardContent(null)).toBe(false);
+    expect(hasStructuredPlanCardContent({ explanation: '   ', steps: [] })).toBe(false);
+  });
+
+  it('requires a thread and visible keyboard before collapsing', () => {
+    expect(shouldCollapseWorkflowCardForKeyboard({ collapsed: false, keyboardVisible: false, mode: 'plan', threadId: 'thread' })).toBe(false);
+    expect(shouldCollapseWorkflowCardForKeyboard({ collapsed: false, keyboardVisible: true, mode: 'plan', threadId: null })).toBe(false);
+  });
 });

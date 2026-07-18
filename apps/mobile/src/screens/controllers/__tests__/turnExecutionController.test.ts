@@ -39,4 +39,43 @@ describe('turnExecutionController', () => {
     expect(api.interruptTurn).toHaveBeenCalledWith('thread-1', 'turn-1');
     expect(api.interruptLatestTurn).not.toHaveBeenCalled();
   });
+
+  it('supports direct messages without callbacks and all delegated queue actions', async () => {
+    const created = { id: 'thread-1' };
+    const api = {
+      createChatIdempotent: jest.fn().mockResolvedValue(created),
+      sendChatMessageIdempotent: jest.fn().mockResolvedValue(created),
+      sendOrQueueChatMessage: jest.fn().mockResolvedValue({ disposition: 'queued' }),
+      interruptLatestTurn: jest.fn().mockResolvedValue('latest'),
+      interruptTurn: jest.fn(),
+      steerQueuedThreadMessage: jest.fn().mockResolvedValue({ ok: true }),
+      cancelQueuedThreadMessage: jest.fn().mockResolvedValue({ ok: true }),
+    };
+    const controller = new TurnExecutionController(api as never);
+    await controller.createAndStart({
+      submissionId: 'submission', create: {}, message: { content: 'hello' },
+    });
+    expect(api.sendChatMessageIdempotent).toHaveBeenCalledWith(
+      'thread-1', { content: 'hello' }, 'submission', expect.any(Object)
+    );
+    await expect(controller.interrupt('thread-1')).resolves.toBe('latest');
+    await controller.sendOrQueue('thread-1', { content: 'next' }, true, 'submission');
+    expect(api.sendOrQueueChatMessage).toHaveBeenCalledWith(
+      'thread-1', { content: 'next' }, { skipResume: true, submissionId: 'submission' }
+    );
+    await controller.steer('thread-1', 'message-1');
+    await controller.cancelQueued('thread-1', 'message-2');
+    expect(api.steerQueuedThreadMessage).toHaveBeenCalledWith('thread-1', 'message-1');
+    expect(api.cancelQueuedThreadMessage).toHaveBeenCalledWith('thread-1', 'message-2');
+  });
+
+  it('omits send options when no turn callback is provided', async () => {
+    const api = { sendChatMessageIdempotent: jest.fn().mockResolvedValue({}) };
+    await new TurnExecutionController(api as never).send(
+      'thread', { content: 'hello' }, 'submission'
+    );
+    expect(api.sendChatMessageIdempotent).toHaveBeenCalledWith(
+      'thread', { content: 'hello' }, 'submission', undefined
+    );
+  });
 });

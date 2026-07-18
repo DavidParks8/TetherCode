@@ -6,6 +6,7 @@ import {
   isDrawerChatRunning,
   isDrawerWorkspaceSectionRunning,
   reconcileDrawerRunIndicatorsWithChats,
+  pruneStaleDrawerRunIndicators,
   updateDrawerRunIndicatorsForEvent,
   type DrawerRunIndicatorMap,
 } from '../drawerRuntimeIndicators';
@@ -249,5 +250,188 @@ describe('drawerRuntimeIndicators', () => {
     expect(isDrawerWorkspaceSectionRunning(section([chat('thr_idle')]), state, 25_000)).toBe(
       false
     );
+  });
+
+  it('uses chat running status without a live indicator', () => {
+    expect(isDrawerChatRunning(chat('running', { status: 'running' }), {}, 1000)).toBe(true);
+    expect(countDrawerRunningChats([chat('running', { status: 'running' })], {}, 1000)).toBe(1);
+  });
+
+  it('prunes expired heartbeat and lifecycle indicators without copying active state', () => {
+    const active = {
+      heartbeat: { source: 'heartbeat' as const, updatedAt: 1000 },
+      lifecycle: { source: 'lifecycle' as const, updatedAt: 1000 },
+    };
+    expect(pruneStaleDrawerRunIndicators(active, 19_000)).toBe(active);
+    expect(pruneStaleDrawerRunIndicators(active, 25_000)).toEqual({
+      lifecycle: active.lifecycle,
+    });
+    expect(pruneStaleDrawerRunIndicators(active, 6 * 60 * 60 * 1000 + 1001)).toEqual({});
+  });
+
+  it('reconciles running snapshots using timestamp fallbacks', () => {
+    const now = Date.parse('2026-04-01T00:03:00.000Z');
+    const reconciled = reconcileDrawerRunIndicatorsWithChats(
+      {},
+      [
+        chat('status-time', { status: 'running', statusUpdatedAt: '2026-04-01T00:01:00.000Z' }),
+        chat('updated-time', {
+          status: 'running',
+          statusUpdatedAt: 'invalid',
+          updatedAt: '2026-04-01T00:02:00.000Z',
+        }),
+        chat('now-time', { status: 'running', statusUpdatedAt: 'invalid', updatedAt: 'invalid' }),
+      ],
+      now
+    );
+
+    expect(reconciled).toEqual({
+      'status-time': { source: 'lifecycle', updatedAt: Date.parse('2026-04-01T00:01:00.000Z') },
+      'updated-time': { source: 'lifecycle', updatedAt: Date.parse('2026-04-01T00:02:00.000Z') },
+      'now-time': { source: 'lifecycle', updatedAt: now },
+    });
+  });
+
+  it('does not clear indicators from snapshots without a usable timestamp', () => {
+    const previous = { thread: { source: 'heartbeat' as const, updatedAt: 1000 } };
+    expect(
+      reconcileDrawerRunIndicatorsWithChats(
+        previous,
+        [chat('thread', { statusUpdatedAt: 'invalid', updatedAt: 'invalid' })],
+        2000
+      )
+    ).toBe(previous);
+  });
+
+  it('throttles tiny indicator refreshes and preserves newer timestamps', () => {
+    const initial = updateDrawerRunIndicatorsForEvent(
+      {},
+      event('item/started', { threadId: 'thread' }),
+      5000
+    );
+    expect(
+      updateDrawerRunIndicatorsForEvent(
+        initial,
+        event('item/reasoning/textDelta', { threadId: 'thread' }),
+        6000
+      )
+    ).toBe(initial);
+    expect(
+      updateDrawerRunIndicatorsForEvent(
+        initial,
+        event('item/reasoning/textDelta', { threadId: 'thread' }),
+        1000
+      )
+    ).toBe(initial);
+  });
+
+  it('ignores events without thread ids and unrelated methods', () => {
+    const previous = { thread: { source: 'heartbeat' as const, updatedAt: 1000 } };
+    expect(updateDrawerRunIndicatorsForEvent(previous, event('turn/started', {}), 2000)).toBe(
+      previous
+    );
+    expect(
+      updateDrawerRunIndicatorsForEvent(previous, event('unrelated/event', { threadId: 'thread' }), 2000)
+    ).toBe(previous);
+  });
+
+  it('handles heartbeat, unknown status, and absent terminal indicators', () => {
+    const heartbeat = updateDrawerRunIndicatorsForEvent(
+      {},
+      event('item/commandExecution/outputDelta', { threadId: 'thread' }),
+      1000
+    );
+    expect(heartbeat).toEqual({ thread: { source: 'heartbeat', updatedAt: 1000 } });
+    expect(
+      updateDrawerRunIndicatorsForEvent(
+        heartbeat,
+        event('thread/status/changed', { threadId: 'thread', status: 'mystery' }),
+        2000
+      )
+    ).toBe(heartbeat);
+    expect(
+      updateDrawerRunIndicatorsForEvent({}, event('turn/completed', { threadId: 'absent' }), 2000)
+    ).toEqual({});
+  });
+
+  it.each([
+    ['codex/event/agent_message_delta', 'heartbeat'],
+    ['codex/event/task_failed', 'clear'],
+    ['codex/event/unknown_event', 'unchanged'],
+  ])('handles Codex event method fallback %s', (method, expected) => {
+    const previous = { thread: { source: 'lifecycle' as const, updatedAt: 1000 } };
+    const result = updateDrawerRunIndicatorsForEvent(
+      previous,
+      event(method, { threadId: 'thread' }),
+      5000
+    );
+    if (expected === 'heartbeat') {
+      expect(result).toEqual({ thread: { source: 'lifecycle', updatedAt: 5000 } });
+    } else if (expected === 'clear') {
+      expect(result).toEqual({});
+    } else {
+      expect(result).toBe(previous);
+    }
+  });
+
+  it('ignores Codex events whose type normalizes to empty', () => {
+    const previous = {};
+    expect(
+      updateDrawerRunIndicatorsForEvent(
+        previous,
+        event('codex/event/---', { threadId: 'thread', msg: { type: '---' } }),
+        1000
+      )
+    ).toBe(previous);
+  });
+
+  it.each([
+    [{ msg: { threadId: 'msg-camel' } }, 'msg-camel'],
+    [{ msg: { conversation_id: 'msg-conversation-snake' } }, 'msg-conversation-snake'],
+    [{ msg: { conversationId: 'msg-conversation-camel' } }, 'msg-conversation-camel'],
+    [{ thread_id: 'param-snake' }, 'param-snake'],
+    [{ conversation_id: 'param-conversation-snake' }, 'param-conversation-snake'],
+    [{ conversationId: 'param-conversation-camel' }, 'param-conversation-camel'],
+    [{ thread: { thread_id: 'thread-snake' } }, 'thread-snake'],
+    [{ thread: { conversation_id: 'thread-conversation-snake' } }, 'thread-conversation-snake'],
+    [{ thread: { conversationId: 'thread-conversation-camel' } }, 'thread-conversation-camel'],
+    [{ turn: { thread_id: 'turn-snake' } }, 'turn-snake'],
+    [{ turn: { threadId: 'turn-camel' } }, 'turn-camel'],
+    [{ source: { thread_id: 'source-snake' } }, 'source-snake'],
+    [{ source: { threadId: 'source-camel' } }, 'source-camel'],
+    [{ source: { conversation_id: 'source-conversation-snake' } }, 'source-conversation-snake'],
+    [{ source: { conversationId: 'source-conversation-camel' } }, 'source-conversation-camel'],
+    [{ source: { parent_thread_id: 'source-parent-snake' } }, 'source-parent-snake'],
+    [{ source: { parentThreadId: 'source-parent-camel' } }, 'source-parent-camel'],
+    [{ source: { subagent: { thread_spawn: { parent_thread_id: 'spawn-snake' } } } }, 'spawn-snake'],
+    [{ source: { subAgent: { thread_spawn: { parentThreadId: 'spawn-camel' } } } }, 'spawn-camel'],
+    [{ thread: { source: { parent_thread_id: 'thread-source-snake' } } }, 'thread-source-snake'],
+    [{ thread: { source: { parentThreadId: 'thread-source-camel' } } }, 'thread-source-camel'],
+    [{ thread: { source: { subagent: { thread_spawn: { parent_thread_id: 'thread-spawn-snake' } } } } }, 'thread-spawn-snake'],
+    [{ thread: { source: { subAgent: { thread_spawn: { parentThreadId: 'thread-spawn-camel' } } } } }, 'thread-spawn-camel'],
+  ])('extracts a thread id from supported shape %#', (params, expected) => {
+    expect(extractDrawerNotificationThreadId(params)).toBe(expected);
+  });
+
+  it('supports an explicit message argument and rejects empty ids', () => {
+    expect(extractDrawerNotificationThreadId(null, { thread_id: ' from-msg ' })).toBe('from-msg');
+    expect(extractDrawerNotificationThreadId(null, null)).toBeNull();
+    expect(extractDrawerNotificationThreadId({ threadId: '   ' })).toBeNull();
+  });
+
+  it.each([
+    [{ status: 'RUNNING' }, 'running'],
+    [{ msg: { status: 'in_progress' } }, 'inprogress'],
+    [{ status: { status: 'completed' } }, 'completed'],
+    [{ thread: { status: 'not_loaded' } }, 'notloaded'],
+    [{ thread_state: { status: { type: 'queued' } } }, 'queued'],
+    [{ msg: { thread: { status: { type: 'idle' } } } }, 'idle'],
+  ])('extracts status from supported shape %#', (params, expected) => {
+    expect(extractDrawerStatusHint(params)).toBe(expected);
+  });
+
+  it('rejects absent and empty status hints', () => {
+    expect(extractDrawerStatusHint(null)).toBeNull();
+    expect(extractDrawerStatusHint({ status: '---' })).toBeNull();
   });
 });

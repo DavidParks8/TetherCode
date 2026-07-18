@@ -197,4 +197,95 @@ describe('composerUsageLimits', () => {
       })
     ).toBeNull();
   });
+
+  it('handles absent snapshots and generic durations', () => {
+    expect(buildComposerUsageLimitBadges(null)).toEqual([]);
+    expect(buildComposerUsageLimitAlert(null)).toBeNull();
+    expect(formatComposerUsageLimitLabel(null)).toBe('limit');
+    expect(formatComposerUsageLimitLabel(0)).toBe('limit');
+    expect(formatComposerUsageLimitLabel(300)).toBe('5h');
+    expect(formatComposerUsageLimitLabel(10_080)).toBe('weekly');
+  });
+
+  it('reports multiple exhausted limits and the next distinct reset', () => {
+    const alert = buildComposerUsageLimitAlert({
+      limitId: 'codex',
+      limitName: 'Codex',
+      planType: 'plus',
+      credits: null,
+      primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 1_700_000_100 },
+      secondary: { usedPercent: 101, windowDurationMins: 10_080, resetsAt: 1_700_000_000 },
+    });
+
+    expect(alert).toEqual({
+      title: 'Rate limit reached',
+      body: 'Your 5h and weekly Codex limits have been reached. Try again after the reset.',
+      status: `Next reset ${formatComposerUsageLimitResetAt(1_700_000_000)}.`,
+    });
+  });
+
+  it('deduplicates equal labels and reset times', () => {
+    const alert = buildComposerUsageLimitAlert({
+      limitId: 'custom',
+      limitName: null,
+      planType: null,
+      credits: null,
+      primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 1_700_000_000 },
+      secondary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 1_700_000_000 },
+    });
+
+    expect(alert?.body).toBe('Your 5h Codex limit has been reached. Try again after the reset.');
+    expect(alert?.status).toBe(`Resets ${formatComposerUsageLimitResetAt(1_700_000_000)}.`);
+  });
+
+  it('uses a generic alert when window labels and reset times are unavailable', () => {
+    const alert = buildComposerUsageLimitAlert({
+      limitId: 'custom',
+      limitName: null,
+      planType: null,
+      credits: null,
+      primary: { usedPercent: 100, windowDurationMins: null, resetsAt: Number.NaN },
+      secondary: null,
+    });
+
+    expect(alert).toEqual({
+      title: 'Rate limit reached',
+      body: 'Your Codex usage limit has been reached. Try again after it resets.',
+      status: null,
+    });
+  });
+
+  it('handles invalid reset timestamps and percentages', () => {
+    expect(formatComposerUsageLimitResetAt(Number.NaN)).toBe('Unknown');
+    expect(formatComposerUsageLimitResetAt(1e20)).toBe('Unknown');
+    expect(
+      formatComposerUsageLimitResetAt(1_700_000_000, { locale: 'en-US' })
+    ).toEqual(expect.any(String));
+
+    const badges = buildComposerUsageLimitBadges({
+      limitId: null,
+      limitName: null,
+      planType: null,
+      credits: null,
+      primary: { usedPercent: Number.NaN, windowDurationMins: null, resetsAt: null },
+      secondary: { usedPercent: -20, windowDurationMins: null, resetsAt: null },
+    });
+    expect(badges.map((badge) => [badge.label, badge.remainingPercent, badge.tone])).toEqual([
+      ['5h', 0, 'critical'],
+      ['weekly', 100, 'neutral'],
+    ]);
+  });
+
+  it('keeps an unknown single window label generic', () => {
+    expect(
+      buildComposerUsageLimitBadges({
+        limitId: 'custom',
+        limitName: null,
+        planType: null,
+        credits: null,
+        primary: { usedPercent: 50, windowDurationMins: null, resetsAt: null },
+        secondary: null,
+      })[0]?.label
+    ).toBe('limit');
+  });
 });

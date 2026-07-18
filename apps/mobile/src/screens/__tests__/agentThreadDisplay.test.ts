@@ -77,4 +77,81 @@ describe('agentThreadDisplay', () => {
       getAgentThreadAccentColor('thr_worker')
     );
   });
+
+  it('prioritizes errors and keeps useful runtime details', () => {
+    expect(
+      buildAgentThreadDisplayState(chat('error', { status: 'error', lastError: 'fallback' }), {
+        activity: { tone: 'error', title: 'Custom failure', detail: ' precise failure ' },
+      })
+    ).toMatchObject({ label: 'Error', detail: 'precise failure', isActive: false });
+    expect(
+      buildAgentThreadDisplayState(chat('error', { status: 'error', lastError: 'fallback' }), {
+        activity: { tone: 'error', title: 'Custom failure' },
+      }).detail
+    ).toBe('Custom failure');
+    expect(
+      buildAgentThreadDisplayState(chat('error', { status: 'error' }), {
+        activity: { tone: 'error', title: 'Turn failed' },
+      }).detail
+    ).toBeNull();
+  });
+
+  it('shows input requests and approval context as waiting states', () => {
+    expect(
+      buildAgentThreadDisplayState(chat('input'), {
+        pendingUserInputRequest: {},
+        activity: { tone: 'running', title: 'Choose a target' },
+      })
+    ).toMatchObject({ label: 'Needs input', detail: 'Choose a target', isActive: true });
+    expect(
+      buildAgentThreadDisplayState(chat('approval'), {
+        pendingApproval: {},
+        activity: { tone: 'running', title: 'Planning', detail: 'Approve changes' },
+      }).detail
+    ).toBe('Approve changes');
+  });
+
+  it.each([
+    ['Planning', 'map-outline'],
+    ['Reasoning', 'sparkles-outline'],
+    ['Working', 'sync-outline'],
+    ['Turn started', 'sync-outline'],
+    ['Ready', 'sync-outline'],
+    ['Custom task', 'sync-outline'],
+  ])('normalizes running activity %s', (title, icon) => {
+    expect(
+      buildAgentThreadDisplayState(chat(`running-${title}`), {
+        activity: { tone: 'running', title },
+      })
+    ).toMatchObject({
+      label: title === 'Turn started' || title === 'Ready' ? 'Working' : title,
+      icon,
+      detail: null,
+      isActive: true,
+    });
+  });
+
+  it('recognizes every runtime signal and ignores expired watchdogs', () => {
+    expect(buildAgentThreadDisplayState(chat('status', { status: 'running' }), null).isActive).toBe(true);
+    expect(buildAgentThreadDisplayState(chat('turn'), { activeTurnId: 'turn' }).isActive).toBe(true);
+    expect(buildAgentThreadDisplayState(chat('commands'), { activeCommands: [{}] }).isActive).toBe(true);
+    expect(buildAgentThreadDisplayState(chat('watchdog'), { runWatchdogUntil: 11 }, 10).isActive).toBe(true);
+    expect(buildAgentThreadDisplayState(chat('expired'), { runWatchdogUntil: 10 }, 10).label).toBe('Idle');
+  });
+
+  it('formats complete and idle states without generic activity details', () => {
+    expect(
+      buildAgentThreadDisplayState(chat('complete', { status: 'complete' }), {
+        activity: { tone: 'complete', title: 'Published', detail: 'All done' },
+      })
+    ).toMatchObject({ label: 'Complete', detail: 'All done', isActive: false });
+    expect(
+      buildAgentThreadDisplayState(chat('complete', { status: 'complete' }), {
+        activity: { tone: 'complete', title: 'Turn completed' },
+      }).detail
+    ).toBeNull();
+    expect(buildAgentThreadDisplayState(chat('idle'), undefined)).toMatchObject({
+      label: 'Idle', detail: null, tone: 'idle', isActive: false,
+    });
+  });
 });

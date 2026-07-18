@@ -1,4 +1,8 @@
-import { DEFAULT_WORKSPACE_CHAT_LIMIT, parseAppSettings } from '../appSettings';
+import {
+  DEFAULT_WORKSPACE_CHAT_LIMIT,
+  formatWorkspaceChatLimit,
+  parseAppSettings,
+} from '../appSettings';
 import { DEFAULT_FONT_PREFERENCE } from '../fonts';
 
 describe('parseAppSettings', () => {
@@ -199,5 +203,108 @@ describe('parseAppSettings', () => {
         })
       ).workspaceChatLimit
     ).toBe(DEFAULT_WORKSPACE_CHAT_LIMIT);
+  });
+
+  it('accepts every supported settings version and rejects other payloads', () => {
+    for (const version of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) {
+      expect(parseAppSettings(JSON.stringify({ version })).defaultChatEngine).toBe('codex');
+    }
+    for (const value of [null, [], { version: 0 }, { version: 13 }, { version: '12' }]) {
+      expect(parseAppSettings(JSON.stringify(value)).bridgeUrl).toBeNull();
+    }
+  });
+
+  it('normalizes credentials, engine fallbacks, and legacy model defaults', () => {
+    const parsed = parseAppSettings(JSON.stringify({
+      version: 12,
+      bridgeUrl: ' ws://example.com:8787/ ',
+      bridgeToken: ' secret ',
+      defaultStartCwd: ' /workspace ',
+      lastUsedChatEngine: 'invalid',
+      defaultChatEngine: ' CURSOR ',
+      defaultModelId: 'ignored/legacy',
+      defaultReasoningEffort: ' XHIGH ',
+    }));
+    expect(parsed).toMatchObject({
+      bridgeUrl: 'http://example.com:8787',
+      bridgeToken: 'secret',
+      defaultStartCwd: '/workspace',
+      defaultChatEngine: 'cursor',
+    });
+    expect(parsed.defaultEngineSettings.opencode).toEqual({
+      modelId: 'ignored/legacy',
+      effort: 'xhigh',
+    });
+
+    expect(parseAppSettings(JSON.stringify({ version: 3, defaultModelId: 'gpt-4' })))
+      .toMatchObject({ defaultChatEngine: 'codex' });
+  });
+
+  it('normalizes malformed optional values and remembered settings', () => {
+    const parsed = parseAppSettings(JSON.stringify({
+      version: 12,
+      bridgeUrl: 1,
+      bridgeToken: ' ',
+      defaultStartCwd: false,
+      lastUsedChatEngine: 1,
+      defaultEngineSettings: 'invalid',
+      lastUsedEngineSettings: {
+        codex: null,
+        opencode: {
+          modelId: ' anthropic/claude ',
+          effort: 'NONE',
+          serviceTier: ' FAST ',
+          collaborationMode: 'plan',
+        },
+        cursor: {
+          modelId: 1,
+          effort: 'invalid',
+          serviceTier: 'slow',
+          collaborationMode: 'ask',
+        },
+      },
+      approvalMode: 'invalid',
+      showToolCalls: 'true',
+      appearancePreference: 'invalid',
+      darkUiPalette: 'invalid',
+      fontPreference: 'invalid',
+      workspaceChatLimit: ' 25 ',
+      recentBrowserTargetUrls: [1, 'localhost:3000', 'localhost:3000'],
+    }));
+    expect(parsed.defaultEngineSettings.opencode).toEqual({
+      modelId: 'anthropic/claude',
+      effort: 'none',
+      serviceTier: 'fast',
+      collaborationMode: 'plan',
+    });
+    expect(parsed.defaultEngineSettings.cursor).toEqual({
+      modelId: null,
+      effort: null,
+      serviceTier: null,
+      collaborationMode: 'ask',
+    });
+    expect(parsed).toMatchObject({
+      bridgeUrl: null,
+      bridgeToken: null,
+      defaultStartCwd: null,
+      approvalMode: 'normal',
+      showToolCalls: false,
+      appearancePreference: 'system',
+      darkUiPalette: 'classic',
+      fontPreference: DEFAULT_FONT_PREFERENCE,
+      workspaceChatLimit: 25,
+    });
+    expect(parsed.recentBrowserTargetUrls).toHaveLength(1);
+  });
+
+  it('supports all workspace limits and display labels', () => {
+    expect(parseAppSettings(JSON.stringify({ version: 12, workspaceChatLimit: null })).workspaceChatLimit)
+      .toBeNull();
+    expect(parseAppSettings(JSON.stringify({ version: 12, workspaceChatLimit: '5' })).workspaceChatLimit)
+      .toBe(5);
+    expect(parseAppSettings(JSON.stringify({ version: 12, workspaceChatLimit: {} })).workspaceChatLimit)
+      .toBe(DEFAULT_WORKSPACE_CHAT_LIMIT);
+    expect(formatWorkspaceChatLimit(null)).toBe('All chats');
+    expect(formatWorkspaceChatLimit(10)).toBe('10 chats');
   });
 });

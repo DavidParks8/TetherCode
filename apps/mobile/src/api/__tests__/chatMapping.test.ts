@@ -1,4 +1,12 @@
-import { mapChat, toRawThread } from '../chatMapping';
+import {
+  isGeneratedCursorThreadTitle,
+  mapChat,
+  mapChatSummary,
+  readString,
+  toPreview,
+  toRawThread,
+  toRecord,
+} from '../chatMapping';
 
 describe('chatMapping', () => {
   it('falls back to createdAt for missing updatedAt instead of using the current time', () => {
@@ -1066,5 +1074,197 @@ describe('chatMapping', () => {
     expect(chat.messages[0].systemKind).toBe('tool');
     expect(chat.messages[0].content).toContain('• Viewed image bridge-pairing-qr.png');
     expect(chat.messages[0].content).toContain('/tmp/bridge-pairing-qr.png');
+  });
+
+  it('covers primitive readers, preview truncation, and malformed raw payloads', () => {
+    expect(toRecord(null)).toBeNull();
+    expect(toRecord('value')).toBeNull();
+    expect(toRecord([])).toEqual([]);
+    expect(readString(1)).toBeNull();
+    expect(readString('value')).toBe('value');
+    expect(toPreview('  short\n preview ')).toBe('short preview');
+    expect(toPreview('x'.repeat(181))).toBe(`${'x'.repeat(177)}...`);
+    expect(toRawThread(null)).toEqual(expect.objectContaining({ id: undefined, turns: undefined }));
+    expect(toRawThread({
+      thread_name: 'snake title',
+      createdAt: ' 12 ',
+      updatedAt: 'bad',
+      agent_nickname: 'Atlas',
+      agent_role: 'worker',
+      turns: [null, 'bad', { id: 1, status: 2, items: [null, 'bad', { type: 'agentMessage' }] }],
+    })).toEqual(expect.objectContaining({
+      name: 'snake title',
+      createdAt: 12,
+      updatedAt: undefined,
+      agentNickname: 'Atlas',
+      agentRole: 'worker',
+      turns: [expect.objectContaining({ items: [{ type: 'agentMessage' }] })],
+    }));
+    expect(mapChatSummary({})).toBeNull();
+    expect(() => mapChat({})).toThrow('chat id missing');
+  });
+
+  it.each([
+    ['running turn', { type: 'active' }, 'RUNNING', 'running'],
+    ['queued thread', { type: 'queued' }, undefined, 'running'],
+    ['failed thread', 'system-error', undefined, 'error'],
+    ['successful turn', undefined, 'SUCCEEDED', 'complete'],
+    ['active empty thread', 'active', undefined, 'idle'],
+    ['active historical thread', 'active', 'unknown', 'complete'],
+    ['not-loaded historical thread', 'not_loaded', 'unknown', 'complete'],
+    ['unknown thread', '???', undefined, 'idle'],
+  ])('maps %s lifecycle state', (_label, status, turnStatus, expected) => {
+    const turns = turnStatus === undefined ? [] : [{ status: turnStatus, items: [] }];
+    expect(mapChat(toRawThread({ id: 'thr_status', status, turns })).status).toBe(expected);
+  });
+
+  it.each([
+    [null, null, undefined, true],
+    ['A real title', 'cursor:id', 'codex', false],
+    ['New Agent', 'cursor:id', 'cursor', true],
+    ['Untitled Agent', 'cursor:id', 'cursor', true],
+    ['Cursor abcdef12', 'cursor:abcdef123456', 'cursor', true],
+    ['Cursor cursor:abcdef123456', 'cursor:abcdef123456', 'cursor', true],
+    ['Cursor abcdef123456', 'cursor:abcdef123456', 'cursor', true],
+    ['Chat cursor:abcdef123456', 'cursor:abcdef123456', 'cursor', true],
+    ['Cursor agent-abcd', 'other', 'codex', true],
+  ])('classifies generated title %#', (title, id, engine, expected) => {
+    expect(isGeneratedCursorThreadTitle(title, id, engine)).toBe(expected);
+  });
+
+  it.each([
+    ['string source', 'cli', { sourceKind: 'cli' }],
+    ['legacy source', { kind: 'subAgent', parent_thread_id: 'root', agent_depth: '2' }, { sourceKind: 'subAgent', parentThreadId: 'root', subAgentDepth: 2 }],
+    ['review source', { subAgent: 'review' }, { sourceKind: 'subAgentReview' }],
+    ['compact source', { subagent: 'compact' }, { sourceKind: 'subAgentCompact' }],
+    ['memory source', { subAgent: 'memory_consolidation' }, { sourceKind: 'subAgentOther' }],
+    ['other string source', { subAgent: 'worker' }, { sourceKind: 'subAgent' }],
+    ['invalid tagged source', { subAgent: 3 }, { sourceKind: 'subAgent' }],
+    ['other object source', { subAgent: { other: 'memory' } }, { sourceKind: 'subAgentOther' }],
+    ['object source', { subAgent: { parentThreadId: 'root', agentDepth: 3 } }, { sourceKind: 'subAgent', parentThreadId: 'root', subAgentDepth: 3 }],
+    ['typed source', { type: 'subAgentReview', parentThreadId: 'root', depth: 4 }, { sourceKind: 'subAgentReview', parentThreadId: 'root', subAgentDepth: 4 }],
+    ['unknown source', { type: 'cli' }, { sourceKind: undefined }],
+  ])('maps %s metadata', (_label, source, expected) => {
+    expect(mapChat(toRawThread({ id: 'thr_source', source, turns: [] }))).toEqual(expect.objectContaining(expected));
+  });
+
+  it('maps tool failure, running, fallback, and no-detail variants', () => {
+    const chat = mapChat(toRawThread({
+      id: 'thr_tool_matrix',
+      turns: [{
+        status: 'completed',
+        items: [
+          { type: 'commandExecution', command: '', status: 'failed', exit_code: '2' },
+          { type: 'mcpToolCall', status: 'error', error: { message: 'mcp failed' } },
+          { type: 'mcpToolCall', server: 'srv', tool: 'read', status: 'failed', error: 'plain failure' },
+          { type: 'toolCall', name: 'reader', status: 'running', args: 'input', result: { status: 'error', error: { message: 'cursor failed' } } },
+          { type: 'toolCall', tool: 'git', status: 'failed', args: { file_path: 'a.ts' }, result: { branches: [null, { branch: 'main', pr_url: 'pr', repo_url: 'repo' }] } },
+          { type: 'function_call', name: 'functions.exec_command', status: 'running', args: { command: ['npm', '', 'test'] } },
+          { type: 'function_call', name: 'mcp__srv__tool__part', status: 'failed', args: { value: 1 } },
+          { type: 'function_call', name: 'generic', status: 'running', arguments: '{bad json' },
+          { type: 'function_call_output', output: { ok: true } },
+          { type: 'function_call_output', output: null },
+          { type: 'fileChange', status: 'failed', changes: ['a\\b.ts', { filePath: 'a/b.ts' }, { file_path: 'c.ts' }, {}, ''] },
+          { type: 'imageView', path: '' },
+          { type: 'enteredReviewMode' },
+          { type: 'exitedReviewMode' },
+          { type: 'unknown' },
+          {},
+        ],
+      }],
+    }));
+
+    const text = chat.messages.map((message) => message.content).join('\n');
+    expect(text).toContain('Command failed `command`');
+    expect(text).toContain('exit code 2');
+    expect(text).toContain('Tool failed `MCP tool call`');
+    expect(text).toContain('cursor failed');
+    expect(text).toContain('Branch: main');
+    expect(text).toContain('Running command `npm test`');
+    expect(text).toContain('Tool failed `srv / tool__part`');
+    expect(text).toContain('Calling tool `generic`');
+    expect(text).toContain('File changes failed to b.ts +1 more');
+    expect(text).toContain('Entered review mode');
+    expect(text).toContain('Exited review mode');
+  });
+
+  it.each([
+    ['spawn failure', 'spawn_agent', 'failed', 'Sub-agent spawn failed'],
+    ['spawn pending', 'spawn_agent', 'running', 'Spawning sub-agent'],
+    ['send failure', 'send_input', 'error', 'Sub-agent update failed'],
+    ['send success', 'send_input', 'complete', 'Sent follow-up'],
+    ['wait failure', 'wait', 'failed', 'Waiting on sub-agent failed'],
+    ['wait success', 'wait', 'complete', 'Waiting on sub-agent'],
+    ['close failure', 'close_agent', 'failed', 'Closing sub-agent failed'],
+    ['close success', 'close_agent', 'complete', 'Closed sub-agent'],
+    ['other failure', 'other', 'failed', 'Sub-agent action failed'],
+    ['other success', 'other', 'complete', 'Updated sub-agent'],
+  ])('maps %s collaboration event', (_label, tool, status, expected) => {
+    const chat = mapChat(toRawThread({
+      id: 'thr_collab_matrix',
+      turns: [{ items: [{ type: 'collabToolCall', tool, status }] }],
+    }));
+    expect(chat.messages[0].content).toContain(expected);
+    expect(chat.messages[0].subAgentMeta).toEqual(expect.objectContaining({ tool }));
+  });
+
+  it('maps web actions and file changes with empty and multiple targets', () => {
+    const chat = mapChat(toRawThread({
+      id: 'thr_web_files',
+      turns: [{ items: [
+        { type: 'webSearch', action: { type: 'open_page', url: 'https://example.com' } },
+        { type: 'webSearch', query: 'needle', action: { type: 'find_in_page', url: 'https://example.com', pattern: 'target' } },
+        { type: 'fileChange', changes: [] },
+        { type: 'fileChange', changes: [{ path: 'one.ts' }, { path: 'two.ts' }] },
+      ] }],
+    }));
+    expect(chat.messages.map((message) => message.content).join('\n')).toContain('https://example.com | pattern: target');
+    expect(chat.messages.map((message) => message.content).join('\n')).toContain('one.ts +1 more');
+  });
+
+  it('rejects malformed plans and maps alternate steps and statuses', () => {
+    const chat = mapChat(toRawThread({
+      id: 'thr_plan_edges',
+      turns: [
+        { id: 'running', status: 'pending', items: [
+          null,
+          { type: 'plan' },
+          { type: 'plan', turn_id: 'alternate', steps: [null, {}, { step: 'Do it', status: 'complete' }, { step: 'Wait', status: 'pending' }] },
+        ] },
+        { id: 'latest', status: 'completed', items: [{ type: 'plan', id: 'text-plan', text: 'not a plan' }] },
+      ],
+    }));
+    expect(chat.latestPlan?.turnId).toBe('alternate');
+    expect(chat.latestPlan?.steps.map((step) => step.status)).toEqual(['completed', 'pending']);
+    expect(chat.latestTurnPlan).toBeNull();
+    expect(chat.activeTurnId).toBe('running');
+    expect(mapChat(toRawThread({ id: 'empty', turns: [] })).latestPlan).toBeNull();
+  });
+
+  it('maps structured content aliases and ignores malformed entries', () => {
+    const chat = mapChat(toRawThread({
+      id: 'thr_content_edges',
+      turns: [{ items: [
+        { type: 'userMessage', content: [] },
+        { type: 'userMessage', content: [{ type: 'text', data: { text: 'nested text' } }, 4] },
+        { type: 'agentMessage', text: 'fallback text' },
+        { type: 'reasoning', content: [{ type: 'output_text', text: 'structured reasoning' }] },
+        { type: 'reasoning', summary: [{ type: 'summary_text', data: { text: 'nested summary' } }] },
+        { type: 'agentMessage', content: [
+          { type: 'image', data: { data: 'abc', mime_type: 'image/png' } },
+          { type: 'localImage', data: { url: 'https://example.com/image.png' } },
+          { type: 'mention', data: { path: 'nested.ts' } },
+          { type: 'unsupported' },
+        ] },
+      ] }],
+    }));
+    const text = chat.messages.map((message) => message.content).join('\n');
+    expect(text).toContain('nested text');
+    expect(text).toContain('fallback text');
+    expect(text).toContain('structured reasoning');
+    expect(text).toContain('nested summary');
+    expect(text).toContain('data:image/png;base64,abc');
+    expect(text).toContain('[image: https://example.com/image.png]');
+    expect(text).toContain('[file: nested.ts]');
   });
 });

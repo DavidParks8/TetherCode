@@ -118,6 +118,138 @@ describe('appStateReducer', () => {
     });
     expect(edited.push.registrations).toEqual([]);
   });
+
+  it('supports profile rename, switch, removal, and clearing', () => {
+    let state = appStateReducer(createDefaultAppStateData(), {
+      type: 'profiles/save',
+      draft: { bridgeUrl: 'http://one', bridgeToken: 'token' },
+    });
+    const profileId = state.bridgeProfiles.profiles[0]!.id;
+    state = appStateReducer(state, { type: 'profiles/rename', profileId, name: 'Renamed' });
+    expect(state.bridgeProfiles.profiles[0]?.name).toBe('Renamed');
+    state = appStateReducer(state, { type: 'profiles/switch', profileId });
+    expect(state.bridgeProfiles.activeProfileId).toBe(profileId);
+    expect(() => appStateReducer(state, { type: 'profiles/switch', profileId: 'missing' })).toThrow(
+      'no longer exists'
+    );
+    state = appStateReducer(state, { type: 'profiles/remove', profileId });
+    expect(state.bridgeProfiles.profiles).toEqual([]);
+    state = appStateReducer(state, { type: 'profiles/clear' });
+    expect(state.bridgeProfiles.activeProfileId).toBeNull();
+  });
+
+  it('retains registrations when profile identity is unchanged', () => {
+    let state = appStateReducer(createDefaultAppStateData(), {
+      type: 'profiles/save',
+      draft: { bridgeUrl: 'http://one', bridgeToken: 'token' },
+    });
+    const profileId = state.bridgeProfiles.profiles[0]!.id;
+    state = appStateReducer(state, {
+      type: 'push/ensure-registration', profileId, registrationId: 'registration',
+    });
+    const edited = appStateReducer(state, {
+      type: 'profiles/save',
+      draft: { id: profileId, name: 'New name', bridgeUrl: 'http://one/', bridgeToken: 'token' },
+    });
+    expect(edited.push).toBe(state.push);
+  });
+
+  it('normalizes remembered settings for each engine', () => {
+    const state = appStateReducer(createDefaultAppStateData(), {
+      type: 'settings/remember-thread',
+      engine: 'opencode',
+      modelId: ' ',
+      effort: 'invalid' as never,
+      serviceTier: null,
+      collaborationMode: 'ask',
+    });
+    expect(state.settings.defaultEngineSettings.opencode).toEqual({
+      modelId: null,
+      effort: null,
+      serviceTier: null,
+      collaborationMode: 'default',
+    });
+    const fallback = appStateReducer(state, {
+      type: 'settings/remember-thread',
+      engine: 'invalid' as never,
+      modelId: ' model ',
+      effort: 'none',
+      serviceTier: 'fast',
+      collaborationMode: 'plan',
+    });
+    expect(fallback.settings.defaultChatEngine).toBe('codex');
+  });
+
+  it('manages push registrations and ignores stale updates', () => {
+    let state = appStateReducer(createDefaultAppStateData(), {
+      type: 'push/ensure-registration', profileId: 'missing', registrationId: 'registration',
+    });
+    expect(state).toBe(state);
+    state = appStateReducer(state, {
+      type: 'profiles/save', draft: { bridgeUrl: 'http://one', bridgeToken: 'token' },
+    });
+    const profileId = state.bridgeProfiles.profiles[0]!.id;
+    expect(() => appStateReducer(state, {
+      type: 'push/ensure-registration', profileId, registrationId: ' ',
+    })).toThrow('registrationId');
+    state = appStateReducer(state, {
+      type: 'push/ensure-registration', profileId, registrationId: ' registration ',
+    });
+    expect(appStateReducer(state, {
+      type: 'push/registered', profileId, registrationId: 'stale', token: 'token',
+    })).toBe(state);
+    expect(appStateReducer(state, {
+      type: 'push/registered', profileId: 'missing', registrationId: 'registration', token: 'token',
+    })).toBe(state);
+    state = appStateReducer(state, {
+      type: 'push/registered', profileId, registrationId: 'registration', token: ' push-token ',
+    });
+    expect(state.push.registrations[0]?.token).toBe('push-token');
+    expect(() => appStateReducer(state, {
+      type: 'push/registered', profileId, registrationId: 'registration', token: ' ',
+    })).toThrow('token');
+    state = appStateReducer(state, {
+      type: 'push/unregistered', profileId: 'other', registrationId: 'registration',
+    });
+    expect(state.push.registrations).toHaveLength(1);
+    state = appStateReducer(state, {
+      type: 'push/unregistered', profileId, registrationId: 'registration',
+    });
+    expect(state.push.registrations).toEqual([]);
+  });
+
+  it('normalizes push preferences and malformed registrations', () => {
+    const profileState = appStateReducer(createDefaultAppStateData(), {
+      type: 'profiles/save', draft: { bridgeUrl: 'http://one', bridgeToken: 'token' },
+    });
+    const profileId = profileState.bridgeProfiles.profiles[0]!.id;
+    const parsed = parsePersistedAppState(JSON.stringify({
+      version: APP_STATE_VERSION,
+      settings: null,
+      bridgeProfiles: profileState.bridgeProfiles,
+      push: {
+        optedOut: true,
+        events: { turnCompleted: false, approvalRequested: 'yes' },
+        registrations: [
+          null,
+          {},
+          { profileId: 'missing', registrationId: 'a' },
+          { profileId, registrationId: 'one', token: 1 },
+          { profileId, registrationId: 'two', token: 'duplicate-profile' },
+          { profileId: 'missing', registrationId: 'one', token: 'duplicate-registration' },
+        ],
+      },
+    }));
+    expect(parsed.push).toEqual({
+      optedOut: true,
+      events: { turnCompleted: false, approvalRequested: true },
+      registrations: [{ profileId, registrationId: 'one', token: null }],
+    });
+    const updated = appStateReducer(parsed, {
+      type: 'push/update', patch: { optedOut: false, events: { turnCompleted: true, approvalRequested: false } },
+    });
+    expect(updated.push.events.approvalRequested).toBe(false);
+  });
 });
 
 describe('app-state persistence format', () => {
@@ -150,6 +282,17 @@ describe('app-state persistence format', () => {
     );
   });
 
+  it('rejects malformed JSON, null values, and missing versions with typed details', () => {
+    for (const raw of ['{', 'null', '{}']) {
+      try {
+        parsePersistedAppState(raw);
+        throw new Error('expected parse failure');
+      } catch (error) {
+        expect(error).toMatchObject({ code: 'invalid_data', operation: 'load' });
+      }
+    }
+  });
+
   it('imports the currently persisted settings and bridge credentials', () => {
     const imported = importLegacyAppState({
       settingsRaw: JSON.stringify({
@@ -169,6 +312,21 @@ describe('app-state persistence format', () => {
       bridgeToken: 'secret',
     });
     expect(imported.bridgeProfiles.activeProfileId).toBe(imported.bridgeProfiles.profiles[0]?.id);
+  });
+
+  it('keeps existing profiles and does not create profiles from partial credentials', () => {
+    const existing = importLegacyAppState({
+      settingsRaw: JSON.stringify({ version: 12, bridgeUrl: 'http://new', bridgeToken: 'new' }),
+      bridgeProfilesRaw: JSON.stringify({
+        activeProfileId: 'old',
+        profiles: [{ id: 'old', bridgeUrl: 'http://old', bridgeToken: 'old' }],
+      }),
+    });
+    expect(existing.bridgeProfiles.profiles.map((profile) => profile.id)).toEqual(['old']);
+    expect(importLegacyAppState({
+      settingsRaw: JSON.stringify({ version: 12, bridgeUrl: 'http://new' }),
+      bridgeProfilesRaw: null,
+    }).bridgeProfiles.profiles).toEqual([]);
   });
 });
 
@@ -259,5 +417,84 @@ describe('AppStateStore', () => {
     await switching;
     expect(store.getSnapshot().data.bridgeProfiles.activeProfileId).toBe('two');
     expect(store.getSnapshot().data.settings.showToolCalls).toBe(false);
+  });
+
+  it('loads once, publishes to subscribers, and supports unsubscribe', async () => {
+    const persistence = createPersistence();
+    const store = createAppStateStore(persistence);
+    const listener = jest.fn();
+    const unsubscribe = store.subscribe(listener);
+    expect(store.initialize()).toBe(store.initialize());
+    await store.initialize();
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    store.dispatch({ type: 'settings/update', patch: { showToolCalls: false } });
+    expect(listener).toHaveBeenCalledTimes(1);
+    await store.flushPersistence();
+    expect(persistence.readCurrent).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects dispatch before initialization', () => {
+    const store = createAppStateStore(createPersistence());
+    expect(() => store.dispatch({ type: 'settings/update', patch: {} })).toThrow('not loaded');
+  });
+
+  it.each([
+    ['current read', { readCurrent: jest.fn().mockRejectedValue(new Error('read')) }, 'load'],
+    ['legacy read', {
+      readCurrent: jest.fn().mockResolvedValue(null),
+      readLegacy: jest.fn().mockRejectedValue(new Error('legacy')),
+    }, 'import'],
+    ['invalid current data', { readCurrent: jest.fn().mockResolvedValue('{') }, 'load'],
+  ] as const)('exposes %s failures', async (_name, overrides, operation) => {
+    const store = createAppStateStore(createPersistence(overrides));
+    await store.initialize();
+    expect(store.getSnapshot()).toMatchObject({
+      loaded: true,
+      persistenceError: { operation },
+    });
+  });
+
+  it('retries initialization after an initial read failure', async () => {
+    const readCurrent = jest.fn()
+      .mockRejectedValueOnce(new Error('read'))
+      .mockResolvedValueOnce(serializeAppState(createDefaultAppStateData()));
+    const store = createAppStateStore(createPersistence({ readCurrent }));
+    await store.initialize();
+    await store.retryPersistence();
+    expect(store.getSnapshot().persistenceError).toBeNull();
+    expect(readCurrent).toHaveBeenCalledTimes(2);
+  });
+
+  it('publishes imported state when its initial write fails and retries it', async () => {
+    const writeCurrent = jest.fn()
+      .mockRejectedValueOnce(new Error('disk'))
+      .mockResolvedValueOnce(undefined);
+    const store = createAppStateStore(createPersistence({
+      readCurrent: jest.fn().mockResolvedValue(null),
+      writeCurrent,
+    }));
+    await store.initialize();
+    expect(store.getSnapshot().persistenceError).toMatchObject({ operation: 'import' });
+    await store.retryPersistence();
+    expect(store.getSnapshot().persistenceError).toBeNull();
+  });
+
+  it('keeps durable state unchanged when its write fails', async () => {
+    const writeCurrent = jest.fn().mockRejectedValue(new Error('disk'));
+    const store = createAppStateStore(createPersistence({ writeCurrent }));
+    await store.initialize();
+    await expect(store.dispatchDurable({
+      type: 'settings/update', patch: { showToolCalls: false },
+    })).rejects.toMatchObject({ code: 'write_failed', operation: 'write' });
+    expect(store.getSnapshot().data.settings.showToolCalls).toBe(true);
+  });
+
+  it('initializes automatically for a durable action', async () => {
+    const store = createAppStateStore(createPersistence());
+    const data = await store.dispatchDurable({
+      type: 'settings/update', patch: { appearancePreference: 'dark' },
+    });
+    expect(data.settings.appearancePreference).toBe('dark');
   });
 });

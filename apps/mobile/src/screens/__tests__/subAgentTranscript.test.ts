@@ -99,4 +99,58 @@ describe('trimInheritedParentMessages', () => {
       hiddenInheritedMessageCount: 0,
     });
   });
+
+  it('keeps transcripts unchanged when no messages are shared', () => {
+    const childMessages = [message('child', 'assistant', 'Child answer')];
+    expect(trimInheritedParentMessages([message('parent', 'user', 'Parent')], childMessages, ' ')).toEqual({
+      messages: childMessages,
+      hiddenInheritedMessageCount: 0,
+    });
+  });
+
+  it('uses fallback spawn metadata and partial prompt matches', () => {
+    const parentMessages = [
+      message('skip-kind', 'system', 'skip'),
+      message('skip-meta', 'system', 'skip', { systemKind: 'subAgent' }),
+      message('skip-thread', 'system', 'skip', {
+        systemKind: 'subAgent',
+        subAgentMeta: { prompt: 'Wrong', receiverThreadIds: ['other'] },
+      }),
+      message('fallback', 'system', 'spawn', {
+        systemKind: 'subAgent',
+        subAgentMeta: { tool: 'other_tool', prompt: 'Inspect settings', receiverThreadIds: ['child'] },
+      }),
+    ];
+    const childMessages = [
+      message('inherited', 'assistant', 'Old'),
+      message('not-user', 'assistant', 'Inspect settings'),
+      message('empty-user', 'user', '[file: /tmp/a]'),
+      message('prompt', 'user', 'Please Inspect settings carefully'),
+      message('answer', 'assistant', 'Done'),
+    ];
+    expect(trimInheritedParentMessages(parentMessages, childMessages, 'child')).toEqual({
+      messages: childMessages.slice(3),
+      hiddenInheritedMessageCount: 3,
+    });
+  });
+
+  it('falls back to shared-prefix trimming when spawn prompts are blank or absent from child', () => {
+    const shared = message('shared', 'user', 'Shared');
+    const parentMessages = [
+      shared,
+      message('blank', 'system', 'spawn', {
+        systemKind: 'subAgent',
+        subAgentMeta: { tool: 'spawnagent', prompt: ' ', receiverThreadIds: ['child'] },
+      }),
+      message('spawn', 'system', 'spawn', {
+        systemKind: 'subAgent',
+        subAgentMeta: { tool: 'spawnagent', prompt: 'Missing prompt', receiverThreadIds: ['child'] },
+      }),
+    ];
+    const childMessages = [shared, message('child', 'user', 'Different prompt')];
+    expect(trimInheritedParentMessages(parentMessages, childMessages, 'child')).toEqual({
+      messages: childMessages.slice(1),
+      hiddenInheritedMessageCount: 1,
+    });
+  });
 });

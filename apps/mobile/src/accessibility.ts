@@ -40,7 +40,7 @@ export function useModalAccessibilityFocus(visible: boolean, delayMs = 350) {
         return;
       }
       const handle = findNodeHandle(focusRef.current);
-      if (handle !== null) {
+      if (typeof handle === 'number') {
         AccessibilityInfo.setAccessibilityFocus(handle);
       }
     }, delayMs);

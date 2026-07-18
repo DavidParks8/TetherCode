@@ -1040,6 +1040,7 @@ export function findInlineChoiceSet(messages: ChatTranscriptMessage[]): {
 
 export function stripOptionText(value: string): string {
   return value
+    .trim()
     .replace(/^[`*_~]+/g, '')
     .replace(/[`*_~]+$/g, '')
     .replace(/\s+/g, ' ')

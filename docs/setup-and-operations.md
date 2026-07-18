@@ -442,6 +442,14 @@ and disconnect cancellation, path confinement, atomic push-registry persistence,
 Rust/TypeScript contract fixtures. It does not read bridge runtime state, bind configured bridge ports,
 or stop/restart a developer bridge. CI runs it in the Rust bridge job in addition to the full Rust suite.
 
+### Mobile branch coverage
+
+Run `npm run coverage:check` from the repository root. CI enforces at least 85% branch coverage
+across the active mobile logic layer: persisted state, profiles, bridge transport/API mapping,
+realtime synchronization controllers, navigation logic, and pure product helpers. Declarative screen
+rendering, styles, generated files, and native projects remain covered by component, build, and
+manual UI checks rather than the logic branch threshold.
+
 ### Host execution policy
 
 - `bridge/terminal/exec` is deny-all by default. Opt in with `BRIDGE_TERMINAL_EXEC_POLICIES=pwd,ls,cat`; an unset or empty value enables nothing.

@@ -30,4 +30,35 @@ describe('transcriptProjectionController', () => {
     });
     expect(projection.items).toHaveLength(projection.messages.length);
   });
+
+  it('uses only child messages when no parent is available', () => {
+    const projection = projectTranscript({
+      chat: { ...chat, parentThreadId: undefined },
+      parentChat: null,
+      showToolCalls: false,
+      threadStatuses: new Map(),
+    });
+    expect(projection.messages.map((message) => message.id)).toEqual(['u']);
+    expect(projection.hiddenInheritedMessageCount).toBe(0);
+  });
+
+  it('does not append blank or duplicate live assistant text', () => {
+    const withAssistant = {
+      ...chat,
+      parentThreadId: undefined,
+      messages: [
+        ...chat.messages,
+        { id: 'a', role: 'assistant' as const, content: 'answer', createdAt: '' },
+      ],
+    };
+    for (const liveAssistantText of ['  ', 'answer']) {
+      expect(projectTranscript({
+        chat: withAssistant,
+        parentChat: null,
+        showToolCalls: true,
+        threadStatuses: new Map(),
+        liveAssistantText,
+      }).messages).toHaveLength(2);
+    }
+  });
 });

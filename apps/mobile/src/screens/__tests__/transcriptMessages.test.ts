@@ -157,6 +157,37 @@ describe('getVisibleTranscriptMessages', () => {
     expect(synced[0]?.content).toContain('Status: complete');
     expect(synced[0]?.subAgentMeta?.agentStatus).toBe('complete');
   });
+
+  it('hides internal protocol content and blank assistant messages', () => {
+    const messages = [
+      message('result', 'assistant', 'FINAL_TASK_RESULT_JSON {}'),
+      message('cwd', 'user', 'Current working directory is: /repo'),
+      message('worktree', 'system', 'You are operating in task worktree /tmp'),
+      message('blank', 'assistant', '   '),
+      message('visible', 'assistant', 'Visible'),
+    ];
+    expect(getVisibleTranscriptMessages(messages, true)).toEqual([messages[4]]);
+  });
+
+  it('returns the original list when no sub-agent status can change', () => {
+    const plain = [message('a', 'assistant', 'Answer')];
+    expect(syncVisibleSubAgentStatuses(plain, new Map())).toBe(plain);
+    expect(syncVisibleSubAgentStatuses(plain, new Map([['child', 'running']]))).toBe(plain);
+    const withoutMeta = [message('s', 'system', 'Spawned', { systemKind: 'subAgent' })];
+    expect(syncVisibleSubAgentStatuses(withoutMeta, new Map([['child', 'running']]))).toBe(withoutMeta);
+  });
+
+  it('appends missing status lines and preserves already-current messages', () => {
+    const spawned = message('s', 'system', '• Spawned sub-agent', {
+      systemKind: 'subAgent',
+      subAgentMeta: { receiverThreadIds: ['missing', 'child'], agentStatus: 'idle' },
+    });
+    const synced = syncVisibleSubAgentStatuses([message('a', 'assistant', 'before'), spawned], new Map([['child', 'running']]));
+    expect(synced).not.toBe([message('a', 'assistant', 'before'), spawned]);
+    expect(synced[1].content).toBe('• Spawned sub-agent\n  Status: running');
+    expect(syncVisibleSubAgentStatuses([synced[1]], new Map([['child', 'running']]))[0]).toBe(synced[1]);
+    expect(syncVisibleSubAgentStatuses([spawned], new Map([['other', 'running']]))).toEqual([spawned]);
+  });
 });
 
 describe('buildTranscriptDisplayItems', () => {
@@ -370,5 +401,27 @@ describe('buildTranscriptDisplayItems', () => {
       .map((item) => item.renderKey);
 
     expect(insertedUserKeys).toEqual(baseUserKeys);
+  });
+
+  it('does not group non-system, typed non-tool, or malformed legacy rows', () => {
+    const messages = [
+      message('assistant', 'assistant', '• Ran `pwd`'),
+      message('typed', 'system', '• Ran `pwd`', { systemKind: 'reasoning' }),
+      message('plain', 'system', 'Ran `pwd`'),
+      message('empty', 'system', '\n '),
+    ];
+    expect(buildTranscriptDisplayItems(messages).every((item) => item.kind === 'message')).toBe(true);
+  });
+
+  it.each([
+    '• Thinking',
+    '• Spawned sub-agent',
+    '• Spawning sub-agent',
+    '• Sub-agent',
+    '• Updated sub-agent thread',
+    '• Task',
+    '• Conversation compacted',
+  ])('keeps legacy lifecycle row %s outside tool groups', (content) => {
+    expect(buildTranscriptDisplayItems([message('s', 'system', content)])[0].kind).toBe('message');
   });
 });

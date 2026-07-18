@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "build": "node scripts/run-expo.cjs export --platform all --output-dir dist",
     "test": "jest --passWithNoTests",
+    "test:coverage": "jest --runInBand --coverage",
     "test:contract": "jest --runInBand src/api/__tests__/contractFixtures.test.ts",
     "test:watch": "jest --watch"
   },
@@ -71,6 +72,19 @@
   },
   "jest": {
     "preset": "jest-expo",
+    "collectCoverageFrom": [
+      "src/{accessibility,appSettings,appState,appStatePersistence,appWebSocketLifecycle,approvalMode,bridgeProfiles,bridgeUrl,browserPreview,browserPreviewSessionLifecycle,chatEngines,chatSnapshotCache,fonts,pushController,pushNotifications,pushResponseController,storeReview,theme}.ts",
+      "src/api/{account,chatMapping,client,rateLimits,ws}.ts",
+      "src/components/{chat-input-layout,chatImageSource,computerUseTrace,usageLimitBadges}.ts",
+      "src/navigation/{chatThreadTree,drawerChats,drawerRuntimeIndicators}.ts",
+      "src/screens/{agentThreadDisplay,agentThreads,gitDiff,gitDiffReview,mainScreenHelpers,planCardState,subAgentTranscript,transcriptMessages}.ts",
+      "src/screens/controllers/*.ts"
+    ],
+    "coverageThreshold": {
+      "global": {
+        "branches": 85
+      }
+    },
     "transformIgnorePatterns": [
       "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@sentry/react-native|native-base|react-native-svg)"
     ]

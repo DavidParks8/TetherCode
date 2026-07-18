@@ -24,24 +24,30 @@ export function readAccountRateLimits(value: unknown): AccountRateLimitSnapshot 
     return null;
   }
 
-  const byLimitId =
-    toRecord(record.rateLimitsByLimitId) ?? toRecord(record.rate_limits_by_limit_id);
+  const keyedCollections = [
+    toRecord(record.rateLimitsByLimitId),
+    toRecord(record.rate_limits_by_limit_id),
+  ];
+  for (const byLimitId of keyedCollections) {
+    if (byLimitId) {
+      const preferred = readAccountRateLimitSnapshot(byLimitId.codex);
+      if (preferred) {
+        return preferred;
+      }
 
-  if (byLimitId) {
-    const preferred = readAccountRateLimitSnapshot(byLimitId.codex);
-    if (preferred) {
-      return preferred;
-    }
-
-    for (const candidate of Object.values(byLimitId)) {
-      const snapshot = readAccountRateLimitSnapshot(candidate);
-      if (snapshot) {
-        return snapshot;
+      for (const candidate of Object.values(byLimitId)) {
+        const snapshot = readAccountRateLimitSnapshot(candidate);
+        if (snapshot) {
+          return snapshot;
+        }
       }
     }
   }
 
-  return readAccountRateLimitSnapshot(record.rateLimits ?? record.rate_limits);
+  return (
+    readAccountRateLimitSnapshot(record.rateLimits) ??
+    readAccountRateLimitSnapshot(record.rate_limits)
+  );
 }
 
 export function readAccountRateLimitSnapshot(
@@ -64,7 +70,7 @@ export function readAccountRateLimitSnapshot(
     primary,
     secondary,
     credits: readAccountCreditsSnapshot(record.credits),
-    planType: readPlanType(record.planType ?? record.plan_type),
+    planType: readPlanType(record.planType) ?? readPlanType(record.plan_type),
   };
 }
 

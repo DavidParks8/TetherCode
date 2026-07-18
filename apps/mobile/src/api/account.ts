@@ -23,7 +23,7 @@ export function readAccountSnapshot(value: unknown): AccountSnapshot {
     email: accountType === 'chatgpt' ? readString(accountRecord?.email) : null,
     planType:
       accountType === 'chatgpt'
-        ? readPlanType(accountRecord?.planType ?? accountRecord?.plan_type)
+        ? readPlanType(accountRecord?.planType) ?? readPlanType(accountRecord?.plan_type)
         : null,
     requiresOpenaiAuth:
       record?.requiresOpenaiAuth === true || record?.requires_openai_auth === true,

@@ -134,4 +134,22 @@ describe('drawerChats', () => {
     expect(searchDrawerChats(chats, '').map((entry) => entry.id)).toEqual(['one', 'two']);
     expect(searchDrawerChats(chats, '   ').map((entry) => entry.id)).toEqual(['one', 'two']);
   });
+
+  it('searches errors case-insensitively and ignores empty optional fields', () => {
+    const chats = [
+      chat('error', { title: 'Deploy', lastError: 'CONNECTION Refused' }),
+      chat('empty', { title: 'Other', cwd: '   ', lastError: undefined }),
+    ];
+
+    expect(searchDrawerChats(chats, ' connection   refused ').map((entry) => entry.id)).toEqual([
+      'error',
+    ]);
+  });
+
+  it('deduplicates selected engines before deciding whether to filter', () => {
+    const chats = [chat('codex'), chat('cursor', { engine: 'cursor' })];
+    expect(filterDrawerChatsByEngines(chats, ['codex', 'codex']).map((entry) => entry.id)).toEqual([
+      'codex',
+    ]);
+  });
 });

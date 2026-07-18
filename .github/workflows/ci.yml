@@ -92,6 +92,10 @@ jobs:
       - name: Test
         run: npm run test -w "${{ matrix.workspace }}"
 
+      - name: Branch coverage
+        if: matrix.workspace == 'clawdex-mobile'
+        run: npm run test:coverage -w clawdex-mobile
+
   rust-bridge:
     name: Rust Bridge
     runs-on: ubuntu-latest

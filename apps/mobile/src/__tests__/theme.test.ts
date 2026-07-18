@@ -1,5 +1,6 @@
 import { DEFAULT_FONT_PREFERENCE } from '../fonts';
-import { createAppTheme, resolveThemeMode } from '../theme';
+import { Platform } from 'react-native';
+import { AppThemeProvider, colors, createAppTheme, resolveThemeMode, typography } from '../theme';
 
 describe('theme', () => {
   it('resolves system preference from the device scheme', () => {
@@ -50,5 +51,28 @@ describe('theme', () => {
     expect(theme.typography.body.fontFamily).toBe('IBMPlexSans_400Regular');
     expect(theme.typography.headline.fontFamily).toBe('IBMPlexSans_600SemiBold');
     expect(theme.typography.mono.fontFamily).toBe('IBMPlexMono_400Regular');
+  });
+
+  it('uses platform system weights for the system font preset', () => {
+    const theme = createAppTheme('dark', 'system');
+    expect(theme.typography.largeTitle).toMatchObject({ fontWeight: '700' });
+    expect(theme.typography.headline).toMatchObject({ fontWeight: '600' });
+    expect(theme.typography.body).toMatchObject({ fontWeight: '400' });
+  });
+
+  it('updates compatibility color and typography exports in the provider', () => {
+    const theme = createAppTheme('light');
+    const child = 'child';
+    expect(AppThemeProvider({ theme, children: child })).toBeTruthy();
+    expect(colors.bgMain).toBe(theme.colors.bgMain);
+    expect(typography.body).toEqual(theme.typography.body);
+  });
+
+  it('uses plain activity-bar tints outside iOS', () => {
+    const originalOs = Platform.OS;
+    Object.defineProperty(Platform, 'OS', { configurable: true, value: 'android' });
+    expect(createAppTheme('dark').activityBarTint).toBe('dark');
+    expect(createAppTheme('light').activityBarTint).toBe('light');
+    Object.defineProperty(Platform, 'OS', { configurable: true, value: originalOs });
   });
 });

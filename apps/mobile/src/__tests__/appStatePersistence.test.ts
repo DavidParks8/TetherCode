@@ -72,4 +72,51 @@ describe('appStatePersistence', () => {
       { keychainAccessible: 'after-first-unlock' }
     );
   });
+
+  it('reports unavailable browser storage and tolerates a missing legacy file', async () => {
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: { getItem: jest.fn() },
+    });
+    const readAsStringAsync = jest.fn().mockRejectedValue(new Error('missing'));
+    jest.doMock('react-native', () => ({ Platform: { OS: 'web' } }));
+    jest.doMock('expo-secure-store', () => ({}));
+    jest.doMock('expo-file-system/legacy', () => ({
+      documentDirectory: 'file:///documents/',
+      readAsStringAsync,
+    }));
+
+    let module!: typeof AppStatePersistenceModule;
+    jest.isolateModules(() => {
+      module = jest.requireActual('../appStatePersistence') as typeof AppStatePersistenceModule;
+    });
+    const persistence = module.createAppStatePersistence();
+    await expect(persistence.readCurrent()).resolves.toBeNull();
+    await expect(persistence.writeCurrent('{}')).rejects.toThrow('unavailable');
+    await expect(persistence.readLegacy()).resolves.toEqual({
+      settingsRaw: null,
+      bridgeProfilesRaw: null,
+    });
+  });
+
+  it('skips legacy settings reads without a document directory', async () => {
+    const readAsStringAsync = jest.fn();
+    jest.doMock('react-native', () => ({ Platform: { OS: 'web' } }));
+    jest.doMock('expo-secure-store', () => ({}));
+    jest.doMock('expo-file-system/legacy', () => ({
+      documentDirectory: ' ',
+      readAsStringAsync,
+    }));
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: { getItem: jest.fn().mockReturnValue(null), setItem: jest.fn() },
+    });
+
+    let module!: typeof AppStatePersistenceModule;
+    jest.isolateModules(() => {
+      module = jest.requireActual('../appStatePersistence') as typeof AppStatePersistenceModule;
+    });
+    await module.createAppStatePersistence().readLegacy();
+    expect(readAsStringAsync).not.toHaveBeenCalled();
+  });
 });

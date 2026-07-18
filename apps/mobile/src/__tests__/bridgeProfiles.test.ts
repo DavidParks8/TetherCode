@@ -1,6 +1,7 @@
 import {
   createEmptyBridgeProfileStore,
   deriveBridgeProfileName,
+  getActiveBridgeProfile,
   parseBridgeProfileStore,
   removeBridgeProfile,
   renameBridgeProfile,
@@ -153,5 +154,77 @@ describe('bridgeProfiles', () => {
     expect(next.activeProfileId).toBe('profile-2');
     expect(next.profiles).toHaveLength(1);
     expect(next.profiles[0]?.id).toBe('profile-2');
+  });
+
+  it('returns empty stores for missing, malformed, and non-object data', () => {
+    expect(parseBridgeProfileStore(null)).toEqual(createEmptyBridgeProfileStore());
+    expect(parseBridgeProfileStore('   ')).toEqual(createEmptyBridgeProfileStore());
+    expect(parseBridgeProfileStore('{')).toEqual(createEmptyBridgeProfileStore());
+    expect(parseBridgeProfileStore('null')).toEqual(createEmptyBridgeProfileStore());
+    expect(parseBridgeProfileStore(JSON.stringify({ profiles: 'invalid' }))).toEqual(
+      createEmptyBridgeProfileStore()
+    );
+  });
+
+  it('drops malformed profiles and normalizes valid profile fields', () => {
+    const parsed = parseBridgeProfileStore(JSON.stringify({
+      activeProfileId: 1,
+      profiles: [
+        null,
+        {},
+        { id: 'x', bridgeUrl: 1, bridgeToken: 'token' },
+        { id: 'x', bridgeUrl: 'ftp://host', bridgeToken: 'token' },
+        { id: 'x', bridgeUrl: 'http://host', bridgeToken: ' ' },
+        {
+          id: ' valid ',
+          name: ' ',
+          bridgeUrl: 'ws://host:8787/',
+          bridgeToken: ' token ',
+          createdAt: ' ',
+          updatedAt: 1,
+        },
+      ],
+    }));
+    expect(parsed.profiles).toHaveLength(1);
+    expect(parsed.profiles[0]).toMatchObject({
+      id: 'valid',
+      name: 'host',
+      bridgeUrl: 'http://host:8787',
+      bridgeToken: 'token',
+    });
+  });
+
+  it('rejects incomplete drafts and honors activation choices', () => {
+    const empty = createEmptyBridgeProfileStore();
+    expect(() => upsertBridgeProfile(empty, { bridgeUrl: '', bridgeToken: 'token' })).toThrow();
+    expect(() => upsertBridgeProfile(empty, { bridgeUrl: 'http://host', bridgeToken: ' ' })).toThrow();
+    const first = upsertBridgeProfile(empty, {
+      bridgeUrl: 'http://one', bridgeToken: 'one', activate: true,
+    }).store;
+    const second = upsertBridgeProfile(first, {
+      bridgeUrl: 'http://two', bridgeToken: 'two', activate: false,
+    }).store;
+    expect(second.activeProfileId).toBe(first.activeProfileId);
+    expect(second.profiles).toHaveLength(2);
+  });
+
+  it('sanitizes missing profile operations and active lookup', () => {
+    const base = parseBridgeProfileStore(JSON.stringify({
+      activeProfileId: 'one',
+      profiles: [{ id: 'one', bridgeUrl: 'http://one', bridgeToken: 'token' }],
+    }));
+    expect(getActiveBridgeProfile(base)?.id).toBe('one');
+    expect(getActiveBridgeProfile({ ...base, activeProfileId: null })).toBeNull();
+    expect(getActiveBridgeProfile({ ...base, activeProfileId: 'missing' })).toBeNull();
+    expect(setActiveBridgeProfile(base, null).activeProfileId).toBeNull();
+    expect(setActiveBridgeProfile(base, 'missing').activeProfileId).toBe('one');
+    expect(renameBridgeProfile(base, 'missing', 'Name')).toEqual(base);
+    expect(removeBridgeProfile(base, 'missing').activeProfileId).toBe('one');
+    expect(removeBridgeProfile(base, 'one')).toEqual(createEmptyBridgeProfileStore());
+  });
+
+  it('derives safe fallback names', () => {
+    expect(deriveBridgeProfileName(' Name ', 'not-used')).toBe('Name');
+    expect(deriveBridgeProfileName(null, 'not a url')).toBe('Bridge');
   });
 });

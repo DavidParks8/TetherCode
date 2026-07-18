@@ -4,6 +4,18 @@ import type { HostBridgeWsClient } from '../api/ws';
 import { bindAppWebSocketLifecycle } from '../appWebSocketLifecycle';
 
 describe('bindAppWebSocketLifecycle', () => {
+  it('uses the React Native AppState source by default', () => {
+    const connect = jest.fn();
+    const disconnect = jest.fn();
+    const ws = {
+      connect,
+      disconnect,
+    } as unknown as HostBridgeWsClient;
+    const cleanup = bindAppWebSocketLifecycle(ws);
+    expect(connect.mock.calls.length + disconnect.mock.calls.length).toBeGreaterThan(0);
+    cleanup();
+  });
+
   it('connects while active, suspends in background, and reconnects on foreground', () => {
     let listener: ((state: AppStateStatus) => void) | null = null;
     const remove = jest.fn();

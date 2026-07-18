@@ -88,12 +88,10 @@ function isLikelyPrivateHost(hostname: string): boolean {
     return false;
   }
 
-  const [firstStr, secondStr] = octets;
-  const first = Number.parseInt(firstStr, 10);
-  const second = Number.parseInt(secondStr, 10);
-  if (!Number.isInteger(first) || !Number.isInteger(second)) {
+  if (!octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)) {
     return false;
   }
+  const [first, second] = octets.map(Number);
 
   return (
     first === 10 ||
