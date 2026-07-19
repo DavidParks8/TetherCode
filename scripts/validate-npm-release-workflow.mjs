@@ -37,6 +37,13 @@ const publishNodeStep = publish?.steps?.find((step) => step.name === 'Setup Node
 assert(publishNodeStep?.with?.['node-version'] === '22.22.2', 'publish Node.js must be pinned to the trusted-publishing runtime');
 const publishNpmStep = publish?.steps?.find((step) => step.name === 'Install npm for trusted publishing');
 assert(publishNpmStep?.run === 'npm install -g npm@11.18.0', 'publish npm must be pinned to a compatible trusted-publishing release');
+const publishInstallIndex = publish.steps.findIndex((step) => step.name === 'Install dependencies' && step.run === 'npm ci');
+const publishAuditIndex = publish.steps.findIndex((step) => step.name === 'Audit production dependencies' && step.run === 'npm run security:check');
+const artifactDownloadIndex = publish.steps.findIndex((step) => step.name === 'Download packaged bridge binaries');
+assert(
+  publishInstallIndex >= 0 && publishAuditIndex > publishInstallIndex && artifactDownloadIndex > publishAuditIndex,
+  'the live production audit must run after install and before publish artifact preparation'
+);
 
 const jobsContainingPublish = Object.entries(workflow.jobs ?? {})
   .filter(([, job]) => JSON.stringify(job).includes('npm publish'))
