@@ -17,6 +17,7 @@ test('only the matching version tag owns automatic publishing', () => {
     eventName: 'push',
     ref: `refs/tags/v${packageIdentity.packageVersion}`,
     manualPublish: 'false',
+    releaseCommitOnMain: true,
   });
   assert.equal(release.publishAllowed, true);
   assert.equal(release.owner, 'version-tag');
@@ -43,6 +44,19 @@ test('a mismatched version tag fails before release builds', () => {
   );
 });
 
+test('a release tag must point to a commit on main', () => {
+  assert.throws(
+    () => resolveNpmRelease({
+      ...packageIdentity,
+      eventName: 'push',
+      ref: `refs/tags/v${packageIdentity.packageVersion}`,
+      manualPublish: 'false',
+      releaseCommitOnMain: false,
+    }),
+    /reachable from origin\/main/
+  );
+});
+
 test('manual publishing requires the explicit publish request', () => {
   for (const manualPublish of ['false', '']) {
     const release = resolveNpmRelease({
@@ -62,6 +76,18 @@ test('manual publishing requires the explicit publish request', () => {
   });
   assert.equal(release.publishAllowed, true);
   assert.equal(release.owner, 'approved-manual');
+
+  for (const ref of ['refs/heads/unreviewed', `refs/tags/v${packageIdentity.packageVersion}`]) {
+    assert.throws(
+      () => resolveNpmRelease({
+        ...packageIdentity,
+        eventName: 'workflow_dispatch',
+        ref,
+        manualPublish: 'true',
+      }),
+      /only allowed from refs\/heads\/main/
+    );
+  }
 });
 
 test('release workflow syntax and ownership policy validate', () => {

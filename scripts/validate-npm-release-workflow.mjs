@@ -20,6 +20,13 @@ assert(workflow.on?.push?.tags?.includes('v*'), 'version tags must trigger relea
 assert(workflow.on?.workflow_dispatch, 'manual releases must remain available');
 assert(workflow.jobs?.release_metadata, 'release ownership metadata job is required');
 assert(workflow.jobs?.build_bridge_binaries?.needs === 'release_metadata', 'builds must wait for tag validation');
+const releaseMetadataSteps = workflow.jobs.release_metadata.steps ?? [];
+const releaseCheckoutStep = releaseMetadataSteps.find((step) => step.name === 'Checkout');
+assert(releaseCheckoutStep?.with?.['fetch-depth'] === 0, 'release ownership must check out complete history');
+assert(
+  releaseMetadataSteps.some((step) => step.name === 'Fetch release branch' && step.run === 'git fetch --no-tags origin main:refs/remotes/origin/main'),
+  'release ownership must refresh origin/main before validating ancestry'
+);
 assert(publish?.if === "needs.release_metadata.outputs.publish_allowed == 'true'", 'publish job must use the release ownership gate');
 assert(publish?.environment?.name === 'npm-publish', 'publish job must use the protected npm environment');
 assert(publish?.concurrency?.['cancel-in-progress'] === false, 'an active package publish must not be cancelled');

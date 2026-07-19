@@ -38,6 +38,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -47,6 +49,9 @@ jobs:
 
       - name: Validate synchronized versions
         run: npm run version:check
+
+      - name: Fetch release branch
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
 
       - name: Resolve release ownership
         id: release

@@ -384,11 +384,11 @@ Typical release flow (from `main`):
 
 ```bash
 npm version patch --ignore-scripts=false
-git push origin main --follow-tags
+git push --atomic origin main --follow-tags
 ```
 
-The `npm version` lifecycle synchronizes workspace, Expo, Cargo manifest, and lockfile versions before creating the release commit and tag. Automation verifies that metadata and tag/version consistency before building or publishing to npm.
-The `main` push still builds every bridge target but cannot publish. Only an exact `v<package.json version>` tag, or a manual run with `publish_package` explicitly selected and the `npm-publish` environment approved, can enter the publish job. Publishes for the same package and version share one non-cancelling concurrency group, so the release commit and tag cannot compete.
+The `npm version` lifecycle synchronizes workspace, Expo, Cargo manifest, and lockfile versions before creating the release commit and tag. The atomic push prevents a tag from reaching the remote if the `main` update is rejected. Automation verifies metadata, tag/version consistency, and that the tagged commit is reachable from `origin/main` before building or publishing to npm.
+The `main` push still builds every bridge target but cannot publish. Only an exact `v<package.json version>` tag on `main`, or a manual run from `main` with `publish_package` explicitly selected and the `npm-publish` environment approved, can enter the publish job. Publishes for the same package and version share one non-cancelling concurrency group, so the release commit and tag cannot compete.
 
 Use `npm run test:release` to validate workflow YAML and the release ownership guard locally. CI runs the same focused policy suite on pull requests.
 
