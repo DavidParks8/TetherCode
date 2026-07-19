@@ -42,4 +42,11 @@ assert(
   'the publish command must not interpolate workflow data into shell source'
 );
 
+const publishTargetStep = publish?.steps?.find((step) => step.name === 'Resolve publish target');
+assert(
+  publishTargetStep?.run?.includes("require('semver').validRange(process.argv[1])")
+    && publishTargetStep.run.includes('PUBLISH_TAG="next"'),
+  'SemVer-like prereleases must use a valid fallback npm dist-tag'
+);
+
 process.stdout.write('NPM release workflow is valid and single-owner.\n');

@@ -36,6 +36,9 @@ jobs:
       - name: Validate release workflow and ownership
         run: npm run test:scripts
 
+      - name: Validate synchronized versions
+        run: npm run version:check
+
       - name: Audit production dependencies
         run: npm run security:check
 

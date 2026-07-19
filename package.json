@@ -28,6 +28,7 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "semver": "^7.8.5",
     "yaml": "^2.9.0"
   },
   "bin": {
@@ -82,6 +83,9 @@
     "secure:bridge:dev": "node ./scripts/start-bridge-secure.js --dev",
     "bridge:ts": "BRIDGE_WORKDIR=$(pwd) npm run -w @codex/mac-bridge dev",
     "version:sync": "node scripts/sync-versions.js",
+    "version:check": "node scripts/sync-versions.js --check",
+    "preversion": "npm run version:check",
+    "version": "node scripts/sync-versions.js --lifecycle",
     "release:check": "node scripts/validate-npm-release-workflow.mjs",
     "security:check": "node scripts/check-production-audit.mjs",
     "docs:check": "node scripts/validate-doc-consistency.mjs",

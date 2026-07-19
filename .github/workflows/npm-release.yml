@@ -45,6 +45,9 @@ jobs:
           node-version: "22.13.1"
           package-manager-cache: false
 
+      - name: Validate synchronized versions
+        run: npm run version:check
+
       - name: Resolve release ownership
         id: release
         env:
@@ -334,6 +337,7 @@ jobs:
       - name: Verify package is publishable
         run: |
           node -e "const p=require('./package.json'); if (p.private) { throw new Error('package.json has private=true; cannot publish'); } if (!p.name || !p.version) { throw new Error('package.json must include name + version'); }"
+          npm run version:check
 
       - name: Verify tag version matches package version
         if: startsWith(github.ref, 'refs/tags/')
@@ -369,8 +373,11 @@ jobs:
           PRERELEASE_TAG="$(node -e "const version=require('./package.json').version; const match=version.match(/-([0-9A-Za-z-]+)(?:\\.|$)/); process.stdout.write(match ? match[1] : '')")"
           if [ -n "${WORKFLOW_NPM_TAG}" ] && [ "${WORKFLOW_NPM_TAG}" != "auto" ]; then
             PUBLISH_TAG="${WORKFLOW_NPM_TAG}"
-          elif [ -n "${PRERELEASE_TAG}" ]; then
+          elif [[ "${PRERELEASE_TAG}" =~ ^[A-Za-z] ]] \
+            && node -e "process.exit(require('semver').validRange(process.argv[1]) === null ? 0 : 1)" "${PRERELEASE_TAG}"; then
             PUBLISH_TAG="${PRERELEASE_TAG}"
+          elif [ -n "${PRERELEASE_TAG}" ]; then
+            PUBLISH_TAG="next"
           else
             PUBLISH_TAG="latest"
           fi
@@ -378,14 +385,20 @@ jobs:
             echo "Invalid npm dist-tag: ${PUBLISH_TAG}"
             exit 1
           fi
-          echo "package_name=${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
-          echo "package_version=${PACKAGE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "publish_tag=${PUBLISH_TAG}" >> "$GITHUB_OUTPUT"
-          if [ -n "${PRERELEASE_TAG}" ]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          if node -e "process.exit(require('semver').validRange(process.argv[1]) === null ? 1 : 0)" "${PUBLISH_TAG}"; then
+            echo "npm dist-tag must not be a valid SemVer range: ${PUBLISH_TAG}"
+            exit 1
           fi
+          {
+            echo "package_name=${PACKAGE_NAME}"
+            echo "package_version=${PACKAGE_VERSION}"
+            echo "publish_tag=${PUBLISH_TAG}"
+            if [ -n "${PRERELEASE_TAG}" ]; then
+              echo "is_prerelease=true"
+            else
+              echo "is_prerelease=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
           if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
             echo "publish_needed=false" >> "$GITHUB_OUTPUT"
             echo "Package ${PACKAGE_NAME}@${PACKAGE_VERSION} is already published; skipping npm publish."
