@@ -1427,6 +1427,79 @@ async fn runtime_backend_covers_engine_availability_status_routing_and_fallbacks
 }
 
 #[tokio::test]
+async fn aggregate_lists_skip_degraded_backends_and_preserve_ready_results() {
+    let (_server, opencode) = start_opencode_api(None).await;
+    let codex = app_server_sink(BridgeRuntimeEngine::Codex, Duration::from_millis(20)).await;
+    codex
+        .lifecycle
+        .transition(
+            BackendLifecycleState::Dead,
+            Some("backend exited".to_string()),
+        )
+        .await;
+    let runtime = runtime_backend(
+        BridgeRuntimeEngine::Codex,
+        Some(codex.clone()),
+        Some(opencode.clone()),
+        None,
+    );
+
+    let threads = runtime
+        .aggregate_thread_list(Some(json!({ "limit": 5 })))
+        .await
+        .expect("healthy OpenCode thread list survives dead Codex");
+    assert_eq!(
+        threads["data"][0]["id"],
+        json!(encode_engine_qualified_id(
+            BridgeRuntimeEngine::Opencode,
+            "s1"
+        ))
+    );
+
+    let loaded = runtime
+        .aggregate_loaded_thread_ids()
+        .await
+        .expect("healthy OpenCode loaded threads survive dead Codex");
+    assert_eq!(
+        loaded["data"][0],
+        json!(encode_engine_qualified_id(
+            BridgeRuntimeEngine::Opencode,
+            "s1"
+        ))
+    );
+
+    stop_app_server_sink(&codex).await;
+    stop_opencode_backend(&opencode).await;
+}
+
+#[tokio::test]
+async fn aggregate_lists_report_when_every_ready_backend_fails() {
+    let (server, opencode) = start_opencode_api(None).await;
+    for path in ["experimental/session", "session", "session/status"] {
+        server.state.failures.lock().await.insert(path.to_string());
+    }
+    let runtime = runtime_backend(
+        BridgeRuntimeEngine::Opencode,
+        None,
+        Some(opencode.clone()),
+        None,
+    );
+
+    assert!(runtime
+        .aggregate_thread_list(None)
+        .await
+        .expect_err("all-ready thread list failure")
+        .contains("opencode"));
+    assert!(runtime
+        .aggregate_loaded_thread_ids()
+        .await
+        .expect_err("all-ready loaded thread list failure")
+        .contains("opencode"));
+
+    stop_opencode_backend(&opencode).await;
+}
+
+#[tokio::test]
 async fn opencode_event_edge_cases_cover_fallbacks_duplicates_and_missing_fields() {
     let (_server, backend) = start_opencode_api(None).await;
     backend

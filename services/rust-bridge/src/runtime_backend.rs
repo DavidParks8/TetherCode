@@ -489,116 +489,129 @@ impl RuntimeBackend {
         params: Option<Value>,
     ) -> Result<Value, String> {
         let mut results = Vec::new();
+        let mut errors = Vec::new();
+        let mut attempted = 0usize;
         let bridge_cursor = extract_thread_list_cursor(params.as_ref())
             .and_then(|cursor| decode_bridge_thread_list_cursor(&cursor));
 
-        if let Some(codex) = self.codex_backend() {
-            if let Some(cursor_map) = bridge_cursor.as_ref() {
-                if let Some(cursor) = cursor_map.get(&BridgeRuntimeEngine::Codex) {
-                    results.push((
-                        BridgeRuntimeEngine::Codex,
-                        codex
-                            .request_internal(
-                                "thread/list",
-                                Some(thread_list_params_with_cursor(
-                                    params.as_ref(),
-                                    Some(cursor),
-                                )),
-                            )
-                            .await?,
-                    ));
+        if let Some(codex) = self
+            .codex_backend()
+            .filter(|backend| backend.lifecycle.is_ready())
+        {
+            let request_params = match bridge_cursor.as_ref() {
+                Some(cursor_map) => cursor_map
+                    .get(&BridgeRuntimeEngine::Codex)
+                    .map(|cursor| thread_list_params_with_cursor(params.as_ref(), Some(cursor))),
+                None => params.clone(),
+            };
+            if bridge_cursor.is_none() || request_params.is_some() {
+                attempted += 1;
+                match codex.request_internal("thread/list", request_params).await {
+                    Ok(result) => results.push((BridgeRuntimeEngine::Codex, result)),
+                    Err(error) => errors.push(format!("codex: {error}")),
                 }
-            } else {
-                results.push((
-                    BridgeRuntimeEngine::Codex,
-                    codex
-                        .request_internal("thread/list", params.clone())
-                        .await?,
-                ));
             }
         }
 
-        if let Some(opencode) = &self.opencode {
-            if let Some(cursor_map) = bridge_cursor.as_ref() {
-                if let Some(cursor) = cursor_map.get(&BridgeRuntimeEngine::Opencode) {
-                    results.push((
-                        BridgeRuntimeEngine::Opencode,
-                        opencode
-                            .request_internal(
-                                "thread/list",
-                                Some(thread_list_params_with_cursor(
-                                    params.as_ref(),
-                                    Some(cursor),
-                                )),
-                            )
-                            .await?,
-                    ));
+        if let Some(opencode) = self
+            .opencode
+            .as_ref()
+            .filter(|backend| backend.lifecycle.is_ready())
+        {
+            let request_params = match bridge_cursor.as_ref() {
+                Some(cursor_map) => cursor_map
+                    .get(&BridgeRuntimeEngine::Opencode)
+                    .map(|cursor| thread_list_params_with_cursor(params.as_ref(), Some(cursor))),
+                None => params.clone(),
+            };
+            if bridge_cursor.is_none() || request_params.is_some() {
+                attempted += 1;
+                match opencode
+                    .request_internal("thread/list", request_params)
+                    .await
+                {
+                    Ok(result) => results.push((BridgeRuntimeEngine::Opencode, result)),
+                    Err(error) => errors.push(format!("opencode: {error}")),
                 }
-            } else {
-                results.push((
-                    BridgeRuntimeEngine::Opencode,
-                    opencode
-                        .request_internal("thread/list", params.clone())
-                        .await?,
-                ));
             }
         }
 
-        if let Some(cursor_backend) = self.cursor_backend() {
-            if let Some(cursor_map) = bridge_cursor.as_ref() {
-                if let Some(cursor) = cursor_map.get(&BridgeRuntimeEngine::Cursor) {
-                    results.push((
-                        BridgeRuntimeEngine::Cursor,
-                        cursor_backend
-                            .request_internal(
-                                "thread/list",
-                                Some(thread_list_params_with_cursor(
-                                    params.as_ref(),
-                                    Some(cursor),
-                                )),
-                            )
-                            .await?,
-                    ));
+        if let Some(cursor_backend) = self
+            .cursor_backend()
+            .filter(|backend| backend.lifecycle.is_ready())
+        {
+            let request_params = match bridge_cursor.as_ref() {
+                Some(cursor_map) => cursor_map
+                    .get(&BridgeRuntimeEngine::Cursor)
+                    .map(|cursor| thread_list_params_with_cursor(params.as_ref(), Some(cursor))),
+                None => params.clone(),
+            };
+            if bridge_cursor.is_none() || request_params.is_some() {
+                attempted += 1;
+                match cursor_backend
+                    .request_internal("thread/list", request_params)
+                    .await
+                {
+                    Ok(result) => results.push((BridgeRuntimeEngine::Cursor, result)),
+                    Err(error) => errors.push(format!("cursor: {error}")),
                 }
-            } else {
-                results.push((
-                    BridgeRuntimeEngine::Cursor,
-                    cursor_backend
-                        .request_internal("thread/list", params.clone())
-                        .await?,
-                ));
             }
         }
 
+        if results.is_empty() && attempted > 0 {
+            return Err(format!(
+                "thread/list failed for every ready backend: {}",
+                errors.join("; ")
+            ));
+        }
         Ok(merge_thread_list_results(results))
     }
 
     pub(super) async fn aggregate_loaded_thread_ids(&self) -> Result<Value, String> {
         let mut results = Vec::new();
+        let mut errors = Vec::new();
+        let mut attempted = 0usize;
 
-        if let Some(codex) = self.codex_backend() {
-            results.push((
-                BridgeRuntimeEngine::Codex,
-                codex.request_internal("thread/loaded/list", None).await?,
-            ));
+        if let Some(codex) = self
+            .codex_backend()
+            .filter(|backend| backend.lifecycle.is_ready())
+        {
+            attempted += 1;
+            match codex.request_internal("thread/loaded/list", None).await {
+                Ok(result) => results.push((BridgeRuntimeEngine::Codex, result)),
+                Err(error) => errors.push(format!("codex: {error}")),
+            }
         }
 
-        if let Some(opencode) = &self.opencode {
-            results.push((
-                BridgeRuntimeEngine::Opencode,
-                opencode
-                    .request_internal("thread/loaded/list", None)
-                    .await?,
-            ));
+        if let Some(opencode) = self
+            .opencode
+            .as_ref()
+            .filter(|backend| backend.lifecycle.is_ready())
+        {
+            attempted += 1;
+            match opencode.request_internal("thread/loaded/list", None).await {
+                Ok(result) => results.push((BridgeRuntimeEngine::Opencode, result)),
+                Err(error) => errors.push(format!("opencode: {error}")),
+            }
         }
 
-        if let Some(cursor) = self.cursor_backend() {
-            results.push((
-                BridgeRuntimeEngine::Cursor,
-                cursor.request_internal("thread/loaded/list", None).await?,
-            ));
+        if let Some(cursor) = self
+            .cursor_backend()
+            .filter(|backend| backend.lifecycle.is_ready())
+        {
+            attempted += 1;
+            match cursor.request_internal("thread/loaded/list", None).await {
+                Ok(result) => results.push((BridgeRuntimeEngine::Cursor, result)),
+                Err(error) => errors.push(format!("cursor: {error}")),
+            }
         }
 
+        if results.is_empty() && attempted > 0 {
+            return Err(format!(
+                "thread/loaded/list failed for every ready backend: {}",
+                errors.join("; ")
+            ));
+        }
         Ok(merge_loaded_thread_ids_results(results))
     }
 
