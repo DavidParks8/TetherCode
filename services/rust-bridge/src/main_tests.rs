@@ -1,5 +1,38 @@
 use super::*;
 
+#[tokio::test]
+async fn bridge_listener_reserves_the_primary_port_before_runtime_startup() {
+    let occupied = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("reserve occupied port");
+    let occupied_port = occupied.local_addr().expect("occupied address").port();
+    let backend_started = Arc::new(AtomicBool::new(false));
+    let started_for_failure = backend_started.clone();
+    let error = bind_then_start_backend("127.0.0.1", occupied_port, move || async move {
+        started_for_failure.store(true, Ordering::SeqCst);
+        Ok(())
+    })
+    .await
+    .expect_err("duplicate bridge bind must fail");
+    assert!(error.contains("failed to bind"));
+    assert!(error.contains(&occupied_port.to_string()));
+    assert!(!backend_started.load(Ordering::SeqCst));
+
+    drop(occupied);
+    let started_for_success = backend_started.clone();
+    let (bind_addr, listener, backend) =
+        bind_then_start_backend("127.0.0.1", occupied_port, move || async move {
+            started_for_success.store(true, Ordering::SeqCst);
+            Ok("started")
+        })
+        .await
+        .expect("released bridge port should bind before backend startup");
+    assert_eq!(bind_addr, format!("127.0.0.1:{occupied_port}"));
+    assert_eq!(listener.local_addr().unwrap().port(), occupied_port);
+    assert_eq!(backend, "started");
+    assert!(backend_started.load(Ordering::SeqCst));
+}
+
 #[test]
 fn token_suffix_masks_all_but_last_six_chars() {
     assert_eq!(token_suffix("ExponentPushToken[abcdef123456]"), "23456]");

@@ -5,6 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     env,
+    future::Future,
     io::{SeekFrom, Write},
     path::{Component, Path, PathBuf},
     process::Stdio,
@@ -203,15 +204,21 @@ async fn main() {
             "query-token auth is enabled (BRIDGE_ALLOW_QUERY_TOKEN_AUTH=true); prefer Authorization headers instead"
         );
     }
+
     let metrics = Arc::new(OperationalMetrics::new());
     let hub = Arc::new(ClientHub::new());
-    let backend = match RuntimeBackend::start(&config, hub.clone(), metrics.clone()).await {
-        Ok(client) => client,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
+    let (bind_addr, listener, backend) =
+        match bind_then_start_backend(&config.host, config.port, || {
+            RuntimeBackend::start(&config, hub.clone(), metrics.clone())
+        })
+        .await
+        {
+            Ok(started) => started,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
     let path_policy = Arc::new(
         PathPolicy::new(config.workdir.clone(), config.allow_outside_root_cwd)
             .expect("validated bridge path policy"),
@@ -265,15 +272,6 @@ async fn main() {
 
     let app = build_bridge_router(state.clone());
     let preview_app = build_preview_router(state.clone());
-
-    let bind_addr = format!("{}:{}", config.host, config.port);
-    let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
-        Ok(listener) => listener,
-        Err(error) => {
-            eprintln!("failed to bind {bind_addr}: {error}");
-            std::process::exit(1);
-        }
-    };
 
     let preview_bind_addr = format!("{}:{}", config.preview_host, config.preview_port);
     let preview_listener = match tokio::net::TcpListener::bind(&preview_bind_addr).await {
@@ -338,4 +336,21 @@ async fn main() {
         eprintln!("server error: {error}");
         std::process::exit(1);
     }
+}
+
+async fn bind_then_start_backend<T, Start, StartFuture>(
+    host: &str,
+    port: u16,
+    start_backend: Start,
+) -> Result<(String, tokio::net::TcpListener, T), String>
+where
+    Start: FnOnce() -> StartFuture,
+    StartFuture: Future<Output = Result<T, String>>,
+{
+    let bind_addr = format!("{host}:{port}");
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .map_err(|error| format!("failed to bind {bind_addr}: {error}"))?;
+    let backend = start_backend().await?;
+    Ok((bind_addr, listener, backend))
 }
