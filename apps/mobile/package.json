@@ -74,12 +74,10 @@
   "jest": {
     "preset": "jest-expo",
     "collectCoverageFrom": [
-      "src/{accessibility,appSettings,appState,appStatePersistence,appWebSocketLifecycle,approvalMode,bridgeProfiles,bridgeUrl,browserPreview,browserPreviewSessionLifecycle,chatEngines,chatSnapshotCache,fonts,pushController,pushNotifications,pushResponseController,storeReview,theme}.ts",
-      "src/api/{account,chatMapping,client,rateLimits,ws}.ts",
-      "src/components/{chat-input-layout,chatImageSource,computerUseTrace,usageLimitBadges}.ts",
-      "src/navigation/{chatThreadTree,drawerChats,drawerRuntimeIndicators}.ts",
-      "src/screens/{agentThreadDisplay,agentThreads,gitDiff,gitDiffReview,mainScreenHelpers,planCardState,subAgentTranscript,transcriptMessages}.ts",
-      "src/screens/controllers/*.ts"
+      "src/**/*.ts",
+      "!src/**/*.d.ts",
+      "!src/**/__tests__/**",
+      "!src/screens/mainScreenStyles.ts"
     ],
     "coverageThreshold": {
       "global": {
