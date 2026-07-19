@@ -309,14 +309,15 @@ async fn start_opencode_api(password: Option<&str>) -> (OpenCodeApiServer, Arc<O
             .expect("serve fake OpenCode API");
     });
 
-    let child = Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .arg("-c")
         .arg("sleep 60")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn fake OpenCode process");
+        .stderr(Stdio::null());
+    configure_managed_child_command(&mut command);
+    let child = command.spawn().expect("spawn fake OpenCode process");
     let child_pid = child.id().expect("fake OpenCode process id");
     let backend = Arc::new(OpencodeBackend {
         child: Mutex::new(child),
@@ -348,6 +349,67 @@ async fn stop_opencode_backend(backend: &OpencodeBackend) {
     let mut child = backend.child.lock().await;
     let _ = child.kill().await;
     let _ = child.wait().await;
+}
+
+#[tokio::test]
+async fn opencode_event_stream_reconnects_while_wait_task_owns_child() {
+    let (server, backend) = start_opencode_api(None).await;
+    backend.spawn_wait_loop();
+    timeout(Duration::from_secs(1), async {
+        while backend.child.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("OpenCode wait task should own the child mutex");
+    backend.spawn_global_event_loop();
+
+    timeout(Duration::from_secs(4), async {
+        loop {
+            let event_requests = server
+                .state
+                .requests
+                .lock()
+                .await
+                .iter()
+                .filter(|request| request.path == "global/event")
+                .count();
+            if event_requests >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("OpenCode event stream should reconnect after closure");
+
+    backend.request_shutdown().await;
+    timeout(Duration::from_secs(5), async {
+        while !backend.lifecycle.is_dead() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("OpenCode wait task should observe shutdown");
+
+    let requests_after_exit = server
+        .state
+        .requests
+        .lock()
+        .await
+        .iter()
+        .filter(|request| request.path == "global/event")
+        .count();
+    tokio::time::sleep(OPENCODE_EVENT_RECONNECT_DELAY + Duration::from_millis(100)).await;
+    let final_requests = server
+        .state
+        .requests
+        .lock()
+        .await
+        .iter()
+        .filter(|request| request.path == "global/event")
+        .count();
+    assert_eq!(final_requests, requests_after_exit);
 }
 
 async fn app_server_sink(

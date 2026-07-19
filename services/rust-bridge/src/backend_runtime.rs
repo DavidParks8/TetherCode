@@ -43,6 +43,9 @@ impl BackendRuntimeStatus {
 
     pub(crate) async fn transition(&self, state: BackendLifecycleState, error: Option<String>) {
         let mut snapshot = self.snapshot.write().await;
+        if snapshot.state == BackendLifecycleState::Dead && state != BackendLifecycleState::Dead {
+            return;
+        }
         if state == BackendLifecycleState::Restarting {
             snapshot.restart_count = snapshot.restart_count.saturating_add(1);
         }
@@ -58,6 +61,10 @@ impl BackendRuntimeStatus {
 
     pub(crate) fn is_ready(&self) -> bool {
         self.state.load(Ordering::Acquire) == state_code(BackendLifecycleState::Ready)
+    }
+
+    pub(crate) fn is_dead(&self) -> bool {
+        self.state.load(Ordering::Acquire) == state_code(BackendLifecycleState::Dead)
     }
 }
 
@@ -86,6 +93,7 @@ mod tests {
     #[tokio::test]
     async fn lifecycle_tracks_restart_and_terminal_failure() {
         let status = BackendRuntimeStatus::starting();
+        assert!(!status.is_dead());
         status.transition(BackendLifecycleState::Ready, None).await;
         status
             .transition(BackendLifecycleState::Restarting, Some("exited".into()))
@@ -96,9 +104,18 @@ mod tests {
                 Some("restart exhausted".into()),
             )
             .await;
+        status
+            .transition(
+                BackendLifecycleState::Degraded,
+                Some("late shutdown".into()),
+            )
+            .await;
+        status.transition(BackendLifecycleState::Ready, None).await;
         let snapshot = status.snapshot().await;
+        assert!(status.is_dead());
         assert_eq!(snapshot.state, BackendLifecycleState::Dead);
         assert_eq!(snapshot.restart_count, 1);
+        assert_eq!(snapshot.last_error.as_deref(), Some("restart exhausted"));
         assert_eq!(restart_backoff(0), Duration::from_millis(500));
         assert_eq!(restart_backoff(99), Duration::from_millis(8_000));
     }

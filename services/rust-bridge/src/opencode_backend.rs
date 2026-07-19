@@ -243,10 +243,13 @@ impl OpencodeBackend {
         let this = Arc::clone(self);
         tokio::spawn(async move {
             loop {
+                if this.lifecycle.is_dead() {
+                    break;
+                }
                 if let Err(error) = this.consume_global_events().await {
                     eprintln!("opencode global event stream failed: {error}");
                 }
-                if this.child_has_exited().await {
+                if this.lifecycle.is_dead() {
                     break;
                 }
                 tokio::time::sleep(OPENCODE_EVENT_RECONNECT_DELAY).await;
@@ -254,6 +257,7 @@ impl OpencodeBackend {
         });
     }
 
+    #[cfg(test)]
     pub(super) async fn child_has_exited(&self) -> bool {
         let mut child = self.child.lock().await;
         match child.try_wait() {
