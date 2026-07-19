@@ -608,6 +608,7 @@ async fn app_server_bridge_handles_requests_responses_notifications_and_timeouts
 
     // Set up a cached auth bundle so handle_server_request for chatgptAuthTokens/refresh
     // exercises the `if let Some(auth)` true branch at line 4102.
+    let _auth_cache_scope = TestBridgeChatGptAuthCacheScope::new();
     cache_bridge_chatgpt_auth(BridgeChatGptAuthBundle {
         access_token: "test-access".to_string(),
         account_id: "test-account".to_string(),

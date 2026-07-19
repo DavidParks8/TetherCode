@@ -30,12 +30,16 @@ const loadReport = () => {
 const report = loadReport();
 const vulnerabilities = report.vulnerabilities ?? {};
 const found = new Map();
+const critical = [];
 
 for (const vulnerability of Object.values(vulnerabilities)) {
   for (const advisory of Array.isArray(vulnerability.via) ? vulnerability.via : []) {
     if (!advisory || typeof advisory !== 'object') continue;
     if (advisory.severity !== 'high' && advisory.severity !== 'critical') continue;
     found.set(advisory.source, advisory.name);
+    if (advisory.severity === 'critical') {
+      critical.push([advisory.source, advisory.name]);
+    }
   }
 }
 
@@ -49,8 +53,11 @@ const fixable = [...new Set(found.values())].filter(
   (name) => vulnerabilities[name]?.fixAvailable !== false
 );
 
-if (unexpected.length > 0 || stale.length > 0 || fixable.length > 0) {
+if (critical.length > 0 || unexpected.length > 0 || stale.length > 0 || fixable.length > 0) {
   const details = [
+    critical.length > 0
+      ? `critical: ${critical.map(([id, name]) => `${name}#${id}`).join(', ')}`
+      : null,
     unexpected.length > 0
       ? `unexpected: ${unexpected.map(([id, name]) => `${name}#${id}`).join(', ')}`
       : null,

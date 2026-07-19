@@ -62,4 +62,16 @@ test('production audit rejects new, stale, or newly fixable advisories', () => {
   });
   assert.notEqual(fixable.status, 0);
   assert.match(fixable.stderr, /fix now available: undici/);
+
+  const escalated = runChecker({
+    ...reviewed,
+    undici: {
+      ...reviewed.undici,
+      via: reviewed.undici.via.map((advisory, index) =>
+        index === 0 ? { ...advisory, severity: 'critical' } : advisory
+      ),
+    },
+  });
+  assert.notEqual(escalated.status, 0);
+  assert.match(escalated.stderr, /critical: undici#1114638/);
 });

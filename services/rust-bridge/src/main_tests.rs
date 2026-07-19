@@ -384,51 +384,6 @@ async fn push_service_registers_dedupes_and_unregisters() {
     let _ = tokio::fs::remove_dir_all(&dir).await;
 }
 
-fn bridge_chatgpt_auth_test_lock() -> &'static std::sync::Mutex<()> {
-    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
-}
-
-struct TestBridgeChatGptAuthCacheScope {
-    _guard: std::sync::MutexGuard<'static, ()>,
-    temp_dir: PathBuf,
-}
-
-impl TestBridgeChatGptAuthCacheScope {
-    fn new() -> Self {
-        let guard = bridge_chatgpt_auth_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        clear_cached_bridge_chatgpt_auth();
-
-        let nonce = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("valid time")
-            .as_nanos();
-        let temp_dir = env::temp_dir().join(format!(
-            "clawdex-bridge-chatgpt-auth-test-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&temp_dir).expect("create auth cache test dir");
-        set_bridge_chatgpt_auth_cache_path_override(Some(
-            temp_dir.join(BRIDGE_CHATGPT_AUTH_CACHE_FILE_NAME),
-        ));
-
-        Self {
-            _guard: guard,
-            temp_dir,
-        }
-    }
-}
-
-impl Drop for TestBridgeChatGptAuthCacheScope {
-    fn drop(&mut self) {
-        clear_cached_bridge_chatgpt_auth();
-        set_bridge_chatgpt_auth_cache_path_override(None);
-        let _ = std::fs::remove_dir_all(&self.temp_dir);
-    }
-}
-
 async fn build_test_bridge(hub: Arc<ClientHub>) -> Arc<AppServerBridge> {
     let mut child = Command::new("cat")
         .stdin(Stdio::piped())
@@ -3459,6 +3414,44 @@ async fn successful_chatgpt_auth_token_login_populates_bridge_auth_cache() {
 
     clear_cached_bridge_chatgpt_auth();
     shutdown_test_bridge(&bridge).await;
+}
+
+#[test]
+fn chatgpt_auth_test_scope_never_touches_the_default_home_cache() {
+    let fake_home = env::temp_dir().join(format!(
+        "clawdex-auth-home-sentinel-{}-{}",
+        std::process::id(),
+        Uuid::new_v4()
+    ));
+    let default_cache = fake_home
+        .join(GITHUB_CREDENTIALS_DIR_NAME)
+        .join(BRIDGE_CHATGPT_AUTH_CACHE_FILE_NAME);
+    std::fs::create_dir_all(default_cache.parent().expect("default cache parent"))
+        .expect("create fake home cache directory");
+    std::fs::write(&default_cache, b"real-user-sentinel").expect("write sentinel");
+    let previous_home = env::var_os("HOME");
+
+    // The test suite runs serially because environment variables are process-global.
+    unsafe { env::set_var("HOME", &fake_home) };
+    {
+        let _auth_cache_scope = TestBridgeChatGptAuthCacheScope::new();
+        cache_bridge_chatgpt_auth(BridgeChatGptAuthBundle {
+            access_token: "isolated".to_string(),
+            account_id: "isolated".to_string(),
+            plan_type: None,
+        });
+        clear_cached_bridge_chatgpt_auth();
+    }
+
+    assert_eq!(
+        std::fs::read(&default_cache).expect("read sentinel"),
+        b"real-user-sentinel"
+    );
+    match previous_home {
+        Some(home) => unsafe { env::set_var("HOME", home) },
+        None => unsafe { env::remove_var("HOME") },
+    }
+    let _ = std::fs::remove_dir_all(fake_home);
 }
 
 #[tokio::test]

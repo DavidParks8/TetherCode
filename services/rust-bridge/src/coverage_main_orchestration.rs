@@ -2986,20 +2986,8 @@ async fn websocket_global_admission_and_direct_rpc_error_variants() {
 
 #[test]
 fn persisted_chatgpt_auth_cache_covers_missing_invalid_and_memory_paths() {
-    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-    let _guard = LOCK
-        .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let root = env::temp_dir().join(format!(
-        "clawdex-auth-orchestration-{}-{}",
-        std::process::id(),
-        TEST_NONCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&root).unwrap();
-    let path = root.join("auth.json");
-    set_bridge_chatgpt_auth_cache_path_override(Some(path.clone()));
-    clear_cached_bridge_chatgpt_auth();
+    let auth_cache_scope = TestBridgeChatGptAuthCacheScope::new();
+    let path = auth_cache_scope.cache_path().to_path_buf();
 
     assert!(load_persisted_bridge_chatgpt_auth().is_none());
     std::fs::write(&path, "not-json").unwrap();
@@ -3023,10 +3011,6 @@ fn persisted_chatgpt_auth_cache_covers_missing_invalid_and_memory_paths() {
         read_cached_bridge_chatgpt_auth().unwrap().access_token,
         "persisted"
     );
-
-    clear_cached_bridge_chatgpt_auth();
-    set_bridge_chatgpt_auth_cache_path_override(None);
-    let _ = std::fs::remove_dir_all(root);
 }
 
 #[tokio::test]

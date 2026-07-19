@@ -2201,10 +2201,8 @@ async fn early_routes_filesystem_limits_and_chatgpt_auth_cache_cover_remaining_p
     assert_eq!(listing.omitted_entries, 1);
     assert!(listing.entries.iter().all(|entry| !entry.is_git_repo));
 
-    let cache_root = env::temp_dir().join(format!("clawdex-chatgpt-cache-{}", Uuid::new_v4()));
-    let cache_path = cache_root.join("private/chatgpt-auth.json");
-    set_bridge_chatgpt_auth_cache_path_override(Some(cache_path.clone()));
-    clear_cached_bridge_chatgpt_auth();
+    let auth_cache_scope = TestBridgeChatGptAuthCacheScope::new();
+    let cache_path = auth_cache_scope.cache_path().to_path_buf();
     assert_eq!(
         resolve_bridge_chatgpt_auth_cache_path(),
         Some(cache_path.clone())
@@ -2253,8 +2251,6 @@ async fn early_routes_filesystem_limits_and_chatgpt_auth_cache_cover_remaining_p
     }
     clear_cached_bridge_chatgpt_auth();
     assert!(!cache_path.exists());
-    set_bridge_chatgpt_auth_cache_path_override(None);
-    let _ = std_fs::remove_dir_all(cache_root);
 
     for invalid in [
         None,

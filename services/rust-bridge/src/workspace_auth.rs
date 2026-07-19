@@ -218,6 +218,54 @@ pub(super) fn set_bridge_chatgpt_auth_cache_path_override(path: Option<PathBuf>)
     }
 }
 
+#[cfg(test)]
+pub(super) struct TestBridgeChatGptAuthCacheScope {
+    _guard: std::sync::MutexGuard<'static, ()>,
+    temp_dir: PathBuf,
+    cache_path: PathBuf,
+}
+
+#[cfg(test)]
+impl TestBridgeChatGptAuthCacheScope {
+    pub(super) fn new() -> Self {
+        static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        let guard = LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp_dir = env::temp_dir().join(format!(
+            "clawdex-bridge-chatgpt-auth-test-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("create auth cache test directory");
+        let cache_path = temp_dir.join(BRIDGE_CHATGPT_AUTH_CACHE_FILE_NAME);
+
+        // Select the isolated path before clearing the process-global in-memory cache.
+        set_bridge_chatgpt_auth_cache_path_override(Some(cache_path.clone()));
+        clear_cached_bridge_chatgpt_auth();
+
+        Self {
+            _guard: guard,
+            temp_dir,
+            cache_path,
+        }
+    }
+
+    pub(super) fn cache_path(&self) -> &Path {
+        &self.cache_path
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestBridgeChatGptAuthCacheScope {
+    fn drop(&mut self) {
+        clear_cached_bridge_chatgpt_auth();
+        set_bridge_chatgpt_auth_cache_path_override(None);
+        let _ = std::fs::remove_dir_all(&self.temp_dir);
+    }
+}
+
 pub(super) fn resolve_bridge_chatgpt_auth_cache_path() -> Option<PathBuf> {
     #[cfg(test)]
     if let Ok(guard) = bridge_chatgpt_auth_cache_path_override().read() {
