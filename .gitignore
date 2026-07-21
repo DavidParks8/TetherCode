@@ -78,7 +78,6 @@ coverage/
 *.log
 *.pid
 *.seed
-.bridge-update-status.json
 .tethercode/
 .tethercode-push-registry.json
 .claude/

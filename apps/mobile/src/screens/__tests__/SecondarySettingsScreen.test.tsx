@@ -49,7 +49,7 @@ const capabilities: BridgeCapabilities = {
   supportsByAgent: {},
   agUiEvents: true,
   supports: {
-    reviewStart: true, turnSteer: true, commandOutputDelta: true, selfUpdate: true,
+    reviewStart: true, turnSteer: true, commandOutputDelta: true,
     browserPreview: true, genericUiSurface: true,
   },
 };

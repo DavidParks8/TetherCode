@@ -126,7 +126,6 @@ function capabilities(
     turnSteer: true,
     commandOutputDelta: true,
     fastMode: true,
-    selfUpdate: true,
     browserPreview: true,
     genericUiSurface: true,
   };

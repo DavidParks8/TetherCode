@@ -55,7 +55,6 @@ const capabilities: BridgeCapabilities = {
     reviewStart: true,
     turnSteer: true,
     commandOutputDelta: true,
-    selfUpdate: true,
     browserPreview: true,
     genericUiSurface: true,
   },

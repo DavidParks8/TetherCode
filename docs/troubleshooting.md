@@ -1,162 +1,92 @@
 # Troubleshooting
 
-## Bridge startup seems slow
+## Desktop App Does Not Open
 
-- `tethercode init` no longer starts Expo for the shipped app.
-- Published npm installs should use a bundled bridge binary on `darwin-arm64`, `darwin-x64`, `linux-x64`, and `win32-x64`.
-- `tethercode init` should not run a repo `npm install` on the published CLI path.
-- Published CLI installs should not pull Expo/React Native or ship the mobile source tree.
-- If startup is compiling Rust, you are usually on a source checkout, an unsupported host, a package without a bundled bridge binary, or have `TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD=true` in `.env.secure`.
-- The slow parts are usually npm dependency install/repair or the first Rust bridge build on source-based setups.
-- If you want to skip the interactive wizard after initial setup, use `npm run secure:bridge`.
-
-## Expo starts but QR/network is wrong
-
-- This only applies when you are developing the mobile app locally from the repo.
-- Re-run `npm run secure:setup`
-- Confirm `.env.secure` has correct `BRIDGE_HOST`
-- Restart `npm run mobile`
-
-## Stop all running services quickly
-
-Preferred:
+Verify the bundle and launch it directly:
 
 ```bash
-tethercode stop
+codesign --verify --deep --strict apps/desktop/dist/TetherCode.app
+open apps/desktop/dist/TetherCode.app
 ```
 
-From repo checkout:
+Local builds are ad-hoc signed. Downloaded public builds additionally require Apple notarization.
+
+## Operator Is Unavailable
+
+The native shell expects:
+
+```text
+TetherCode.app/Contents/Resources/bin/tethercode
+TetherCode.app/Contents/Resources/bin/tethercode-bridge
+```
+
+Rebuild or reinstall the app if either file is missing. The app does not fall back to npm, Node.js,
+or shell scripts.
+
+## Agent Is Not Found
+
+Use the native file picker or inspect discovery directly:
 
 ```bash
-npm run stop:services
+npm run operator -- discover-agent --agent-id opencode
 ```
 
-## Bridge auth errors (`401`, invalid token)
+Install the ACP-capable agent independently, then select its executable. TetherCode setup registers
+and hashes an existing executable; it does not install packages.
 
-- For the shipped mobile app, rescan the bridge QR or update the stored token in Settings.
-- For a local dev build, also ensure `BRIDGE_AUTH_TOKEN` in `.env.secure` matches `EXPO_PUBLIC_HOST_BRIDGE_TOKEN` in `apps/mobile/.env`.
-- Restart the bridge after token changes.
-- On secure-launcher installs, `Settings > Bridge Maintenance > Restart bridge safely` can do that from the phone.
-- If an in-app bridge update fails, inspect `.bridge-updater.log` and `.bridge-update-status.json` beside the `.env.secure` used to launch the bridge. For a published CLI this is the directory where `tethercode init` was invoked, not the global npm package directory.
-- A `recovered` updater status means the exact `previousVersion` npm package was reinstalled and passed the background launch health check. A `stopped` status means no healthy bridge was recovered; run its `recoveryCommand` from that same directory. The command is version-pinned and normally reinstalls the previous package before `tethercode init`.
+## Tailscale Has No Address
 
-## Bridge exits when no-auth mode is enabled
-
-- No-auth startup requires `BRIDGE_HOST` to be a literal loopback IP such as `127.0.0.1` or `::1`. `localhost`, `0.0.0.0`, `::`, LAN addresses, and Tailscale addresses are refused.
-- A browser `403` with `error: "forbidden_origin"` means `/rpc`, `/status`, or `/local-image` received an untrusted `Origin` header. Origin-less native/operator requests are allowed; browser origins must exactly match the listener or an entry in `BRIDGE_NO_AUTH_ALLOWED_ORIGINS`.
-- Do not configure `*` or `null`; they are rejected. Use exact origins such as `http://127.0.0.1:3000` only when needed.
-- Prefer a short-lived local token: set a random `BRIDGE_AUTH_TOKEN`, set `BRIDGE_ALLOW_INSECURE_NO_AUTH=false`, restart bridge and client with that token, then rotate or remove it after debugging.
-
-## Local browser preview does not open
-
-- The in-app browser only supports loopback targets from the bridge host: `localhost`, `127.0.0.1`, or `::1`.
-- Use entries like `localhost:3000`, `127.0.0.1:5173`, or just a port number.
-- If a separate local API runs on another port, make sure the app reaches it through `fetch`, XHR, `EventSource`, `WebSocket`, or a normal form post so the preview runtime can rewrite it through the bridge.
-- See `docs/browser-preview-limitations.md` for the current support boundaries and known caveats.
-- If Browser reports preview is unavailable, check whether `BRIDGE_PREVIEW_PORT` is already in use on the host.
-- The preview port defaults to `BRIDGE_PORT + 1`, but its bind host independently defaults to
-  loopback. `tethercode init` sets `BRIDGE_PREVIEW_HOST` to the selected private-network host; custom
-  configurations must do the same for a phone to connect.
-- Restart the bridge after changing `BRIDGE_PREVIEW_HOST`, `BRIDGE_PREVIEW_PORT`, or
-  `BRIDGE_PREVIEW_CONNECT_URL`.
-- If the page shell loads but live reload does not, verify the target dev server is still serving its WebSocket/HMR endpoint locally.
-
-## Tailscale issues
-
-- Verify host and phone are on the same Tailscale network
-- Check host IP (`tailscale ip -4`) and the bridge URL saved in the mobile app
-
-## ACP agent manifest or executable not found
-
-- Re-run `tethercode init --agent <registry-id>` so setup can restore the exact workspace-local install and manifest.
-- Confirm `.env.secure` points `ACP_AGENT_MANIFEST` at `.tethercode/agents.json` and `ACP_AGENT_ROOTS` at `.tethercode/agents`.
-- Do not replace the executable with `npx`, `uvx`, or a global command. Runtime intentionally has no network or PATH-resolution fallback.
-- If setup reports an unsigned binary, review its registry provenance before using `--trust-unverified`.
-- If an npm package requires lifecycle scripts, review the package before using `--trust-install-scripts`; scripts are disabled by default.
-- If a uv distribution is selected, install `uv` and rerun setup. Runtime does not invoke `uvx`.
-
-## Bridge build fails with `linker 'cc' not found`
-
-This only applies when the bridge is building from Rust source instead of using a bundled binary.
-
-Install C build tools:
+Open Tailscale and confirm it is connected:
 
 ```bash
-sudo apt-get update && sudo apt-get install -y build-essential
+tailscale ip -4
 ```
 
-Then retry `npm run secure:bridge`.
+Alternatively choose **Local network** and enter the Mac's LAN IPv4 address.
 
-From a clean checkout, setup intentionally builds the bridge when no packaged binary exists. To
-force a source build even if a packaged binary is present:
+## Bridge Will Not Start
+
+Inspect status and logs:
 
 ```bash
-TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD=true npm run setup:wizard
+npm run operator -- status --workspace /path/to/repository --human
+open /path/to/repository/.bridge.log
 ```
 
-The wizard saves that setting in `.env.secure`; set it to `false` there to return to packaged-binary
-startup.
+Common causes:
 
-## iOS bundling error: `Unable to resolve "./BoundingDimensions"`
+- the registered agent executable moved or changed after setup
+- the configured host/port is already in use
+- `.env.secure` or `.tethercode/agents.json` is missing or invalid
+- Tailscale/LAN connectivity changed
 
-Manual recovery:
+Rerun setup after moving or upgrading an agent so its canonical path and SHA-256 digest are refreshed.
+
+## Stop or Restart After Config Damage
+
+The Rust operator verifies its private ownership record independently of current config. It can stop
+a live owned bridge even when `.env.secure` is missing or corrupt:
 
 ```bash
-npm install --include=dev --force
-npm install --include=dev --force -w apps/mobile
-npm run -w apps/mobile start -- --clear
+npm run operator -- stop --workspace /path/to/repository
 ```
 
-## Runtime errors: `[runtime not ready]` / `property is not writable`
+Repair setup before starting again.
 
-Manual recovery:
+## Phone Cannot Connect
+
+- Use the bridge URL shown by the desktop app.
+- Keep the Mac and phone on the same LAN/VPN or Tailscale network.
+- Do not use `localhost` on a physical phone.
+- Confirm the bearer token or scan the current pairing QR.
+- Keep the bridge private; do not expose it on the public internet.
+
+## Expo Cannot Find Secure Configuration
+
+Configure the bridge through the desktop app or Rust operator first, then run:
 
 ```bash
-rm -rf node_modules apps/mobile/node_modules
-npm install --include=dev --force
-npm install --include=dev --force -w apps/mobile
-npm run -w apps/mobile start -- --clear
+npm run mobile
 ```
 
-Also update Expo Go on your phone.
-
-## Git operations fail
-
-- Verify chat workspace is a valid git repo
-- Verify remote auth/access for push
-
-## Attachment upload issues
-
-- Ensure mobile app has file/photo permissions
-- The app displays and enforces a `20 MB` limit per upload before starting file-backed transfer
-- Phone images are resized to at most `2048 px` on their longest side, JPEG-compressed, and checked against the limit again
-- Failed prepared uploads remain in the composer as `retry` chips; open Attachments to retry them or remove the chip
-- Uploads use authenticated streaming `multipart/form-data` at `POST /attachments`; there is no WebSocket/base64 upload method
-- Uploads persist under `BRIDGE_WORKDIR/.tethercode-attachments`
-- The bridge writes mode-`0600` staging files in a private mode-`0700` temporary directory and atomically renames successful uploads into place
-- `resource_limit_exceeded` includes the rejected `resource`, configured `limit`, and observed `actual` size. Git, filesystem, and replay responses may instead return `truncated`/count or byte metadata; narrow the workspace/request when the omitted data is needed.
-- Ensure `BRIDGE_WORKDIR` is writable
-
-## Worklets/Reanimated mismatch
-
-```bash
-cd apps/mobile
-npx expo install --fix
-npm run start -- --clear
-```
-
-## Plan mode errors (`RPC-32600` invalid `collaborationMode`)
-
-- Restart the app and reconnect to the bridge
-- Ensure bridge/mobile revisions match
-- Run API test if needed:
-
-```bash
-npm run -w apps/mobile test -- --runInBand src/api/__tests__/client.test.ts
-```
-
-## Stop button does not interrupt a run
-
-- Ensure revision supports `turn/interrupt`
-- If run already finished, stop button disappears by design
-- Pull latest, restart bridge, then retry from the mobile app
+The Expo script reads `.env.secure` from the repository workspace.

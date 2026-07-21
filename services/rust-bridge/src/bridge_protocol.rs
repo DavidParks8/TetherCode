@@ -106,12 +106,6 @@ pub(super) struct TerminalExecResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct BridgeUpdateStartRequest {
-    pub(super) version: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct GitStatusResponse {
     pub(super) branch: String,
     pub(super) clean: bool,

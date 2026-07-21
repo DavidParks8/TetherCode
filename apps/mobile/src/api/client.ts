@@ -20,9 +20,6 @@ import type {
   BridgeThreadCreateResponse,
   BridgeThreadQueueState,
   DismissBridgeUiSurfaceResponse,
-  BridgeRuntimeInfo,
-  BridgeRestartStartResponse,
-  BridgeUpdateStartResponse,
   AgentId,
   CollaborationMode,
   CreateChatRequest,
@@ -409,10 +406,6 @@ export class HostBridgeApiClient {
     return this.ws.request<BridgeCapabilities>('bridge/capabilities/read');
   }
 
-  readBridgeRuntime(): Promise<BridgeRuntimeInfo> {
-    return this.ws.request<BridgeRuntimeInfo>('bridge/runtime/read');
-  }
-
   registerPushDevice(input: {
     profileId: string;
     registrationId: string;
@@ -431,16 +424,6 @@ export class HostBridgeApiClient {
     return this.ws.request<{ ok: boolean; removed: boolean }>('bridge/push/unregister', {
       ...input,
     });
-  }
-
-  startBridgeUpdate(version = 'latest'): Promise<BridgeUpdateStartResponse> {
-    return this.ws.request<BridgeUpdateStartResponse>('bridge/update/start', {
-      version,
-    });
-  }
-
-  startBridgeRestart(): Promise<BridgeRestartStartResponse> {
-    return this.ws.request<BridgeRestartStartResponse>('bridge/restart/start');
   }
 
 

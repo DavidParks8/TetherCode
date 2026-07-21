@@ -1,87 +1,45 @@
 # Contributing to TetherCode
 
-Thanks for contributing.
-
-## Before You Start
-
-- Read [README.md](README.md) for the product and operator flow.
-- Use [docs/setup-and-operations.md](docs/setup-and-operations.md) for setup and smoke-test steps.
-- Use [docs/troubleshooting.md](docs/troubleshooting.md) before opening a bug for setup or local environment issues.
+Read [README.md](README.md), [setup and operations](docs/setup-and-operations.md), and
+[troubleshooting](docs/troubleshooting.md) before starting.
 
 ## Project Shape
 
-Primary paths:
-
 - `apps/mobile`: Expo React Native client
-- `services/rust-bridge`: active backend bridge
-- `bin/tethercode.js` and `scripts/*`: CLI and local automation
+- `apps/desktop`: Rust operator and native platform shells
+- `services/rust-bridge`: authenticated Rust bridge
+- `scripts`: development and artifact automation
 
-## Development Setup
-
-From repo root:
+## Development
 
 ```bash
-npm install
-npm run setup:wizard
+npm ci
+npm run desktop:build:macos
 npm run mobile
 ```
 
-Useful commands:
+Useful focused commands:
 
 ```bash
-npm run ios
-npm run android
-npm run secure:bridge
-npm run lint
-npm run typecheck
-npm run test
-npm run payment:check
-```
-
-The repository pins Rust in `rust-toolchain.toml`. Rust linting includes formatting plus
-warning-clean Clippy checks across production and test targets; use the pinned toolchain instead of
-an arbitrary local `stable` release.
-
-## Contribution Guidelines
-
-- Keep changes scoped to the problem being solved.
-- Prefer edits in active source paths under `apps/mobile/src` and `services/rust-bridge/src`.
-- Do not edit generated or vendored paths such as `node_modules`, `.expo`, or `Pods`.
-- Do not expose the bridge publicly. This project is designed for trusted/private networks only.
-- If you change bridge contracts, update the corresponding mobile client types and docs.
-- If you change setup, runtime, or release flow behavior, update the relevant files in `docs/`.
-
-## Pull Requests
-
-Please:
-
-- describe the user-facing problem
-- explain the approach and tradeoffs
-- call out any security or operational impact
-- include screenshots or recordings for UI changes when helpful
-- list the validation you ran
-
-Before opening a PR, run the relevant checks:
-
-```bash
+npm run operator -- status --workspace "$PWD"
+npm run desktop:test
+npm run contract:check
 npm run lint
 npm run typecheck
 npm run test
 ```
 
-If your change only touches one area, run the focused checks for that workspace too.
+The repository pins Rust in `rust-toolchain.toml`.
 
-## Issues
+## Guidelines
 
-When filing a bug, include:
+- Keep changes scoped.
+- Never expose the bridge publicly.
+- Mirror bridge contract changes across Rust, mobile, fixtures, tests, and docs.
+- Keep bridge setup and lifecycle in Rust; do not add npm/Node/JavaScript operator fallbacks.
+- Native shells should use OS controls and styling rather than hard-coded cross-platform themes.
+- Do not edit generated paths such as `node_modules`, `.expo`, `target`, `dist`, or Pods.
+- Update documentation when setup, runtime, platform, or distribution behavior changes.
 
-- what you expected
-- what happened instead
-- reproduction steps
-- platform and environment details
-- logs, screenshots, or screen recordings when relevant
-
-## Security Reports
-
-Do not open public issues for sensitive security problems.
-Use [SECURITY.md](SECURITY.md) for reporting guidance.
+Before a pull request, run the relevant quality gates and include screenshots for native UI changes.
+Use private vulnerability reporting for security issues; see [SECURITY.md](SECURITY.md).

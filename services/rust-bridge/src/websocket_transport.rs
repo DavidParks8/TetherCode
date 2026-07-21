@@ -279,8 +279,6 @@ pub(super) async fn handle_bridge_method(
             .map_err(|error| BridgeError::server(&error.to_string())),
         "bridge/capabilities/read" => serde_json::to_value(state.bridge_capabilities())
             .map_err(|error| BridgeError::server(&error.to_string())),
-        "bridge/runtime/read" => serde_json::to_value(state.updater.runtime_info().await)
-            .map_err(|error| BridgeError::server(&error.to_string())),
         "bridge/push/register" => {
             let params = params.unwrap_or_else(|| json!({}));
             let profile_id = required_push_id(&params, "profileId")?;
@@ -368,24 +366,6 @@ pub(super) async fn handle_bridge_method(
         }
         "bridge/browser/targets/discover" => {
             let result = state.preview.discover_targets().await;
-            serde_json::to_value(result).map_err(|error| BridgeError::server(&error.to_string()))
-        }
-        "bridge/update/start" => {
-            let request: BridgeUpdateStartRequest =
-                serde_json::from_value(params.unwrap_or_else(|| json!({})))
-                    .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
-            let target_version = request.version.as_deref().unwrap_or("latest");
-            let result = state
-                .updater
-                .start_update(target_version, std::process::id(), &now_iso())
-                .map_err(|error| BridgeError::server(&error))?;
-            serde_json::to_value(result).map_err(|error| BridgeError::server(&error.to_string()))
-        }
-        "bridge/restart/start" => {
-            let result = state
-                .updater
-                .start_restart(std::process::id(), &now_iso())
-                .map_err(|error| BridgeError::server(&error))?;
             serde_json::to_value(result).map_err(|error| BridgeError::server(&error.to_string()))
         }
         "bridge/events/replay" => {
@@ -1353,8 +1333,61 @@ fn normalize_forwarded_value_paths(
 }
 
 #[cfg(test)]
-mod thread_list_stream_tests {
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
     use super::*;
+    use crate::config::{
+        WebSocketResourceLimits, DEFAULT_WS_GLOBAL_IN_FLIGHT, DEFAULT_WS_MAX_FRAME_BYTES,
+        DEFAULT_WS_MAX_MESSAGE_BYTES, DEFAULT_WS_PER_CLIENT_IN_FLIGHT,
+    };
+
+    fn protected_request_config() -> BridgeConfig {
+        BridgeConfig {
+            host: "127.0.0.1".to_string(),
+            port: 8787,
+            preview_host: "127.0.0.1".to_string(),
+            preview_port: 8788,
+            connect_url: None,
+            preview_connect_url: None,
+            workdir: PathBuf::from("/tmp"),
+            acp_manifest_path: PathBuf::from("/tmp/agents.json"),
+            acp_approved_executable_roots: vec![PathBuf::from("/tmp")],
+            acp_initialize_timeout: Duration::from_secs(15),
+            auth_token: Some("secret".to_string()),
+            auth_enabled: true,
+            allow_insecure_no_auth: false,
+            no_auth_allowed_origins: HashSet::new(),
+            allow_query_token_auth: true,
+            allow_outside_root_cwd: false,
+            terminal_exec_policies: HashSet::new(),
+            show_pairing_qr: false,
+            ws_limits: WebSocketResourceLimits {
+                max_frame_bytes: DEFAULT_WS_MAX_FRAME_BYTES,
+                max_message_bytes: DEFAULT_WS_MAX_MESSAGE_BYTES,
+                per_client_in_flight: DEFAULT_WS_PER_CLIENT_IN_FLIGHT,
+                global_in_flight: DEFAULT_WS_GLOBAL_IN_FLIGHT,
+            },
+        }
+    }
+
+    #[test]
+    fn protected_requests_enforce_origin_before_credentials() {
+        let config = protected_request_config();
+        let headers = HeaderMap::new();
+
+        let unauthorized = protected_request_error(&config, &headers, None).unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        assert!(protected_request_error(&config, &headers, Some("secret")).is_none());
+
+        let mut no_auth = config;
+        no_auth.auth_token = None;
+        no_auth.auth_enabled = false;
+        no_auth.allow_insecure_no_auth = true;
+        let mut foreign_origin = HeaderMap::new();
+        foreign_origin.insert(ORIGIN, "https://example.com".parse().unwrap());
+        let forbidden = protected_request_error(&no_auth, &foreign_origin, None).unwrap();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+    }
 
     #[tokio::test]
     async fn disconnect_cancels_only_owned_streams_and_wakes_blocked_requests() {
@@ -1370,6 +1403,7 @@ mod thread_list_stream_tests {
             let cancellation = client_one_a.clone();
             tokio::spawn(async move { cancellation.cancelled().await })
         };
+        tokio::task::yield_now().await;
 
         let owned = take_client_thread_list_streams(&mut streams, 1);
         assert_eq!(owned.len(), 2);
@@ -1392,5 +1426,14 @@ mod thread_list_stream_tests {
         remaining[0].cancel();
         assert!(streams.is_empty());
         assert!(take_client_thread_list_streams(&mut streams, 99).is_empty());
+
+        assert_eq!(
+            normalize_thread_list_stream_limits(Some(vec![0, 1, usize::MAX, 1])),
+            vec![1, THREAD_LIST_STREAM_MAX_LIMIT]
+        );
+        assert_eq!(
+            normalize_thread_list_stream_limits(Some(Vec::new())),
+            THREAD_LIST_STREAM_DEFAULT_LIMITS
+        );
     }
 }

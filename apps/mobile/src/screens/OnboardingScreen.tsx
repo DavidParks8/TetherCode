@@ -61,7 +61,7 @@ type ConnectionCheck =
 type OnboardingStep = 'intro' | 'connect';
 type PairingPayload = { bridgeToken: string; bridgeUrl?: string };
 
-const BRIDGE_SETUP_COMMANDS = 'npm install -g tethercode@latest\ntethercode init';
+const BRIDGE_SETUP_INSTRUCTION = 'Open TetherCode.app on your Mac to set up and start the bundled bridge.';
 const BRIDGE_SETUP_URL = 'https://github.com/DavidParks8/TetherCode/blob/main/docs/setup-and-operations.md';
 const SETUP_STAGES = [
   {
@@ -642,8 +642,8 @@ export function OnboardingScreen({
                   <View style={styles.commandPanel}>
                     <Text style={styles.formSectionEyebrow}>1. Start</Text>
                     <CommandSnippet
-                      label="Desktop command"
-                      command={BRIDGE_SETUP_COMMANDS}
+                      label="Desktop setup"
+                      command={BRIDGE_SETUP_INSTRUCTION}
                     />
                   </View>
 

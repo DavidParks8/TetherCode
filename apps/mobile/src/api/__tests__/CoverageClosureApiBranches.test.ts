@@ -1267,7 +1267,6 @@ describe('CoverageClosure client branches and WS boundary', () => {
     await client.readBridgeCapabilities();
     await client.registerPushDevice({ profileId: 'p', registrationId: 'r', token: 't', platform: 'ios', deviceName: 'phone', events: { turnCompleted: true, approvalRequested: false } });
     await client.unregisterPushDevice({ profileId: 'p', registrationId: 'r' });
-    await client.startBridgeUpdate('5.3.0');
     await client.listApprovals();
     await client.resolveApproval('a', 'accept', 'resolution');
     await client.resolveUserInput('u', { answers: { q: 'a' }, action: 'submit' });

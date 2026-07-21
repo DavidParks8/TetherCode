@@ -38,7 +38,7 @@ use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client as HttpClient, Method as HttpMethod, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use services::{GitService, TerminalService, UpdateService};
+use services::{GitService, TerminalService};
 #[cfg(test)]
 use tokio::sync::oneshot;
 use tokio::{
@@ -174,7 +174,6 @@ async fn main() {
         config.terminal_exec_policies.clone(),
     ));
     let git = Arc::new(GitService::new(terminal.clone(), path_policy.clone()));
-    let updater = Arc::new(UpdateService::discover());
     let preview = Arc::new(BrowserPreviewService::new(
         config.port,
         config.preview_port,
@@ -208,7 +207,6 @@ async fn main() {
         thread_list_streams: Arc::new(Mutex::new(HashMap::new())),
         terminal,
         git,
-        updater,
         preview,
         push,
         ws_global_in_flight: Arc::new(Semaphore::new(config.ws_limits.global_in_flight)),

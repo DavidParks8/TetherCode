@@ -2,33 +2,40 @@
 
 Last reviewed: July 20, 2026
 
-## Current Runtime
-
-The maintained product path is:
+## Maintained Runtime
 
 ```text
-Expo mobile app -> authenticated private-network WebSocket/HTTP -> Rust bridge -> installed ACP agents
+Native desktop shell -> Rust operator -> authenticated Rust bridge -> installed ACP agent
+                                      ^
+Expo mobile app -> authenticated private-network WebSocket/HTTP
 ```
 
-- Mobile: `apps/mobile`
+- macOS shell: `apps/desktop/macos/TetherCodeApp.swift` using SwiftUI/AppKit
+- Operator CLI: Rust `tethercode` binary under `apps/desktop`
 - Bridge: `services/rust-bridge`
-- Operator CLI and launch automation: `bin/tethercode.js` and `scripts/`
+- Mobile: `apps/mobile`
 
-The Rust bridge starts installed ACP agents from a validated local manifest and exposes their negotiated capabilities. The mobile app includes reconnect and
-replay recovery, approvals and user input, push notifications, Git and constrained terminal
-surfaces, attachments, browser preview, and bridge maintenance. CI validates the mobile workspace,
-the Rust bridge, focused ACP integration behavior, release policy, and cross-language RPC fixtures.
+The desktop app bundles the Rust operator and bridge. The bridge is not published through npm and
+there is no JavaScript operator. Setup registers and hashes an ACP executable already installed by
+the user.
+
+The mobile app supports reconnect/replay recovery, approvals, user input, push notifications, Git,
+constrained terminal operations, attachments, and browser preview. Host bridge lifecycle is local
+to the desktop operator and is not exposed as a mobile update/restart RPC.
+
+## Styling
+
+The macOS app uses standard OS controls and inherits styling/materials from SwiftUI/AppKit on the
+installed OS, including Liquid Glass where provided by macOS. Windows requires a future native WinUI
+shell to inherit Mica and later Windows styling.
 
 ## Security Boundary
 
-The bridge controls sensitive host operations and is private-network software. Keep it on a private
-LAN, VPN, or private overlay, require `BRIDGE_AUTH_TOKEN`, and do not expose it directly to the
-public internet. Generic terminal execution is deny-all unless explicit argument-aware policies are
-configured.
+Keep the authenticated bridge on a private LAN, VPN, or Tailscale network. Generic terminal
+execution is deny-all unless explicit argument-aware policies are configured.
 
-## Current Trackers
+## Trackers
 
-- Active engineering work: `docs/engineering-improvement-checklist.md`
-- Realtime constraints: `docs/realtime-streaming-limitations.md`
-- Setup and verification: `docs/setup-and-operations.md`
-- Troubleshooting: `docs/troubleshooting.md`
+- [Setup and operations](docs/setup-and-operations.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Realtime limitations](docs/realtime-streaming-limitations.md)

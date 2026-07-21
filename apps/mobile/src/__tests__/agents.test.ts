@@ -19,7 +19,7 @@ function capabilities(): BridgeCapabilities {
 }
 
 function support() {
-  return { reviewStart: false, turnSteer: false, commandOutputDelta: false, selfUpdate: false, browserPreview: false, genericUiSurface: true };
+  return { reviewStart: false, turnSteer: false, commandOutputDelta: false, browserPreview: false, genericUiSurface: true };
 }
 
 test('selects saved ready agent, then bridge preferred, then first ready descriptor', () => {

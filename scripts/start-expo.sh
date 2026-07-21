@@ -73,7 +73,7 @@ resolve_expo_host() {
   fi
 
   echo "error: cannot resolve Expo host IP for QR." >&2
-  echo "Run: npm run setup:wizard  (or npm run secure:setup) first." >&2
+  echo "Configure the bridge in the TetherCode desktop app or with the Rust tethercode operator first." >&2
   return 1
 }
 

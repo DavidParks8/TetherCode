@@ -63,58 +63,6 @@ describe('HostBridgeApiClient', () => {
     expect(result.operational.replay.capacity).toBe(2000);
   });
 
-  it('readBridgeRuntime() calls bridge/runtime/read', async () => {
-    const ws = createWsMock();
-    ws.request.mockResolvedValue({
-      version: '5.0.4',
-      installKind: 'publishedCli',
-      selfUpdateSupported: true,
-      safeRestartSupported: true,
-      latestVersion: '5.0.5',
-      updaterStatus: null,
-    });
-
-    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
-    const result = await client.readBridgeRuntime();
-
-    expect(ws.request).toHaveBeenCalledWith('bridge/runtime/read');
-    expect(result.version).toBe('5.0.4');
-    expect(result.latestVersion).toBe('5.0.5');
-  });
-
-  it('startBridgeUpdate() calls bridge/update/start with latest by default', async () => {
-    const ws = createWsMock();
-    ws.request.mockResolvedValue({
-      ok: true,
-      jobId: 'bridge-update-1',
-      targetVersion: 'latest',
-      message: 'scheduled',
-    });
-
-    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
-    const result = await client.startBridgeUpdate();
-
-    expect(ws.request).toHaveBeenCalledWith('bridge/update/start', {
-      version: 'latest',
-    });
-    expect(result.ok).toBe(true);
-  });
-
-  it('startBridgeRestart() calls bridge/restart/start', async () => {
-    const ws = createWsMock();
-    ws.request.mockResolvedValue({
-      ok: true,
-      jobId: 'bridge-restart-1',
-      message: 'scheduled',
-    });
-
-    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
-    const result = await client.startBridgeRestart();
-
-    expect(ws.request).toHaveBeenCalledWith('bridge/restart/start');
-    expect(result.ok).toBe(true);
-  });
-
   it('listChats() maps app-server list response', async () => {
     const ws = createWsMock();
     ws.request.mockResolvedValue({

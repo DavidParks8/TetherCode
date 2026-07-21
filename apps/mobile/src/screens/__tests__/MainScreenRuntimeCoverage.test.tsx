@@ -48,7 +48,6 @@ const capabilitySupport = {
   goalSlash: true,
   fastMode: true,
   commandOutputDelta: true,
-  selfUpdate: true,
   browserPreview: true,
   genericUiSurface: true,
 };

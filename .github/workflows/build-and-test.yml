@@ -159,6 +159,71 @@ jobs:
         working-directory: services/rust-bridge
         run: cargo test --locked --all-targets --all-features -- --test-threads=1
 
+  desktop-macos:
+    name: Desktop macOS
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache desktop Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/desktop -> target
+            services/rust-bridge -> target
+
+      - name: Install repository dependencies
+        run: npm ci
+
+      - name: Check formatting
+        working-directory: apps/desktop
+        run: cargo fmt --check
+
+      - name: Check desktop
+        run: npm run desktop:check
+
+      - name: Lint desktop
+        working-directory: apps/desktop
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test desktop
+        run: npm run desktop:test
+
+      - name: Build macOS app
+        run: npm run desktop:build:macos
+
+      - name: Verify native bundle policy
+        run: |
+          APP="apps/desktop/dist/TetherCode.app"
+          test -x "$APP/Contents/MacOS/TetherCode"
+          test -x "$APP/Contents/Resources/bin/tethercode"
+          test -x "$APP/Contents/Resources/bin/tethercode-bridge"
+          ! find "$APP" -type f \( -name '*.js' -o -name package.json -o -name package-lock.json -o -name node -o -name npm -o -name npx \) -print | grep .
+          ! find "$APP" -type f -print0 | xargs -0 strings | grep -Ei 'slint|node_modules|TETHERCODE_BRIDGE_BINARY|TETHERCODE_PACKAGE_ROOT|vendor/bridge-binaries|services/rust-bridge/target'
+          codesign --verify --deep --strict "$APP"
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: tethercode-desktop-macos-${{ runner.arch }}
+          path: apps/desktop/dist/TetherCode-*.zip
+          if-no-files-found: error
+
   rust-coverage:
     name: Rust Branch Coverage
     runs-on: macos-26

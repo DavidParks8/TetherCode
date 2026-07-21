@@ -28,9 +28,9 @@ with the `unstable_elicitation` feature. Include its Apache-2.0 license text
 and any transitive notices required by the resolved Cargo lockfile in bridge
 distribution notices.
 
-The setup-time ACP installer directly depends on `tar`, `yauzl`, and
-`unbzip2-stream` for bounded archive handling. Include their resolved npm
-licenses and transitive notices in CLI distribution notices.
+The macOS desktop shell uses operating-system SwiftUI/AppKit frameworks and bundles only the Rust
+operator and Rust bridge. Include generated `THIRD_PARTY_NOTICES.txt` for both Cargo dependency
+closures and the TetherCode license in every distributed `.app` or archive.
 
 ## Practical Policy
 
@@ -41,4 +41,5 @@ licenses and transitive notices in CLI distribution notices.
 
 ## App Distribution Note
 
-For mobile distributions, ensure the same third-party notices used for repository/release artifacts are also available for app review and legal compliance workflows.
+For mobile and desktop distributions, ensure the same third-party notices used for
+repository/release artifacts are also available for app review and legal compliance workflows.

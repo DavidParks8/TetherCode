@@ -1,7 +1,8 @@
 {
-  "name": "tethercode",
+  "name": "tethercode-workspace",
   "version": "0.1.0",
-  "description": "Private-network mobile bridge and CLI for installed ACP agents",
+  "private": true,
+  "description": "TetherCode desktop and mobile development workspace",
   "keywords": [
     "acp",
     "coding-agent",
@@ -19,85 +20,41 @@
     "type": "git",
     "url": "git+https://github.com/DavidParks8/TetherCode.git"
   },
-  "publishConfig": {
-    "access": "public"
-  },
-  "dependencies": {
-    "qrcode-terminal": "^0.12.0",
-    "tar": "^7.5.20",
-    "unbzip2-stream": "^1.4.3",
-    "yauzl": "^3.4.0",
-    "zod": "^3.25.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "quicktype-core": "^23.2.6",
     "semver": "^7.8.5",
     "yaml": "^2.9.0",
     "zod-to-json-schema": "^3.25.1"
   },
-  "bin": {
-    "tethercode": "bin/tethercode.js"
-  },
-  "files": [
-    "CHANGELOG.md",
-    "LICENSE",
-    "README.md",
-    "bin/tethercode.js",
-    "docs/setup-and-operations.md",
-    "docs/troubleshooting.md",
-    "scripts/bridge-binary.js",
-    "scripts/bridge-runtime-state.js",
-    "scripts/bridge-self-update.js",
-    "scripts/bridge-updater-helpers.js",
-    "scripts/acp-agent-install.js",
-    "scripts/acp-agent-registry.js",
-    "scripts/setup-secure-dev.sh",
-    "scripts/setup-wizard.sh",
-    "scripts/start-bridge-secure.js",
-    "scripts/stop-services.sh",
-    "services/rust-bridge/Cargo.lock",
-    "services/rust-bridge/Cargo.toml",
-    "services/rust-bridge/src",
-    "vendor/bridge-binaries"
-  ],
   "workspaces": [
-    "apps/*",
-    "services/*"
+    "apps/mobile"
   ],
   "scripts": {
     "mobile": "./scripts/start-expo.sh mobile",
     "ios": "./scripts/start-expo.sh ios",
     "android": "./scripts/start-expo.sh android",
-    "stack:lan": "./scripts/start-mobile-stack-lan.sh",
-    "stack:tailscale": "./scripts/start-mobile-stack-tailscale.sh",
-    "bridge": "BRIDGE_WORKDIR=$(pwd) npm run -w @tethercode/bridge dev",
+    "bridge": "BRIDGE_WORKDIR=$(pwd) cargo run --manifest-path services/rust-bridge/Cargo.toml",
     "bridge:ui:demo": "node ./scripts/send-bridge-ui-demo.js",
-    "bridge:package:stage-current": "node ./scripts/bridge-binary.js stage-current",
-    "setup:wizard": "./scripts/setup-wizard.sh",
-    "stop:services": "./scripts/stop-services.sh",
-    "secure:setup": "./scripts/setup-secure-dev.sh",
-    "secure:bridge": "node ./scripts/start-bridge-secure.js",
-    "secure:bridge:dev": "node ./scripts/start-bridge-secure.js --dev",
+    "operator": "cargo run --manifest-path apps/desktop/Cargo.toml --",
+    "desktop:check": "cargo check --locked --manifest-path apps/desktop/Cargo.toml",
+    "desktop:test": "cargo test --locked --manifest-path apps/desktop/Cargo.toml -- --test-threads=1",
+    "desktop:build:macos": "node ./scripts/build-desktop-macos.mjs",
     "version:sync": "node scripts/sync-versions.js",
     "version:check": "node scripts/sync-versions.js --check",
-    "preversion": "npm run version:check",
-    "version": "node scripts/sync-versions.js --lifecycle",
-    "release:check": "node scripts/validate-npm-release-workflow.mjs",
     "security:check": "node scripts/check-production-audit.mjs",
     "payment:check": "node scripts/check-payment-isolation.mjs",
     "docs:check": "node scripts/validate-doc-consistency.mjs",
     "test:scripts": "node --test scripts/__tests__/*.test.mjs",
-    "test:release": "node --test scripts/__tests__/npm-release-policy.test.mjs",
-    "test:acp": "npm run test:acp -w @tethercode/bridge",
+    "test:acp": "cargo test --locked --manifest-path services/rust-bridge/Cargo.toml 'acp::' -- --test-threads=1",
     "agui:generate": "node scripts/generate-agui-bindings.mjs",
     "agui:check": "node scripts/generate-agui-bindings.mjs --check",
-    "contract:check": "npm run agui:check && node scripts/validate-rpc-contract-fixtures.mjs && npm run test:contract -w @tethercode/mobile && npm run test:contract -w @tethercode/bridge",
-    "build": "npm run --workspaces build",
-    "typecheck": "npm run --workspaces typecheck",
-    "lint": "npm run --workspaces lint",
-    "test": "npm run test:scripts && npm run test -w @tethercode/mobile && npm run test -w @tethercode/bridge",
+    "contract:check": "npm run agui:check && node scripts/validate-rpc-contract-fixtures.mjs && npm run test:contract -w @tethercode/mobile && cargo test --locked --manifest-path services/rust-bridge/Cargo.toml contract_fixture_manifest",
+    "build": "npm run build -w @tethercode/mobile && cargo build --locked --release --manifest-path services/rust-bridge/Cargo.toml && cargo build --locked --release --manifest-path apps/desktop/Cargo.toml",
+    "typecheck": "npm run typecheck -w @tethercode/mobile && cargo check --locked --manifest-path services/rust-bridge/Cargo.toml && cargo check --locked --manifest-path apps/desktop/Cargo.toml",
+    "lint": "npm run lint -w @tethercode/mobile && cargo fmt --check --manifest-path services/rust-bridge/Cargo.toml && cargo clippy --locked --all-targets --all-features --manifest-path services/rust-bridge/Cargo.toml -- -D warnings && cargo fmt --check --manifest-path apps/desktop/Cargo.toml && cargo clippy --locked --all-targets --manifest-path apps/desktop/Cargo.toml -- -D warnings",
+    "test": "npm run test:scripts && npm run test -w @tethercode/mobile && cargo test --locked --manifest-path services/rust-bridge/Cargo.toml -- --test-threads=1 && npm run desktop:test",
     "coverage:check": "npm run test:coverage -w @tethercode/mobile",
-    "coverage:rust": "./scripts/run-rust-coverage.sh",
-    "teardown": "./scripts/teardown.sh"
+    "coverage:rust": "./scripts/run-rust-coverage.sh"
   }
 }

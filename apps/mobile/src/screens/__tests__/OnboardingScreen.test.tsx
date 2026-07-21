@@ -390,7 +390,7 @@ describe('OnboardingScreen behavior', () => {
     const result = await renderOnboarding({ mode: 'add' });
     const root = result.tree.root as Queryable;
     await press(findPressableByText(root, 'Copy'));
-    expect(Clipboard.setStringAsync).toHaveBeenCalledWith('npm install -g tethercode@latest\ntethercode init');
+    expect(Clipboard.setStringAsync).toHaveBeenCalledWith('Open TetherCode.app on your Mac to set up and start the bundled bridge.');
     expect(hasText(root, 'Copied')).toBe(true);
     act(() => jest.advanceTimersByTime(1400));
     expect(hasText(root, 'Copy')).toBe(true);

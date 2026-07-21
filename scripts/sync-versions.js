@@ -2,19 +2,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
 
 const defaultRootDir = path.resolve(__dirname, '..');
 const packageVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
-const trackedVersionPaths = [
-  'package.json',
-  'package-lock.json',
-  'apps/mobile/app.json',
-  'apps/mobile/package.json',
-  'services/rust-bridge/Cargo.lock',
-  'services/rust-bridge/Cargo.toml',
-  'services/rust-bridge/package.json',
-];
 
 function readFile(rootDir, relativePath) {
   return fs.readFileSync(path.join(rootDir, relativePath), 'utf8');
@@ -63,20 +53,20 @@ function replacePackageVersionInToml(source, version, relativePath) {
   return lines.join('\n');
 }
 
-function replacePackageVersionInCargoLock(source, version, relativePath) {
+function replaceNamedPackageVersionInCargoLock(source, packageName, version, relativePath) {
   const lines = source.split('\n');
   const packageStarts = lines
     .map((line, index) => (line.trim() === '[[package]]' ? index : -1))
     .filter((index) => index >= 0);
-  const bridgePackages = packageStarts.filter((start, packageIndex) => {
+  const matchingPackages = packageStarts.filter((start, packageIndex) => {
     const end = packageStarts[packageIndex + 1] ?? lines.length;
-    return lines.slice(start + 1, end).some((line) => line === 'name = "tethercode-bridge"');
+    return lines.slice(start + 1, end).some((line) => line === `name = "${packageName}"`);
   });
-  if (bridgePackages.length !== 1) {
-    throw new Error(`Expected one tethercode-bridge package in ${relativePath}`);
+  if (matchingPackages.length !== 1) {
+    throw new Error(`Expected one ${packageName} package in ${relativePath}`);
   }
 
-  const start = bridgePackages[0];
+  const start = matchingPackages[0];
   const nextStart = packageStarts.find((candidate) => candidate > start);
   const end = nextStart ?? lines.length;
   const versionLines = [];
@@ -86,10 +76,19 @@ function replacePackageVersionInCargoLock(source, version, relativePath) {
     }
   }
   if (versionLines.length !== 1) {
-    throw new Error(`Expected one tethercode-bridge version in ${relativePath}`);
+    throw new Error(`Expected one ${packageName} version in ${relativePath}`);
   }
   lines[versionLines[0]] = `version = "${version}"`;
   return lines.join('\n');
+}
+
+function replacePackageVersionInCargoLock(source, version, relativePath) {
+  return replaceNamedPackageVersionInCargoLock(
+    source,
+    'tethercode-bridge',
+    version,
+    relativePath
+  );
 }
 
 function replaceExactly(source, pattern, replacement, relativePath, field) {
@@ -128,9 +127,25 @@ function collectVersionUpdates(rootDir) {
   updateJson('apps/mobile/package.json', (value) => {
     value.version = version;
   });
-  updateJson('services/rust-bridge/package.json', (value) => {
-    value.version = version;
-  });
+  const desktopCargoTomlPath = 'apps/desktop/Cargo.toml';
+  if (fs.existsSync(path.join(rootDir, desktopCargoTomlPath))) {
+    updates.set(
+      desktopCargoTomlPath,
+      replacePackageVersionInToml(load(desktopCargoTomlPath), version, desktopCargoTomlPath)
+    );
+
+    const desktopCargoLockPath = 'apps/desktop/Cargo.lock';
+    updates.set(
+      desktopCargoLockPath,
+      replaceNamedPackageVersionInCargoLock(
+        load(desktopCargoLockPath),
+        'tethercode-desktop',
+        version,
+        desktopCargoLockPath
+      )
+    );
+
+  }
 
   const cargoTomlPath = 'services/rust-bridge/Cargo.toml';
   updates.set(cargoTomlPath, replacePackageVersionInToml(load(cargoTomlPath), version, cargoTomlPath));
@@ -140,13 +155,12 @@ function collectVersionUpdates(rootDir) {
 
   updateJson('package-lock.json', (value) => {
     const packageEntries = value.packages;
-    if (!packageEntries?.[''] || !packageEntries['apps/mobile'] || !packageEntries['services/rust-bridge']) {
-      throw new Error('package-lock.json is missing required root, mobile, or Rust bridge package metadata.');
+    if (!packageEntries?.[''] || !packageEntries['apps/mobile']) {
+      throw new Error('package-lock.json is missing required root or mobile workspace metadata.');
     }
     value.version = version;
     packageEntries[''].version = version;
     packageEntries['apps/mobile'].version = version;
-    packageEntries['services/rust-bridge'].version = version;
   });
 
   updateJson('apps/mobile/app.json', (value) => {
@@ -240,63 +254,9 @@ function syncVersions({ rootDir = defaultRootDir, check = false } = {}) {
   return { ...result, changedPaths };
 }
 
-function restoreRootNpmVersion(rootDir, version) {
-  const packagePath = path.join(rootDir, 'package.json');
-  const rootPackage = parseJson(fs.readFileSync(packagePath, 'utf8'), 'package.json');
-  rootPackage.version = version;
-  fs.writeFileSync(packagePath, serializeJson(rootPackage));
-
-  const lockPath = path.join(rootDir, 'package-lock.json');
-  const packageLock = parseJson(fs.readFileSync(lockPath, 'utf8'), 'package-lock.json');
-  packageLock.version = version;
-  if (packageLock.packages?.['']) {
-    packageLock.packages[''].version = version;
-  }
-  fs.writeFileSync(lockPath, serializeJson(packageLock));
-}
-
-function syncVersionsForNpmLifecycle({
-  rootDir = defaultRootDir,
-  oldVersion = process.env.npm_old_version,
-  stage = (cwd) => execFileSync('git', ['add', ...trackedVersionPaths], { cwd, stdio: 'inherit' }),
-} = {}) {
-  let result;
-  try {
-    result = syncVersions({ rootDir });
-    stage(rootDir);
-    return result;
-  } catch (error) {
-    const rollbackErrors = [];
-    if (result) {
-      for (const relativePath of result.changedPaths) {
-        try {
-          fs.writeFileSync(path.join(rootDir, relativePath), result.sources.get(relativePath));
-        } catch (rollbackError) {
-          rollbackErrors.push(rollbackError);
-        }
-      }
-    }
-    if (typeof oldVersion === 'string' && packageVersionPattern.test(oldVersion)) {
-      try {
-        restoreRootNpmVersion(rootDir, oldVersion);
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
-    }
-    if (rollbackErrors.length > 0) {
-      throw new AggregateError(
-        [error, ...rollbackErrors],
-        'The npm version lifecycle failed and rollback was incomplete.'
-      );
-    }
-    throw error;
-  }
-}
-
 function main() {
   const check = process.argv.slice(2).includes('--check');
-  const lifecycle = process.argv.slice(2).includes('--lifecycle');
-  const result = lifecycle ? syncVersionsForNpmLifecycle() : syncVersions({ check });
+  const result = syncVersions({ check });
   if (check) {
     console.log(`Version metadata is synchronized to ${result.version}.`);
   } else {
@@ -313,4 +273,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { syncVersions, syncVersionsForNpmLifecycle };
+module.exports = { syncVersions };

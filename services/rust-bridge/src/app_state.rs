@@ -17,7 +17,6 @@ pub(super) struct AppState {
     pub(super) thread_list_streams: Arc<Mutex<HashMap<String, Arc<ThreadListStreamCancellation>>>>,
     pub(super) terminal: Arc<TerminalService>,
     pub(super) git: Arc<GitService>,
-    pub(super) updater: Arc<UpdateService>,
     pub(super) preview: Arc<BrowserPreviewService>,
     pub(super) push: Arc<PushService>,
     pub(super) ws_global_in_flight: Arc<Semaphore>,
@@ -50,7 +49,6 @@ pub(super) struct BridgeCapabilitySupport {
     pub(super) fast_mode: bool,
     pub(super) account: bool,
     pub(super) account_rate_limits: bool,
-    pub(super) self_update: bool,
     pub(super) browser_preview: bool,
     pub(super) generic_ui_surface: bool,
 }
@@ -59,11 +57,9 @@ impl AppState {
     pub(super) fn bridge_capabilities(&self) -> BridgeCapabilities {
         let mut capabilities = self.backend.capabilities(self.hub.stream_id());
         capabilities.ag_ui_events = true;
-        capabilities.supports.self_update = self.updater.is_self_update_supported();
         capabilities.supports.browser_preview = self.preview.is_available();
         capabilities.supports.generic_ui_surface = true;
         for supports in capabilities.supports_by_agent.values_mut() {
-            supports.self_update = capabilities.supports.self_update;
             supports.browser_preview = capabilities.supports.browser_preview;
             supports.generic_ui_surface = true;
         }

@@ -680,7 +680,6 @@ export interface BridgeCapabilitySupport {
   turnSteer: boolean;
   commandOutputDelta: boolean;
   fastMode?: boolean;
-  selfUpdate: boolean;
   browserPreview: boolean;
   genericUiSurface: boolean;
 }
@@ -770,48 +769,6 @@ export interface BrowserPreviewTargetSuggestion {
 export interface BrowserPreviewDiscoveryResponse {
   scannedAt: string;
   suggestions: BrowserPreviewTargetSuggestion[];
-}
-
-export type BridgeInstallKind = 'publishedCli' | 'sourceCheckout' | 'unknown';
-
-export interface BridgeUpdaterStatus {
-  state: string;
-  jobId: string;
-  targetVersion: string;
-  message: string;
-  updatedAt: string;
-  startedAt?: string | null;
-  completedAt?: string | null;
-  logPath?: string | null;
-  previousVersion?: string | null;
-  runningVersion?: string | null;
-  recoverable?: boolean | null;
-  recoveryCommand?: string | null;
-  failure?: string | null;
-}
-
-export interface BridgeRuntimeInfo {
-  version: string;
-  installKind: BridgeInstallKind;
-  selfUpdateSupported: boolean;
-  safeRestartSupported: boolean;
-  latestVersion?: string | null;
-  updaterStatus?: BridgeUpdaterStatus | null;
-}
-
-export interface BridgeUpdateStartResponse {
-  ok: boolean;
-  jobId: string;
-  targetVersion: string;
-  message: string;
-  logPath?: string | null;
-}
-
-export interface BridgeRestartStartResponse {
-  ok: boolean;
-  jobId: string;
-  message: string;
-  logPath?: string | null;
 }
 
 export interface RpcNotification {
