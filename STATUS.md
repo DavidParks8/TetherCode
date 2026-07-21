@@ -1,6 +1,6 @@
 # Project Status
 
-Last reviewed: July 18, 2026
+Last reviewed: July 20, 2026
 
 ## Current Runtime
 
@@ -12,7 +12,7 @@ Expo mobile app -> authenticated private-network WebSocket/HTTP -> Rust bridge -
 
 - Mobile: `apps/mobile`
 - Bridge: `services/rust-bridge`
-- Operator CLI and launch automation: `bin/clawdex.js` and `scripts/`
+- Operator CLI and launch automation: `bin/tethercode.js` and `scripts/`
 
 The Rust bridge starts installed ACP agents from a validated local manifest and exposes their negotiated capabilities. The mobile app includes reconnect and
 replay recovery, approvals and user input, push notifications, Git and constrained terminal
@@ -32,6 +32,3 @@ configured.
 - Realtime constraints: `docs/realtime-streaming-limitations.md`
 - Setup and verification: `docs/setup-and-operations.md`
 - Troubleshooting: `docs/troubleshooting.md`
-
-Historical plans under `docs/plans/` and versioned release notes are retained as historical records,
-not current architecture or operating policy.

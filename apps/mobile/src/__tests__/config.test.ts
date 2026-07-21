@@ -7,10 +7,6 @@ const CONFIG_ENV_KEYS = [
   'EXPO_PUBLIC_ALLOW_INSECURE_REMOTE_BRIDGE',
   'EXPO_PUBLIC_PRIVACY_POLICY_URL',
   'EXPO_PUBLIC_TERMS_OF_SERVICE_URL',
-  'EXPO_PUBLIC_REVENUECAT_IOS_API_KEY',
-  'EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY',
-  'EXPO_PUBLIC_REVENUECAT_TEST_STORE_API_KEY',
-  'EXPO_PUBLIC_REVENUECAT_TIPS_OFFERING_ID',
   'EXPO_PUBLIC_EXTERNAL_STATUS_FULL_SYNC_DEBOUNCE_MS',
 ] as const;
 
@@ -26,10 +22,6 @@ interface ConfigEnvironment {
   externalStatusFullSyncDebounceMs: number;
   privacyPolicyUrl: string;
   termsOfServiceUrl: string;
-  revenueCatIosApiKey: string | null;
-  revenueCatAndroidApiKey: string | null;
-  revenueCatTestStoreApiKey: string | null;
-  revenueCatTipsOfferingId: string | null;
 }
 
 function loadEnvironment(
@@ -67,17 +59,13 @@ describe('mobile environment configuration', () => {
         allowWsQueryTokenAuth: false,
         allowInsecureRemoteBridge: false,
         externalStatusFullSyncDebounceMs: 450,
-        privacyPolicyUrl: 'https://mohit-patil.github.io/clawdex-mobile/privacy/',
-        termsOfServiceUrl: 'https://mohit-patil.github.io/clawdex-mobile/terms/',
-        revenueCatIosApiKey: null,
-        revenueCatAndroidApiKey: null,
-        revenueCatTestStoreApiKey: null,
-        revenueCatTipsOfferingId: null,
+        privacyPolicyUrl: 'https://github.com/DavidParks8/TetherCode/blob/main/docs/privacy-policy.md',
+        termsOfServiceUrl: 'https://github.com/DavidParks8/TetherCode/blob/main/docs/terms-of-service.md',
       })
     );
   });
 
-  it('normalizes legacy aliases, flags, URLs, purchase keys, and debounce values', () => {
+  it('normalizes legacy aliases, flags, URLs, and debounce values', () => {
     expect(
       loadEnvironment({
         EXPO_PUBLIC_MAC_BRIDGE_URL: ' ws://localhost:8787/rpc/ ',
@@ -86,10 +74,6 @@ describe('mobile environment configuration', () => {
         EXPO_PUBLIC_ALLOW_INSECURE_REMOTE_BRIDGE: 'true',
         EXPO_PUBLIC_PRIVACY_POLICY_URL: ' https://example.com/privacy ',
         EXPO_PUBLIC_TERMS_OF_SERVICE_URL: ' https://example.com/terms ',
-        EXPO_PUBLIC_REVENUECAT_IOS_API_KEY: ' ios-key ',
-        EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY: ' android-key ',
-        EXPO_PUBLIC_REVENUECAT_TEST_STORE_API_KEY: ' test-key ',
-        EXPO_PUBLIC_REVENUECAT_TIPS_OFFERING_ID: ' tips ',
         EXPO_PUBLIC_EXTERNAL_STATUS_FULL_SYNC_DEBOUNCE_MS: ' 0 ',
       })
     ).toEqual(
@@ -101,10 +85,6 @@ describe('mobile environment configuration', () => {
         externalStatusFullSyncDebounceMs: 0,
         privacyPolicyUrl: 'https://example.com/privacy',
         termsOfServiceUrl: 'https://example.com/terms',
-        revenueCatIosApiKey: 'ios-key',
-        revenueCatAndroidApiKey: 'android-key',
-        revenueCatTestStoreApiKey: 'test-key',
-        revenueCatTipsOfferingId: 'tips',
       })
     );
   });

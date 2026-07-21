@@ -162,7 +162,7 @@ export function getChatSnapshotCachePath(
   if (typeof base !== 'string' || !base || !profileId.trim()) {
     return null;
   }
-  return `${base}clawdex-chat-cache/${encodeURIComponent(profileId)}/snapshots.json`;
+  return `${base}tethercode-chat-cache/${encodeURIComponent(profileId)}/snapshots.json`;
 }
 
 function boundChatSnapshotCache(cache: ChatSnapshotCache): ChatSnapshotCache {

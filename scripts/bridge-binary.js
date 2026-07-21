@@ -10,38 +10,38 @@ const SUPPORTED_RUNTIME_TARGETS = {
     platform: "darwin",
     arch: "arm64",
     rustTarget: "aarch64-apple-darwin",
-    binaryName: "codex-rust-bridge",
+    binaryName: "tethercode-bridge",
   },
   "darwin-x64": {
     platform: "darwin",
     arch: "x64",
     rustTarget: "x86_64-apple-darwin",
-    binaryName: "codex-rust-bridge",
+    binaryName: "tethercode-bridge",
   },
   "linux-x64": {
     platform: "linux",
     arch: "x64",
     rustTarget: "x86_64-unknown-linux-gnu",
-    binaryName: "codex-rust-bridge",
+    binaryName: "tethercode-bridge",
   },
   "linux-arm64": {
     platform: "linux",
     arch: "arm64",
     rustTarget: "aarch64-unknown-linux-gnu",
-    binaryName: "codex-rust-bridge",
+    binaryName: "tethercode-bridge",
   },
   "linux-armv7l": {
     platform: "linux",
     arch: "arm",
     machine: ["armv7l", "armv8l"],
     rustTarget: "armv7-unknown-linux-gnueabihf",
-    binaryName: "codex-rust-bridge",
+    binaryName: "tethercode-bridge",
   },
   "win32-x64": {
     platform: "win32",
     arch: "x64",
     rustTarget: "x86_64-pc-windows-msvc",
-    binaryName: "codex-rust-bridge.exe",
+    binaryName: "tethercode-bridge.exe",
   },
 };
 
@@ -82,7 +82,7 @@ function packagedBinaryPath(rootDir = repoRoot(), target = resolveRuntimeTarget(
 }
 
 function builtBinaryPath(rootDir = repoRoot(), platform = os.platform(), profile = "release") {
-  const binaryName = platform === "win32" ? "codex-rust-bridge.exe" : "codex-rust-bridge";
+  const binaryName = platform === "win32" ? "tethercode-bridge.exe" : "tethercode-bridge";
   return path.join(rootDir, "services", "rust-bridge", "target", profile, binaryName);
 }
 

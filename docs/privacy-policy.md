@@ -4,11 +4,11 @@ Last updated: July 18, 2026
 
 ## Overview
 
-Clawdex Mobile is a companion app for connecting to a bridge service that you run on your own machine. The app is designed for trusted private networking, such as LAN, VPN, or Tailscale. It is not a public multi-tenant shell service.
+TetherCode is a companion app for connecting to a bridge service that you run on your own machine. The app is designed for trusted private networking, such as LAN, VPN, or Tailscale. It is not a public multi-tenant shell service.
 
 ## Information Processed
 
-Clawdex Mobile can process:
+TetherCode can process:
 
 - Chat prompts and assistant responses
 - Bridge connection details you enter in the app
@@ -31,11 +31,11 @@ The app uses this information to:
 
 ## Storage and Retention
 
-Clawdex Mobile does not define a separate cloud retention layer for your project data. Data is generally stored by services and infrastructure you control, including your local bridge, repository, logs, caches, and any model providers or integrations that you configure.
+TetherCode does not define a separate cloud retention layer for your project data. Data is generally stored by services and infrastructure you control, including your local bridge, repository, logs, caches, and any model providers or integrations that you configure.
 
 ## Sharing
 
-Clawdex Mobile does not include advertising SDKs. Data may be transmitted to third-party model or infrastructure providers only when you configure and use those services as part of your own setup.
+TetherCode does not include advertising SDKs. Data may be transmitted to third-party model or infrastructure providers only when you configure and use those services as part of your own setup.
 
 When notifications are enabled, the self-hosted bridge sends the device push token, notification
 title/body, and routing/deep-link identifiers through the Expo Push Notification Service and then
@@ -63,4 +63,4 @@ You are responsible for:
 
 For support, use the project support channel:
 
-https://github.com/Mohit-Patil/clawdex-mobile/issues
+https://github.com/DavidParks8/TetherCode/issues

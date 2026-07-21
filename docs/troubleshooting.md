@@ -2,11 +2,11 @@
 
 ## Bridge startup seems slow
 
-- `clawdex init` no longer starts Expo for the shipped app.
+- `tethercode init` no longer starts Expo for the shipped app.
 - Published npm installs should use a bundled bridge binary on `darwin-arm64`, `darwin-x64`, `linux-x64`, and `win32-x64`.
-- `clawdex init` should not run a repo `npm install` on the published CLI path.
+- `tethercode init` should not run a repo `npm install` on the published CLI path.
 - Published CLI installs should not pull Expo/React Native or ship the mobile source tree.
-- If startup is compiling Rust, you are usually on a source checkout, an unsupported host, a package without a bundled bridge binary, or have `CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=true` in `.env.secure`.
+- If startup is compiling Rust, you are usually on a source checkout, an unsupported host, a package without a bundled bridge binary, or have `TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD=true` in `.env.secure`.
 - The slow parts are usually npm dependency install/repair or the first Rust bridge build on source-based setups.
 - If you want to skip the interactive wizard after initial setup, use `npm run secure:bridge`.
 
@@ -22,7 +22,7 @@
 Preferred:
 
 ```bash
-clawdex stop
+tethercode stop
 ```
 
 From repo checkout:
@@ -37,8 +37,8 @@ npm run stop:services
 - For a local dev build, also ensure `BRIDGE_AUTH_TOKEN` in `.env.secure` matches `EXPO_PUBLIC_HOST_BRIDGE_TOKEN` in `apps/mobile/.env`.
 - Restart the bridge after token changes.
 - On secure-launcher installs, `Settings > Bridge Maintenance > Restart bridge safely` can do that from the phone.
-- If an in-app bridge update fails, inspect `.bridge-updater.log` and `.bridge-update-status.json` beside the `.env.secure` used to launch the bridge. For a published CLI this is the directory where `clawdex init` was invoked, not the global npm package directory.
-- A `recovered` updater status means the exact `previousVersion` npm package was reinstalled and passed the background launch health check. A `stopped` status means no healthy bridge was recovered; run its `recoveryCommand` from that same directory. The command is version-pinned and normally reinstalls the previous package before `clawdex init`.
+- If an in-app bridge update fails, inspect `.bridge-updater.log` and `.bridge-update-status.json` beside the `.env.secure` used to launch the bridge. For a published CLI this is the directory where `tethercode init` was invoked, not the global npm package directory.
+- A `recovered` updater status means the exact `previousVersion` npm package was reinstalled and passed the background launch health check. A `stopped` status means no healthy bridge was recovered; run its `recoveryCommand` from that same directory. The command is version-pinned and normally reinstalls the previous package before `tethercode init`.
 
 ## Bridge exits when no-auth mode is enabled
 
@@ -55,7 +55,7 @@ npm run stop:services
 - See `docs/browser-preview-limitations.md` for the current support boundaries and known caveats.
 - If Browser reports preview is unavailable, check whether `BRIDGE_PREVIEW_PORT` is already in use on the host.
 - The preview port defaults to `BRIDGE_PORT + 1`, but its bind host independently defaults to
-  loopback. `clawdex init` sets `BRIDGE_PREVIEW_HOST` to the selected private-network host; custom
+  loopback. `tethercode init` sets `BRIDGE_PREVIEW_HOST` to the selected private-network host; custom
   configurations must do the same for a phone to connect.
 - Restart the bridge after changing `BRIDGE_PREVIEW_HOST`, `BRIDGE_PREVIEW_PORT`, or
   `BRIDGE_PREVIEW_CONNECT_URL`.
@@ -68,8 +68,8 @@ npm run stop:services
 
 ## ACP agent manifest or executable not found
 
-- Re-run `clawdex init --agent <registry-id>` so setup can restore the exact workspace-local install and manifest.
-- Confirm `.env.secure` points `ACP_AGENT_MANIFEST` at `.clawdex/agents.json` and `ACP_AGENT_ROOTS` at `.clawdex/agents`.
+- Re-run `tethercode init --agent <registry-id>` so setup can restore the exact workspace-local install and manifest.
+- Confirm `.env.secure` points `ACP_AGENT_MANIFEST` at `.tethercode/agents.json` and `ACP_AGENT_ROOTS` at `.tethercode/agents`.
 - Do not replace the executable with `npx`, `uvx`, or a global command. Runtime intentionally has no network or PATH-resolution fallback.
 - If setup reports an unsigned binary, review its registry provenance before using `--trust-unverified`.
 - If an npm package requires lifecycle scripts, review the package before using `--trust-install-scripts`; scripts are disabled by default.
@@ -91,7 +91,7 @@ From a clean checkout, setup intentionally builds the bridge when no packaged bi
 force a source build even if a packaged binary is present:
 
 ```bash
-CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=true npm run setup:wizard
+TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD=true npm run setup:wizard
 ```
 
 The wizard saves that setting in `.env.secure`; set it to `false` there to return to packaged-binary
@@ -132,7 +132,7 @@ Also update Expo Go on your phone.
 - Phone images are resized to at most `2048 px` on their longest side, JPEG-compressed, and checked against the limit again
 - Failed prepared uploads remain in the composer as `retry` chips; open Attachments to retry them or remove the chip
 - Uploads use authenticated streaming `multipart/form-data` at `POST /attachments`; there is no WebSocket/base64 upload method
-- Uploads persist under `BRIDGE_WORKDIR/.clawdex-mobile-attachments`
+- Uploads persist under `BRIDGE_WORKDIR/.tethercode-attachments`
 - The bridge writes mode-`0600` staging files in a private mode-`0700` temporary directory and atomically renames successful uploads into place
 - `resource_limit_exceeded` includes the rejected `resource`, configured `limit`, and observed `actual` size. Git, filesystem, and replay responses may instead return `truncated`/count or byte metadata; narrow the workspace/request when the omitted data is needed.
 - Ensure `BRIDGE_WORKDIR` is writable

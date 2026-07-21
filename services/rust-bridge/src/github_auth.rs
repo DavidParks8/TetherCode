@@ -95,7 +95,7 @@ pub(super) async fn fetch_github_viewer(access_token: &str) -> Result<GitHubView
     }
 
     let http = HttpClient::builder()
-        .user_agent("clawdex-rust-bridge")
+        .user_agent("tethercode-rust-bridge")
         .build()
         .map_err(|error| {
             BridgeError::server(&format!("failed to build GitHub auth client: {error}"))

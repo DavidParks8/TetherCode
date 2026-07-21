@@ -7,7 +7,7 @@ const path = require("node:path");
 const os = require("node:os");
 
 function printUsage() {
-  console.log(`Usage: clawdex <command> [options]
+  console.log(`Usage: tethercode <command> [options]
 
 Commands:
     init [--no-start] [--agent <id>] [--agents <id,...>] [--preferred-agent <id>]
@@ -23,8 +23,8 @@ Commands:
 
   upgrade [--version <latest|x.y.z>] [--restart]
   update  [--version <latest|x.y.z>] [--restart]
-      Upgrade clawdex-mobile globally.
-      --restart stops running services first, upgrades, then runs 'clawdex init'.
+      Upgrade tethercode globally.
+      --restart stops running services first, upgrades, then runs 'tethercode init'.
 
   version
       Print current CLI package version.
@@ -35,12 +35,12 @@ Commands:
 }
 
 function runCommand(command, args = [], options = {}) {
-  const workspaceRoot = process.env.CLAWDEX_WORKSPACE_ROOT || process.cwd();
+  const workspaceRoot = process.env.TETHERCODE_WORKSPACE_ROOT || process.cwd();
   const child = spawnSync(command, args, {
     stdio: "inherit",
     env: {
       ...process.env,
-      CLAWDEX_WORKSPACE_ROOT: workspaceRoot,
+      TETHERCODE_WORKSPACE_ROOT: workspaceRoot,
       INIT_CWD: process.env.INIT_CWD || workspaceRoot,
     },
     cwd: process.cwd(),
@@ -149,10 +149,10 @@ function runUpgrade(args) {
   const previousVersion = getCliVersion();
   const packageSpecifier =
     options.targetVersion === "latest"
-      ? "clawdex-mobile@latest"
-      : `clawdex-mobile@${options.targetVersion}`;
+      ? "tethercode@latest"
+      : `tethercode@${options.targetVersion}`;
 
-  console.log(`Current clawdex-mobile version: ${previousVersion}`);
+  console.log(`Current tethercode version: ${previousVersion}`);
   if (!options.noStop) {
     console.log("Stopping running local services before upgrade...");
     const stopResult = runScript("stop-services.sh", [], { exitOnComplete: false });
@@ -175,12 +175,12 @@ function runUpgrade(args) {
 
   console.log("Upgrade completed.");
   if (options.restart) {
-    console.log("Restarting with updated setup: clawdex init");
-    const restartResult = runCommand("clawdex", ["init"]);
+    console.log("Restarting with updated setup: tethercode init");
+    const restartResult = runCommand("tethercode", ["init"]);
     process.exit(restartResult.status);
   }
 
-  console.log("Run 'clawdex init' to start services with the updated version.");
+  console.log("Run 'tethercode init' to start services with the updated version.");
   process.exit(0);
 }
 

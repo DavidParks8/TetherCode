@@ -1,5 +1,5 @@
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
-const BROWSER_PREVIEW_PROXY_PREFIX = '/__clawdex_proxy__';
+const BROWSER_PREVIEW_PROXY_PREFIX = '/__tethercode_proxy__';
 const BROWSER_PREVIEW_INTERNAL_QUERY_KEYS = ['sid', 'st', 'vp', 'vw', 'vh', 'shell', 'frame'];
 const LOCAL_PREVIEW_URL_PATTERN =
   /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?(?:[^\s<>"'`)\]]*)?/gi;

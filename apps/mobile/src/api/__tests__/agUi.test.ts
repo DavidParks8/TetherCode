@@ -49,13 +49,13 @@ describe('AG-UI bridge notifications', () => {
       { type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'message', delta: 'A' },
       {
         type: EventType.CUSTOM,
-        name: 'clawdex.dev/message-content',
+        name: 'tethercode.dev/message-content',
         value: { messageId: 'message', role: 'agent', content: { type: 'image', url: 'image.png' } },
       },
       { type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'message', delta: 'B' },
       {
         type: EventType.CUSTOM,
-        name: 'clawdex.dev/message-content',
+        name: 'tethercode.dev/message-content',
         value: {
           messageId: 'message',
           role: 'agent',
@@ -64,7 +64,7 @@ describe('AG-UI bridge notifications', () => {
       },
       {
         type: EventType.CUSTOM,
-        name: 'clawdex.dev/message-content',
+        name: 'tethercode.dev/message-content',
         value: {
           messageId: 'message',
           role: 'agent',
@@ -99,7 +99,7 @@ describe('AG-UI bridge notifications', () => {
       { type: EventType.REASONING_MESSAGE_CONTENT, messageId: 'reasoning-r', delta: 'R' },
       {
         type: EventType.CUSTOM,
-        name: 'clawdex.dev/tool-text',
+        name: 'tethercode.dev/tool-text',
         value: { toolCallId: 'tool-t', revision: 'updated', content: 'updated' },
       },
     ];
@@ -145,7 +145,7 @@ describe('AG-UI bridge notifications', () => {
           runId: 'run',
           event: {
             type: EventType.CUSTOM,
-            name: 'clawdex.dev/tool-content-chunk',
+            name: 'tethercode.dev/tool-content-chunk',
             value: {
               canonicalId: 'tool',
               revision: 'sha256:fixture',
@@ -178,9 +178,9 @@ describe('AG-UI bridge notifications', () => {
       params: {
         threadId: 'thread',
         runId: 'run',
-        event: { type: EventType.CUSTOM, name: 'clawdex.dev/plan', value: { entries: [] } },
+        event: { type: EventType.CUSTOM, name: 'tethercode.dev/plan', value: { entries: [] } },
       },
-    })?.event).toMatchObject({ type: EventType.CUSTOM, name: 'clawdex.dev/plan' });
+    })?.event).toMatchObject({ type: EventType.CUSTOM, name: 'tethercode.dev/plan' });
     expect(parseAgUiEventNotification({
       method: 'bridge/agui.event',
       params: {
@@ -188,7 +188,7 @@ describe('AG-UI bridge notifications', () => {
         runId: 'run',
         event: {
           type: EventType.CUSTOM,
-          name: 'clawdex.dev/tool-content',
+          name: 'tethercode.dev/tool-content',
           value: {
             toolCallId: 'tool',
             content: [
@@ -202,7 +202,7 @@ describe('AG-UI bridge notifications', () => {
       },
     })?.event).toMatchObject({
       type: EventType.CUSTOM,
-      name: 'clawdex.dev/tool-content',
+      name: 'tethercode.dev/tool-content',
     });
   });
 
@@ -230,27 +230,27 @@ describe('AG-UI bridge notifications', () => {
       runId: 'run',
       event: {
         type: EventType.CUSTOM,
-        name: 'clawdex.dev/message-content',
+        name: 'tethercode.dev/message-content',
         value: { messageId: 'image', role: 'agent', content: { type: 'image', mimeType: 'image/png', data: 'redacted-fixture' } },
       },
     });
     state = updateAgUiLiveAssistantMessages(state, {
       threadId: 'thread',
       runId: 'run',
-      event: { type: EventType.CUSTOM, name: 'clawdex.dev/usage', value: { used: 10, size: 100 } },
+      event: { type: EventType.CUSTOM, name: 'tethercode.dev/usage', value: { used: 10, size: 100 } },
     });
     expect(state.thread).toEqual(expect.arrayContaining([
       expect.objectContaining({ messageId: 'reasoning', text: 'thinking', systemKind: 'reasoning', terminal: true }),
       expect.objectContaining({ messageId: 'tool:tool', text: expect.stringContaining('done'), systemKind: 'tool', terminal: true }),
       expect.objectContaining({ messageId: 'image', text: expect.stringContaining('image/png') }),
-      expect.objectContaining({ messageId: 'run:custom:clawdex.dev/usage', text: expect.stringContaining('used') }),
+      expect.objectContaining({ messageId: 'run:custom:tethercode.dev/usage', text: expect.stringContaining('used') }),
     ]));
 
     for (let index = 0; index < 140; index += 1) {
       state = updateAgUiLiveAssistantMessages(state, {
         threadId: 'thread',
         runId: 'run',
-        event: { type: EventType.CUSTOM, name: `clawdex.dev/config-${index}`, value: { index } },
+        event: { type: EventType.CUSTOM, name: `tethercode.dev/config-${index}`, value: { index } },
       });
     }
     expect(state.thread).toHaveLength(128);
@@ -420,7 +420,7 @@ describe('AG-UI bridge notifications', () => {
     });
     const structured = (revision: string, terminalId: string): AGUIEvent => ({
       type: EventType.CUSTOM,
-      name: 'clawdex.dev/tool-content',
+      name: 'tethercode.dev/tool-content',
       value: {
         toolCallId: 'tool',
         revision,
@@ -446,7 +446,7 @@ describe('AG-UI bridge notifications', () => {
       runId: 'run',
       event: {
         type: EventType.CUSTOM,
-        name: 'clawdex.dev/tool-content',
+        name: 'tethercode.dev/tool-content',
         value: { toolCallId: 'tool', revision: 'empty', content: [], locations: [] },
       },
     });
@@ -462,7 +462,7 @@ describe('AG-UI bridge notifications', () => {
     });
     const replacement = (revision: string, content: string): AGUIEvent => ({
       type: EventType.CUSTOM,
-      name: 'clawdex.dev/tool-text',
+      name: 'tethercode.dev/tool-text',
       value: { toolCallId: 'tool', revision, content },
     });
     state = updateAgUiLiveAssistantMessages(state, {

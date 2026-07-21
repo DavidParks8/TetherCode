@@ -239,8 +239,8 @@ async function startBridge(packageRoot, workspaceRoot, statusPath, payload, mess
     cwd: workspaceRoot,
     env: {
       ...process.env,
-      CLAWDEX_PACKAGE_ROOT: packageRoot,
-      CLAWDEX_WORKSPACE_ROOT: workspaceRoot,
+      TETHERCODE_PACKAGE_ROOT: packageRoot,
+      TETHERCODE_WORKSPACE_ROOT: workspaceRoot,
       INIT_CWD: workspaceRoot,
     },
   });
@@ -303,9 +303,9 @@ async function main() {
           message:
             error instanceof Error
               ? error.message
-              : "Bridge restart failed. The bridge is stopped and can be started with clawdex init.",
+              : "Bridge restart failed. The bridge is stopped and can be started with tethercode init.",
           recoverable: true,
-          recoveryCommand: "clawdex init",
+          recoveryCommand: "tethercode init",
           completedAt: new Date().toISOString(),
         });
         process.exitCode = 1;
@@ -317,7 +317,7 @@ async function main() {
       targetVersion: args.version,
       previousVersion,
       installVersion: async (version) => {
-        await runCommand(npmCommand(), ["install", "-g", `clawdex-mobile@${version}`], {
+        await runCommand(npmCommand(), ["install", "-g", `tethercode@${version}`], {
           cwd: workspaceRoot,
           env: process.env,
         });
@@ -349,13 +349,13 @@ async function main() {
       ...baseStatus,
       state: previousBridgeStillRunning ? "unchanged" : "stopped",
       message: previousBridgeStillRunning
-        ? `Bridge maintenance did not proceed; clawdex-mobile@${previousVersion} is still running.`
-        : `Bridge maintenance failed. The bridge is stopped; reinstall clawdex-mobile@${previousVersion} and initialize it again.`,
+        ? `Bridge maintenance did not proceed; tethercode@${previousVersion} is still running.`
+        : `Bridge maintenance failed. The bridge is stopped; reinstall tethercode@${previousVersion} and initialize it again.`,
       runningVersion: previousBridgeStillRunning ? previousVersion : null,
       recoverable: !previousBridgeStillRunning,
       recoveryCommand: previousBridgeStillRunning
         ? null
-        : `npm install -g clawdex-mobile@${previousVersion} && clawdex init`,
+        : `npm install -g tethercode@${previousVersion} && tethercode init`,
       failure: error instanceof Error ? error.message : String(error),
       completedAt: new Date().toISOString(),
     });

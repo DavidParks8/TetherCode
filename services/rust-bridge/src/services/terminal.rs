@@ -27,7 +27,7 @@ use crate::{
 const DEFAULT_TERMINAL_MAX_CONCURRENT: usize = 4;
 const DEFAULT_TERMINAL_MAX_OUTPUT_BYTES: usize = 256 * 1024;
 const OUTPUT_READ_CHUNK_SIZE: usize = 8 * 1024;
-const TRUSTED_GITHUB_CREDENTIALS_PATH: &str = ".clawdex/github-credentials";
+const TRUSTED_GITHUB_CREDENTIALS_PATH: &str = ".tethercode/github-credentials";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TerminalExecPolicy {
@@ -577,7 +577,7 @@ mod tests {
 
     impl TestDir {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("clawdex-terminal-{}", Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!("tethercode-terminal-{}", Uuid::new_v4()));
             fs::create_dir(&path).expect("create test directory");
             Self(path)
         }
@@ -979,7 +979,7 @@ mod tests {
         );
 
         let quoted_home = temp.0.join("user's-home");
-        let credentials = quoted_home.join(".clawdex/github-credentials");
+        let credentials = quoted_home.join(".tethercode/github-credentials");
         fs::create_dir_all(credentials.parent().unwrap()).expect("create credentials directory");
         fs::write(&credentials, "fixture").expect("write credentials");
         let helper = trusted_credential_helper_from_home(Some(quoted_home)).expect("build helper");

@@ -1,20 +1,20 @@
 {
   "expo": {
-    "name": "Clawdex Mobile",
-    "slug": "clawdex-mobile",
-    "scheme": "clawdex",
-    "version": "5.2.3",
+    "name": "TetherCode",
+    "slug": "tethercode",
+    "owner": "davidparks8s-team",
+    "scheme": "tethercode",
+    "version": "0.1.0",
     "userInterfaceStyle": "automatic",
     "orientation": "portrait",
     "icon": "./assets/brand/app-icon.png",
     "splash": {
       "image": "./assets/brand/splash-icon-white.png",
       "resizeMode": "contain",
-      "backgroundColor": "#000000"
+      "backgroundColor": "#0C0F12"
     },
     "ios": {
       "supportsTablet": true,
-      "appleTeamId": "4NWUS8362L",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
@@ -23,18 +23,17 @@
           "NSAllowsLocalNetworking": true
         }
       },
-      "bundleIdentifier": "com.mohitpatil973.clawdexmobile"
+      "bundleIdentifier": "com.davidparks.tethercode"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/brand/adaptive-icon.png",
-        "backgroundColor": "#000000"
+        "backgroundColor": "#0C0F12"
       },
       "permissions": [
         "android.permission.CAMERA"
       ],
-      "googleServicesFile": "./google-services.json",
-      "package": "com.mohitpatil973.clawdexmobile"
+      "package": "com.davidparks.tethercode"
     },
     "web": {
       "favicon": "./assets/brand/favicon.png"
@@ -52,14 +51,14 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Clawdex uses the camera to scan bridge pairing QR codes and capture photos you want to attach to a chat."
+          "cameraPermission": "TetherCode uses the camera to scan bridge pairing QR codes and capture photos you want to attach to a chat."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Clawdex uses your photo library so you can choose an image from your phone and attach it to a chat prompt or workflow sent to your own host bridge.",
-          "cameraPermission": "Clawdex uses the camera to scan bridge pairing QR codes and capture photos you want to attach to a chat."
+          "photosPermission": "TetherCode uses your photo library so you can choose an image from your phone and attach it to a chat prompt or workflow sent to your own host bridge.",
+          "cameraPermission": "TetherCode uses the camera to scan bridge pairing QR codes and capture photos you want to attach to a chat."
         }
       ],
       "expo-secure-store",
@@ -67,7 +66,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "07937be8-e2f7-4731-8ea4-cefae952df79"
+        "projectId": "dc4bb45d-72cf-4c82-8fcd-f841b1ef6c71"
       }
     }
   }

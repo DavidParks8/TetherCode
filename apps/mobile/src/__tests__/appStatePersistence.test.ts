@@ -15,7 +15,7 @@ describe('appStatePersistence', () => {
 
   it('stores the canonical document and imports legacy profile storage on web', async () => {
     const getItem = jest.fn((key: string) =>
-      key === 'clawdex.bridge-profiles.v1' ? '{"profiles":[]}' : null
+      key === 'tethercode.bridge-profiles.v1' ? '{"profiles":[]}' : null
     );
     const setItem = jest.fn();
     Object.defineProperty(globalThis, 'localStorage', {
@@ -42,7 +42,7 @@ describe('appStatePersistence', () => {
     });
     await persistence.writeCurrent('{"version":1}');
 
-    expect(setItem).toHaveBeenCalledWith('clawdex.app-state.v1', '{"version":1}');
+    expect(setItem).toHaveBeenCalledWith('tethercode.app-state.v1', '{"version":1}');
   });
 
   it('uses secure storage for the canonical document on native platforms', async () => {
@@ -67,7 +67,7 @@ describe('appStatePersistence', () => {
     expect(await persistence.readCurrent()).toBe('{"version":1}');
     await persistence.writeCurrent('{"version":1}');
     expect(secureStore.setItemAsync).toHaveBeenCalledWith(
-      'clawdex.app-state.v1',
+      'tethercode.app-state.v1',
       '{"version":1}',
       { keychainAccessible: 'after-first-unlock' }
     );

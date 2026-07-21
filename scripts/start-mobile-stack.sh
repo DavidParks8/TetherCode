@@ -129,16 +129,16 @@ EXISTING_PREVIEW_PORT="$(trim_value "$(extract_env_value "$SECURE_ENV_FILE" "BRI
 EXISTING_TOKEN="$(trim_value "$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_AUTH_TOKEN")")"
 BRIDGE_PORT="${EXISTING_BRIDGE_PORT:-8787}"
 PREVIEW_PORT="${EXISTING_PREVIEW_PORT:-$((BRIDGE_PORT + 1))}"
-AGENT_MANIFEST="$ROOT_DIR/.clawdex/agents.json"
+AGENT_MANIFEST="$ROOT_DIR/.tethercode/agents.json"
 if [[ ! -f "$AGENT_MANIFEST" ]]; then
-  fail "ACP agent manifest is missing. Run: clawdex init"
+  fail "ACP agent manifest is missing. Run: tethercode init"
   exit 1
 fi
 AGENT_IDS="$(node -e 'const m=require(process.argv[1]); process.stdout.write(m.agents.map((a) => a.agentId).join(","))' "$AGENT_MANIFEST")"
 PREFERRED_AGENT="$(node -e 'const m=require(process.argv[1]); process.stdout.write(m.preferredAgentId)' "$AGENT_MANIFEST")"
 
 if [[ "$SKIP_STOP" != "true" ]]; then
-  info "Stopping existing Clawdex services for a clean restart"
+  info "Stopping existing TetherCode services for a clean restart"
   (
     cd "$ROOT_DIR"
     npm run stop:services

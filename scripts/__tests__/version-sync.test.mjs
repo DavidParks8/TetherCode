@@ -8,22 +8,22 @@ import test from 'node:test';
 const require = createRequire(import.meta.url);
 const { syncVersions, syncVersionsForNpmLifecycle } = require('../sync-versions.js');
 
-function createFixture(t, { cargoLockName = 'codex-rust-bridge' } = {}) {
-  const root = mkdtempSync(path.join(tmpdir(), 'clawdex-version-sync-'));
+function createFixture(t, { cargoLockName = 'tethercode-bridge' } = {}) {
+  const root = mkdtempSync(path.join(tmpdir(), 'tethercode-version-sync-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   const files = {
-    'package.json': { name: 'clawdex-mobile', version: '6.0.0-beta.1' },
+    'package.json': { name: 'tethercode', version: '6.0.0-beta.1' },
     'package-lock.json': {
-      name: 'clawdex-mobile',
+      name: 'tethercode',
       version: '5.2.3',
       packages: {
-        '': { name: 'clawdex-mobile', version: '5.2.3' },
-        'apps/mobile': { name: 'clawdex-mobile', version: '5.2.3' },
-        'services/rust-bridge': { name: '@codex/rust-bridge', version: '5.2.3' },
+        '': { name: 'tethercode', version: '5.2.3' },
+        'apps/mobile': { name: 'tethercode', version: '5.2.3' },
+        'services/rust-bridge': { name: '@tethercode/bridge', version: '5.2.3' },
       },
     },
-    'apps/mobile/package.json': { name: 'clawdex-mobile', version: '5.2.3' },
+    'apps/mobile/package.json': { name: 'tethercode', version: '5.2.3' },
     'apps/mobile/app.json': {
       expo: {
         version: '5.2.3',
@@ -31,7 +31,7 @@ function createFixture(t, { cargoLockName = 'codex-rust-bridge' } = {}) {
         android: { version: '5.2.3' },
       },
     },
-    'services/rust-bridge/package.json': { name: '@codex/rust-bridge', version: '5.2.3' },
+    'services/rust-bridge/package.json': { name: '@tethercode/bridge', version: '5.2.3' },
   };
 
   for (const [relativePath, value] of Object.entries(files)) {
@@ -39,7 +39,7 @@ function createFixture(t, { cargoLockName = 'codex-rust-bridge' } = {}) {
     mkdirSync(path.dirname(fullPath), { recursive: true });
     writeFileSync(fullPath, `${JSON.stringify(value, null, 2)}\n`);
   }
-  writeFileSync(path.join(root, 'services/rust-bridge/Cargo.toml'), '[package]\nname = "codex-rust-bridge"\nversion = "5.2.3"\n\n[dependencies]\n');
+  writeFileSync(path.join(root, 'services/rust-bridge/Cargo.toml'), '[package]\nname = "tethercode-bridge"\nversion = "5.2.3"\n\n[dependencies]\n');
   writeFileSync(path.join(root, 'services/rust-bridge/Cargo.lock'), `version = 4\n\n[[package]]\nname = "${cargoLockName}"\nversion = "5.2.3"\n`);
   return root;
 }
@@ -63,7 +63,7 @@ test('preflights every target before writing version metadata', (t) => {
 
   assert.throws(
     () => syncVersions({ rootDir }),
-    /Expected one codex-rust-bridge package/
+    /Expected one tethercode-bridge package/
   );
   assert.equal(readFileSync(mobilePackagePath, 'utf8'), before);
 });
@@ -73,7 +73,7 @@ test('restores npm root metadata when lifecycle synchronization fails', (t) => {
 
   assert.throws(
     () => syncVersionsForNpmLifecycle({ rootDir, oldVersion: '5.2.3' }),
-    /Expected one codex-rust-bridge package/
+    /Expected one tethercode-bridge package/
   );
   assert.equal(JSON.parse(readFileSync(path.join(rootDir, 'package.json'))).version, '5.2.3');
   const packageLock = JSON.parse(readFileSync(path.join(rootDir, 'package-lock.json')));

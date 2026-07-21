@@ -1,0 +1,123 @@
+name: Mobile Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Mobile platform to build
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - ios
+          - android
+      profile:
+        description: EAS build profile
+        required: true
+        default: preview
+        type: choice
+        options:
+          - preview
+          - production
+      auto_submit:
+        description: Submit a production build to its configured store track
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: mobile-release-${{ inputs.platform }}-${{ inputs.profile }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22.13.1"
+
+jobs:
+  validate:
+    name: Validate Mobile Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate mobile release source
+        run: |
+          npm run version:check
+          npm run payment:check
+          npm run lint -w @tethercode/mobile
+          npm run typecheck -w @tethercode/mobile
+          npm run test:coverage -w @tethercode/mobile
+
+      - name: Validate submission policy
+        env:
+          BUILD_PROFILE: ${{ inputs.profile }}
+          AUTO_SUBMIT: ${{ inputs.auto_submit }}
+        run: |
+          if [ "$AUTO_SUBMIT" = "true" ] && [ "$BUILD_PROFILE" != "production" ]; then
+            echo "Automatic submission is allowed only for the production profile." >&2
+            exit 1
+          fi
+
+  build:
+    name: EAS Build (${{ inputs.platform }}, ${{ inputs.profile }})
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: mobile-release
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: 21.0.2
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Verify EAS project ownership
+        working-directory: apps/mobile
+        run: |
+          PROJECT_INFO="$(eas project:info --json --non-interactive)"
+          echo "$PROJECT_INFO" | grep -q '@davidparks8s-team/tethercode'
+          echo "$PROJECT_INFO" | grep -q 'dc4bb45d-72cf-4c82-8fcd-f841b1ef6c71'
+
+      - name: Build on EAS
+        working-directory: apps/mobile
+        env:
+          EAS_PLATFORM: ${{ inputs.platform }}
+          EAS_PROFILE: ${{ inputs.profile }}
+          AUTO_SUBMIT: ${{ inputs.auto_submit }}
+        run: |
+          args=(--platform "$EAS_PLATFORM" --profile "$EAS_PROFILE" --non-interactive)
+          if [ "$AUTO_SUBMIT" = "true" ]; then
+            args+=(--auto-submit)
+          fi
+          eas build "${args[@]}"

@@ -28,9 +28,9 @@ describe('computerUseTrace', () => {
       title: 'Called tool `computer-use / type_text`',
       details: [
         'App=com.google.Chrome (pid 28859)',
-        'Window: ".git-debug.txt - clawdex-local", App: Google Chrome.',
+        'Window: ".git-debug.txt - tethercode-local", App: Google Chrome.',
         '0 standard window Secondary Actions:',
-        'Raise, .git-debug.txt - clawdex-local',
+        'Raise, .git-debug.txt - tethercode-local',
       ],
     });
 
@@ -38,7 +38,7 @@ describe('computerUseTrace', () => {
       actionKey: 'typetext',
       actionLabel: 'Typed text',
       appName: 'Google Chrome',
-      windowTitle: '.git-debug.txt - clawdex-local',
+      windowTitle: '.git-debug.txt - tethercode-local',
     });
   });
 

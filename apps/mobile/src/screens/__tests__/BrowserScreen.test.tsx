@@ -369,8 +369,8 @@ describe('BrowserScreen behavior', () => {
     if (!webView) throw new Error('Missing desktop WebView');
     await invoke(webView, 'onMessage', { nativeEvent: { data: 'not-json' } });
     await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'other' }) } });
-    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'clawdexDesktopFrameState', shellRequestKey: 'wrong', rawUrl: 'http://bridge:4173/preview/session-1/wrong' }) } });
-    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'clawdexDesktopFrameState', rawUrl: 'http://bridge:4173/preview/session-1/docs', title: 'Docs', canGoBack: true, canGoForward: true }) } });
+    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'tethercodeDesktopFrameState', shellRequestKey: 'wrong', rawUrl: 'http://bridge:4173/preview/session-1/wrong' }) } });
+    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'tethercodeDesktopFrameState', rawUrl: 'http://bridge:4173/preview/session-1/docs', title: 'Docs', canGoBack: true, canGoForward: true }) } });
     expect(result.ref.current?.handleHardwareBackPress()).toBe(true);
     await invoke(findByLabel(root, 'Forward'));
     await invoke(findByLabel(root, 'Reload preview'));
@@ -400,10 +400,10 @@ describe('BrowserScreen behavior', () => {
     await invoke(viewport, 'onLayout', { nativeEvent: { layout: { width: 390, height: 700 } } });
     await invoke(webView, 'onMessage', { nativeEvent: { data: 'bad-json' } });
     await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'other', height: 2000 }) } });
-    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'clawdexOverviewMetrics', height: 0 }) } });
-    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'clawdexOverviewMetrics', height: 2400 }) } });
-    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'clawdexOverviewMetrics', height: 2400 }) } });
-    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'clawdexOverviewMetrics', height: 2200 }) } });
+    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'tethercodeOverviewMetrics', height: 0 }) } });
+    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'tethercodeOverviewMetrics', height: 2400 }) } });
+    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'tethercodeOverviewMetrics', height: 2400 }) } });
+    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'tethercodeOverviewMetrics', height: 2200 }) } });
     act(() => jest.runOnlyPendingTimers());
     webView = root.findAll((node) => node.type === 'mock-web-view')[0];
     await invoke(webView, 'onContentProcessDidTerminate');
@@ -485,7 +485,7 @@ describe('BrowserScreen behavior', () => {
     let webView = root.findAll((node) => node.type === 'mock-web-view')[0];
     if (!webView) throw new Error('Missing shell WebView');
     await invoke(webView, 'onNavigationStateChange', { url: 'ignored', title: 'Ignored', canGoBack: true, canGoForward: true, loading: true });
-    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'clawdexDesktopFrameState', rawUrl: '', title: 42 }) } });
+    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'tethercodeDesktopFrameState', rawUrl: '', title: 42 }) } });
     expect(result.ref.current?.handleHardwareBackPress()).toBe(false);
     webView = root.findAll((node) => node.type === 'mock-web-view')[0];
     await invoke(webView, 'onHttpError', { nativeEvent: { statusCode: 404 } });
@@ -556,7 +556,7 @@ describe('BrowserScreen behavior', () => {
     if (!webView) throw new Error('Missing native desktop WebView');
     expect(webView.props.contentMode).toBe('desktop');
     expect(webView.props.userAgent).toContain('Mozilla/5.0');
-    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'clawdexOverviewMetrics', height: 3000 }) } });
+    await invoke(webView, 'onMessage', { nativeEvent: { data: JSON.stringify({ type: 'tethercodeOverviewMetrics', height: 3000 }) } });
     await invoke(webView, 'onContentProcessDidTerminate');
     expect(hasText(root, 'Loading preview')).toBe(true);
     act(() => result.tree.unmount());

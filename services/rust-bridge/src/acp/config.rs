@@ -482,7 +482,7 @@ fn collect_tree_entries(
     for child in children {
         let path = child.path();
         let relative = normalized_tree_path(root, &path)?;
-        if relative == ".clawdex-install.json" {
+        if relative == ".tethercode-install.json" {
             continue;
         }
         if entries.len() >= MAX_TREE_ENTRIES {
@@ -678,7 +678,8 @@ mod tests {
 
     fn test_tree(name: &str) -> PathBuf {
         let id = TEST_TREE_ID.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("clawdex-{name}-{}-{id}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("tethercode-{name}-{}-{id}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create test tree");
         root
     }
@@ -956,7 +957,7 @@ mod tests {
             Err(RuntimeManifestError::InvalidExecutableDigest)
         );
 
-        let root = std::env::temp_dir().join(format!("clawdex-digest-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tethercode-digest-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create test root");
         let executable = root.join("agent");
         std::fs::write(&executable, b"original").expect("write executable");
@@ -980,8 +981,8 @@ mod tests {
             "../../../../scripts/__tests__/fixtures/tree-receipt-v1.json"
         ))
         .expect("parse shared tree fixture");
-        assert_eq!(fixture.algorithm, "clawdex-tree-v1");
-        assert_eq!(fixture.exclusions, [".clawdex-install.json"]);
+        assert_eq!(fixture.algorithm, "tethercode-tree-v1");
+        assert_eq!(fixture.exclusions, [".tethercode-install.json"]);
         let mut receipt = Vec::new();
         for entry in fixture.entries.into_iter().map(TreeEntry::from) {
             entry.write_canonical(&mut receipt).expect("encode entry");
@@ -1135,7 +1136,7 @@ mod tests {
         let file = root.join("agent");
         std::fs::write(&file, b"agent").expect("write agent");
         let expected = installation_tree_sha256(&root).expect("hash tree");
-        std::fs::write(root.join(".clawdex-install.json"), b"changed receipt")
+        std::fs::write(root.join(".tethercode-install.json"), b"changed receipt")
             .expect("write excluded receipt");
         assert_eq!(installation_tree_sha256(&root).unwrap(), expected);
         assert_eq!(
@@ -1164,7 +1165,8 @@ mod tests {
     fn tree_rejects_escaping_symlink_and_manifest_root_mismatch() {
         use std::os::unix::fs::symlink;
 
-        let root = std::env::temp_dir().join(format!("clawdex-tree-link-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("tethercode-tree-link-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create tree");
         symlink("../../outside", root.join("escape")).expect("create escaping symlink");
         assert_eq!(

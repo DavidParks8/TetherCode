@@ -9,7 +9,7 @@ const root = path.resolve(import.meta.dirname, '../..');
 const checker = path.join(root, 'scripts/check-production-audit.mjs');
 
 function runChecker(vulnerabilities) {
-  const directory = mkdtempSync(path.join(tmpdir(), 'clawdex-production-audit-'));
+  const directory = mkdtempSync(path.join(tmpdir(), 'tethercode-production-audit-'));
   const reportPath = path.join(directory, 'audit.json');
   writeFileSync(reportPath, JSON.stringify({ vulnerabilities }));
   const result = spawnSync(process.execPath, [checker, reportPath], {

@@ -7,7 +7,7 @@ This repo is a monorepo for controlling ACP-compatible coding agents from a phon
 - Primary product path:
   - `apps/mobile`: Expo React Native client
   - `services/rust-bridge`: ACP agent manager plus terminal/git/attachment helpers
-  - `bin/clawdex.js` + `scripts/*`: operator CLI and setup/runtime automation
+  - `bin/tethercode.js` + `scripts/*`: operator CLI and setup/runtime automation
 
 The bridge is intended for trusted/private networks only. Do not treat this repo as internet-safe by default.
 
@@ -22,11 +22,6 @@ Use the existing docs as the source of truth instead of duplicating them in code
 - Push notifications (bridge-sent turn/approval alerts): `docs/push-notifications.md`
 - EAS and native build/release notes: `docs/eas-builds.md`
 - Open-source and notice obligations: `docs/open-source-license-requirements.md`
-- App review template: `docs/app-review-notes.md`
-
-`docs/plans/*` are historical design/implementation plans, not current operating policy. In
-particular, `docs/plans/2026-07-19-acp-agui-migration-handoff-historical.md` records a completed
-migration and must not be used as a kickoff prompt or architecture source of truth.
 
 ## Repo Map
 
@@ -48,24 +43,13 @@ migration and must not be used as a kickoff prompt or architecture source of tru
 - `scripts/*`
   - secure setup/start helpers, Expo bootstrap, service stop/cleanup, version sync
 - `.github/workflows/*`
-  - CI, npm release, and Pages publishing
-- `site/*`
-  - static support/privacy/terms site
-
-### Legacy or easy-to-confuse paths
-
-- `ios/*` at repo root: older native iOS tree (`codexmobilecontrol`), not the active Expo app path
-- `apps/mobile/ios/*`: this is the active iOS native project for the shipped mobile app
-- `apps/telegram-miniapp/*`: currently not a primary maintained source tree; it mostly contains built output/environment leftovers
+  - build/test, npm bridge release, and protected EAS mobile release
 
 ### Generated/vendor paths to avoid editing by hand
 
 - `node_modules/*`
 - `.expo/*`
 - `apps/mobile/ios/Pods/*`
-- `ios/Pods/*`
-- `ios/build/*`
-- `apps/telegram-miniapp/dist/*`
 
 ## Current Architecture
 
@@ -106,8 +90,8 @@ migration and must not be used as a kickoff prompt or architecture source of tru
 ### Preferred operator flow
 
 - Published CLI:
-  - `clawdex init`
-  - `clawdex stop`
+  - `tethercode init`
+  - `tethercode stop`
 - Monorepo equivalents:
   - `npm run setup:wizard`
   - `npm run stop:services`
@@ -128,6 +112,7 @@ From repo root:
 - `npm run typecheck`
 - `npm run build`
 - `npm run test`
+- `npm run payment:check`
 - `npm run version:sync`
 
 ### Important operational details
@@ -246,7 +231,7 @@ Use `docs/setup-and-operations.md` as the canonical smoke-test runbook. Minimum 
 - Two iOS trees exist. The active mobile app is under `apps/mobile/ios`, not repo-root `ios/`.
 - Real devices must use LAN/Tailscale bridge URLs, not localhost.
 - `MainScreen.tsx` is very large; broad refactors there are risky.
-- Internal release bumps can fail in GitHub Actions if `services/rust-bridge/Cargo.lock` still references the previous `codex-rust-bridge` version. When package versions change, verify `cargo check --locked` passes in `services/rust-bridge` before triggering the release workflow.
+- Internal release bumps can fail in GitHub Actions if `services/rust-bridge/Cargo.lock` still references the previous `tethercode-bridge` version. When package versions change, verify `cargo check --locked` passes in `services/rust-bridge` before triggering the release workflow.
 - Android cleartext bridge access is intentionally enabled by the Expo config plugin for local/private HTTP development.
 - Worklets/Reanimated issues are usually cache/install problems, not missing config. `babel.config.js` already includes the required plugin.
 - If setup, auth, Expo startup, QR/networking, or interrupt behavior breaks, use `docs/troubleshooting.md` instead of reinventing recovery steps.

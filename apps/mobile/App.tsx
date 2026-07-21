@@ -86,7 +86,6 @@ import {
 } from './src/pushNotifications';
 import { syncPushRegistration } from './src/pushController';
 import { PushResponseController } from './src/pushResponseController';
-import { configureRevenueCatIfNeeded } from './src/tips';
 import {
   AppThemeProvider,
   createAppTheme,
@@ -451,14 +450,6 @@ export default function App() {
       unsubscribeStatus();
     };
   }, [api, currentScreen, ws]);
-
-  useEffect(() => {
-    void configureRevenueCatIfNeeded().catch((error) => {
-      console.warn(
-        `RevenueCat setup skipped: ${error instanceof Error ? error.message : String(error)}`
-      );
-    });
-  }, []);
 
   const persistStoreReviewState = useCallback(async (nextState: AutoStoreReviewState) => {
     try {
@@ -1469,7 +1460,7 @@ export default function App() {
               barStyle={theme.statusBarStyle}
               backgroundColor={theme.colors.bgMain}
             />
-            <View style={styles.loadingRoot} accessibilityRole="progressbar" accessibilityLabel="Loading Clawdex">
+            <View style={styles.loadingRoot} accessibilityRole="progressbar" accessibilityLabel="Loading TetherCode">
               <ActivityIndicator size="large" color={theme.colors.textMuted} />
             </View>
           </SafeAreaProvider>

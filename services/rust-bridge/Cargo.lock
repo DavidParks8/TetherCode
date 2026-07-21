@@ -317,32 +317,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-rust-bridge"
-version = "5.2.3"
-dependencies = [
- "agent-client-protocol",
- "async-process",
- "axum",
- "base64",
- "chrono",
- "futures-util",
- "getrandom 0.3.4",
- "libc",
- "qr2term",
- "regex",
- "reqwest",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2",
- "shlex",
- "thiserror",
- "tokio",
- "tokio-tungstenite 0.28.0",
- "uuid",
-]
-
-[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1935,6 +1909,32 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "tethercode-bridge"
+version = "0.1.0"
+dependencies = [
+ "agent-client-protocol",
+ "async-process",
+ "axum",
+ "base64",
+ "chrono",
+ "futures-util",
+ "getrandom 0.3.4",
+ "libc",
+ "qr2term",
+ "regex",
+ "reqwest",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shlex",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
+ "uuid",
 ]
 
 [[package]]

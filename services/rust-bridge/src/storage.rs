@@ -163,7 +163,7 @@ mod tests {
 
     #[tokio::test]
     async fn private_new_is_collision_safe_and_atomic_write_replaces() {
-        let dir = std::env::temp_dir().join(format!("clawdex-storage-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("tethercode-storage-{}", Uuid::new_v4()));
         fs::create_dir(&dir).expect("create test directory");
         let path = dir.join("state.json");
         write_private_new(&path, b"one")
@@ -185,7 +185,8 @@ mod tests {
 
     #[tokio::test]
     async fn truncate_mode_replaces_contents_and_failed_atomic_write_cleans_up() {
-        let dir = std::env::temp_dir().join(format!("clawdex-storage-errors-{}", Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("tethercode-storage-errors-{}", Uuid::new_v4()));
         fs::create_dir(&dir).expect("create test directory");
         let path = dir.join("state");
         fs::write(&path, b"long contents").expect("seed file");
@@ -212,7 +213,8 @@ mod tests {
     async fn atomic_write_secures_before_publish_and_propagates_parent_sync_failure() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = std::env::temp_dir().join(format!("clawdex-storage-durable-{}", Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("tethercode-storage-durable-{}", Uuid::new_v4()));
         fs::create_dir(&dir).expect("create test directory");
         let path = dir.join("state.json");
         fs::write(&path, b"old").expect("seed state");

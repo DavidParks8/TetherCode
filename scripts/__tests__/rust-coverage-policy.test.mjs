@@ -9,7 +9,7 @@ const root = path.resolve(import.meta.dirname, '../..');
 const checker = path.join(root, 'scripts/check-rust-coverage.mjs');
 
 function runChecker(report, minimum = '86') {
-  const directory = mkdtempSync(path.join(tmpdir(), 'clawdex-rust-coverage-'));
+  const directory = mkdtempSync(path.join(tmpdir(), 'tethercode-rust-coverage-'));
   const reportPath = path.join(directory, 'coverage.json');
   writeFileSync(reportPath, JSON.stringify(report));
   const result = spawnSync(process.execPath, [checker, reportPath], {

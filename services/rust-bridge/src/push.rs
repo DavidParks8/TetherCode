@@ -14,7 +14,7 @@ use crate::{
     BridgeError,
 };
 
-const PUSH_REGISTRY_FILE_NAME: &str = ".clawdex-push-registry.json";
+const PUSH_REGISTRY_FILE_NAME: &str = ".tethercode-push-registry.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -251,7 +251,7 @@ mod tests {
     use uuid::Uuid;
 
     fn temp_dir() -> PathBuf {
-        let path = std::env::temp_dir().join(format!("clawdex-push-{}", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("tethercode-push-{}", Uuid::new_v4()));
         fs::create_dir(&path).expect("create temporary directory");
         path
     }

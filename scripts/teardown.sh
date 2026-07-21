@@ -153,7 +153,7 @@ print_step "Stop running services"
 if $auto_yes || confirm_prompt "Stop running bridge and Expo processes for this project?"; then
   stop_process_group "Expo" "$ROOT_DIR/.*/expo start|$ROOT_DIR/node_modules/.bin/expo start"
   stop_pid_file_process "Rust bridge" "$BRIDGE_PID_FILE" || true
-  stop_process_group "Rust bridge" "$ROOT_DIR/services/rust-bridge|codex-rust-bridge|@codex/rust-bridge"
+  stop_process_group "Rust bridge" "$ROOT_DIR/services/rust-bridge|tethercode-bridge|@tethercode/bridge"
 else
   echo "Skipped process shutdown."
 fi

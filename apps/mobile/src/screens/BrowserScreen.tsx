@@ -85,7 +85,7 @@ type WebViewScrollEvent = NativeSyntheticEvent<
 
 type ViewportPreset = 'mobile' | 'desktop' | 'desktop2';
 type DesktopFrameMessage = {
-  type: 'clawdexDesktopFrameState';
+  type: 'tethercodeDesktopFrameState';
   shellRequestKey?: string | null;
   rawUrl?: string;
   title?: string;
@@ -502,7 +502,7 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
         return;
       }
 
-      if (!payload || payload.type !== 'clawdexDesktopFrameState' || !activeSession?.targetUrl) {
+      if (!payload || payload.type !== 'tethercodeDesktopFrameState' || !activeSession?.targetUrl) {
         return;
       }
       if (currentShellRequestKey && payload.shellRequestKey !== currentShellRequestKey) {
@@ -531,7 +531,7 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
 
   const executeDesktopFrameCommand = useCallback((command: 'goBack' | 'goForward' | 'reload') => {
     webViewRef.current?.injectJavaScript(
-      `window.__clawdexDesktopFrame && window.__clawdexDesktopFrame.${command} && window.__clawdexDesktopFrame.${command}(); true;`
+      `window.__tethercodeDesktopFrame && window.__tethercodeDesktopFrame.${command} && window.__tethercodeDesktopFrame.${command}(); true;`
     );
   }, []);
 
@@ -702,7 +702,7 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
           type?: string;
           height?: number;
         };
-        if (payload.type !== 'clawdexOverviewMetrics') {
+        if (payload.type !== 'tethercodeOverviewMetrics') {
           return;
         }
 
@@ -737,11 +737,11 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
   const overviewInjectedJavaScript = useMemo(
     () => `
       (function() {
-        if (window.__clawdexOverviewMetricsInstalled) {
+        if (window.__tethercodeOverviewMetricsInstalled) {
           true;
           return;
         }
-        window.__clawdexOverviewMetricsInstalled = true;
+        window.__tethercodeOverviewMetricsInstalled = true;
         var lastHeight = 0;
         function readHeight() {
           var doc = document.documentElement;
@@ -760,7 +760,7 @@ export const BrowserScreen = forwardRef<BrowserScreenHandle, BrowserScreenProps>
           lastHeight = nextHeight;
           if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
             window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'clawdexOverviewMetrics',
+              type: 'tethercodeOverviewMetrics',
               height: nextHeight
             }));
           }

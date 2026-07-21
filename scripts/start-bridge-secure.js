@@ -33,7 +33,7 @@ function resolvePackageDir() {
 
 function resolveWorkspaceDir() {
   const candidates = [
-    process.env.CLAWDEX_WORKSPACE_ROOT,
+    process.env.TETHERCODE_WORKSPACE_ROOT,
     process.env.INIT_CWD,
     process.cwd(),
   ];
@@ -134,7 +134,7 @@ function normalizeBaseUrl(rawUrl) {
 }
 
 function resolveBridgeBuildProfile(env) {
-  const explicitProfile = readNonEmptyEnv(env, "CLAWDEX_BRIDGE_BUILD_PROFILE").toLowerCase();
+  const explicitProfile = readNonEmptyEnv(env, "TETHERCODE_BRIDGE_BUILD_PROFILE").toLowerCase();
   if (explicitProfile === "debug" || explicitProfile === "release") {
     return explicitProfile;
   }
@@ -172,7 +172,7 @@ function buildPairingPayload(env, endpoint) {
   }
 
   return JSON.stringify({
-    type: "clawdex-bridge-pair",
+    type: "tethercode-bridge-pair",
     bridgeUrl,
     bridgeToken: token,
   });
@@ -185,7 +185,7 @@ function buildTokenOnlyPairingPayload(env) {
   }
 
   return JSON.stringify({
-    type: "clawdex-bridge-token",
+    type: "tethercode-bridge-token",
     bridgeToken: token,
   });
 }
@@ -441,7 +441,7 @@ async function spawnDetachedAndWait(command, args, options) {
 
   if (await probeHealth(healthUrl)) {
     console.error(
-      `error: another bridge is already responding at http://${formatHostForUrl(host)}:${port}. Stop it first with 'clawdex stop'.`
+      `error: another bridge is already responding at http://${formatHostForUrl(host)}:${port}. Stop it first with 'tethercode stop'.`
     );
     process.exit(1);
   }
@@ -558,10 +558,10 @@ function resolveLaunch(workspaceDir, packageDir, env, { devMode, forceSourceBuil
     };
   }
 
-  const overrideBinary = env.CLAWDEX_BRIDGE_BINARY ? path.resolve(env.CLAWDEX_BRIDGE_BINARY) : "";
+  const overrideBinary = env.TETHERCODE_BRIDGE_BINARY ? path.resolve(env.TETHERCODE_BRIDGE_BINARY) : "";
   if (overrideBinary) {
     if (!fs.existsSync(overrideBinary)) {
-      console.error(`error: CLAWDEX_BRIDGE_BINARY not found at ${overrideBinary}`);
+      console.error(`error: TETHERCODE_BRIDGE_BINARY not found at ${overrideBinary}`);
       process.exit(1);
     }
     ensureExecutable(overrideBinary);
@@ -591,7 +591,7 @@ function resolveLaunch(workspaceDir, packageDir, env, { devMode, forceSourceBuil
 
   if (!forceSourceBuild && !hasBridgeSource(packageDir)) {
     console.error("error: no packaged bridge binary was found for this host.");
-    console.error("Reinstall a published clawdex-mobile package with a bundled bridge binary.");
+    console.error("Reinstall a published tethercode package with a bundled bridge binary.");
     process.exit(1);
   }
 
@@ -638,11 +638,11 @@ async function start() {
     .split(path.delimiter)
     .filter(Boolean);
   if (!manifestPath || !path.isAbsolute(manifestPath) || !fs.existsSync(manifestPath)) {
-    console.error("error: ACP_AGENT_MANIFEST must name an existing absolute manifest. Run: clawdex init");
+    console.error("error: ACP_AGENT_MANIFEST must name an existing absolute manifest. Run: tethercode init");
     process.exit(1);
   }
   if (agentRoots.length === 0 || agentRoots.some((root) => !path.isAbsolute(root) || !fs.existsSync(root))) {
-    console.error("error: ACP_AGENT_ROOTS must contain existing absolute install roots. Run: clawdex init");
+    console.error("error: ACP_AGENT_ROOTS must contain existing absolute install roots. Run: tethercode init");
     process.exit(1);
   }
   try {
@@ -657,8 +657,8 @@ async function start() {
   const env = {
     ...process.env,
     ...fileEnv,
-    CLAWDEX_PACKAGE_ROOT: packageDir,
-    CLAWDEX_WORKSPACE_ROOT: workspaceDir,
+    TETHERCODE_PACKAGE_ROOT: packageDir,
+    TETHERCODE_WORKSPACE_ROOT: workspaceDir,
     INIT_CWD: process.env.INIT_CWD || workspaceDir,
   };
   const devMode = process.argv.includes("--dev") || env.BRIDGE_RUN_MODE === "dev";
@@ -668,9 +668,9 @@ async function start() {
   const backgroundMode = process.argv.includes("--background");
   const prepareOnly = process.argv.includes("--prepare-only");
   const forceSourceBuild =
-    (process.env.CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD ?? fileEnv.CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD) ===
+    (process.env.TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD ?? fileEnv.TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD) ===
     "true";
-  env.CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD = String(forceSourceBuild);
+  env.TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD = String(forceSourceBuild);
   const launch = resolveLaunch(workspaceDir, packageDir, env, { devMode, forceSourceBuild });
 
   if (prepareOnly) {

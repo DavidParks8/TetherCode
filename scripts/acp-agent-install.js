@@ -36,9 +36,9 @@ const INSTALLER_POLICY_VERSION = 4;
 const INSTALL_LOCK_TIMEOUT_MS = 30_000;
 const INSTALL_LOCK_STALE_MS = 5 * 60_000;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
-const TREE_RECEIPT_ALGORITHM = "clawdex-tree-v1";
-const TREE_RECEIPT_EXCLUSIONS = [".clawdex-install.json"];
-const DEPENDENCY_PLAN_PATH = ".clawdex-dependency-plan";
+const TREE_RECEIPT_ALGORITHM = "tethercode-tree-v1";
+const TREE_RECEIPT_EXCLUSIONS = [".tethercode-install.json"];
+const DEPENDENCY_PLAN_PATH = ".tethercode-dependency-plan";
 const UV_INDEX_URL = "https://pypi.org/simple";
 const TRANSACTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const TRANSACTION_ENTRY_NAMES = ["agents", "agents.json", "registry-provenance.json"];
@@ -73,7 +73,7 @@ const treeEntrySchema = z.discriminatedUnion("type", [
 ]);
 const treeReceiptSchema = z.object({
   algorithm: z.literal(TREE_RECEIPT_ALGORITHM),
-  exclusions: z.tuple([z.literal(".clawdex-install.json")]),
+  exclusions: z.tuple([z.literal(".tethercode-install.json")]),
   entryCount: z.number().int().nonnegative().max(MAX_TREE_FILES),
   totalBytes: z.number().int().nonnegative().max(MAX_TREE_BYTES),
   receiptBytes: z.number().int().nonnegative().max(MAX_TREE_RECEIPT_BYTES),
@@ -321,7 +321,7 @@ function treeMode(stat) {
 async function buildTreeReceipt(root, { exclusions = TREE_RECEIPT_EXCLUSIONS } = {}) {
   const canonicalRoot = await fsp.realpath(root);
   const excluded = new Set(exclusions);
-  if (excluded.size !== exclusions.length || exclusions.some((value) => value !== ".clawdex-install.json")) {
+  if (excluded.size !== exclusions.length || exclusions.some((value) => value !== ".tethercode-install.json")) {
     throw new Error("installation tree receipt exclusions are invalid");
   }
   const entries = [];
@@ -626,7 +626,7 @@ async function canonicalFile(root, filePath, label = "resolved file") {
 }
 
 async function installBinary(agent, distribution, staging, options) {
-  const downloadPath = path.join(staging, ".clawdex-artifact");
+  const downloadPath = path.join(staging, ".tethercode-artifact");
   const downloaded = await downloadFile(distribution.archive, downloadPath, options.downloadOptions);
   if (distribution.sha256 && downloaded.sha256.toLowerCase() !== distribution.sha256.toLowerCase()) {
     throw new Error(`checksum mismatch for ACP agent '${agent.id}'`);
@@ -663,7 +663,7 @@ async function installBinary(agent, distribution, staging, options) {
     integrity: {
       executableSha256,
       binaryShape: extracted === false ? "single-file" : "archive-tree",
-      artifact: { path: ".clawdex-artifact", sha256: downloaded.sha256 },
+      artifact: { path: ".tethercode-artifact", sha256: downloaded.sha256 },
       npm: null,
       uv: null,
       tree,
@@ -969,7 +969,7 @@ async function installUvx(agent, distribution, staging, options) {
 
 function persistenceBoundary(name, options = {}) {
   options.persistenceHook?.(name);
-  if (process.env.CLAWDEX_INSTALL_TEST_CRASH_AT === name) process.exit(TEST_CRASH_EXIT_CODE);
+  if (process.env.TETHERCODE_INSTALL_TEST_CRASH_AT === name) process.exit(TEST_CRASH_EXIT_CODE);
 }
 
 async function syncDirectory(directory, options = {}) {
@@ -1036,7 +1036,7 @@ async function durableRemove(target, options = {}) {
 async function ensureLocalInstallRoot(workspace) {
   const canonicalWorkspace = await fsp.realpath(workspace);
   let current = canonicalWorkspace;
-  for (const segment of [".clawdex"]) {
+  for (const segment of [".tethercode"]) {
     current = path.join(current, segment);
     try {
       const stat = await fsp.lstat(current);
@@ -1064,7 +1064,7 @@ async function readJson(filePath) {
 }
 
 async function verifyInstallRecord(finalRoot, expected) {
-  const record = installRecordSchema.parse(await readJson(path.join(finalRoot, ".clawdex-install.json")));
+  const record = installRecordSchema.parse(await readJson(path.join(finalRoot, ".tethercode-install.json")));
   const fingerprint = installFingerprint(expected);
   if (record.fingerprint !== fingerprint ||
       JSON.stringify(stableValue(record.expected)) !== JSON.stringify(stableValue(expected))) {
@@ -1256,8 +1256,8 @@ async function requireRealDirectory(target, label) {
   return canonical;
 }
 
-async function removeDerivedTransactionRoot(clawdexRoot, target, expectedName) {
-  const expected = path.join(clawdexRoot, expectedName);
+async function removeDerivedTransactionRoot(tethercodeRoot, target, expectedName) {
+  const expected = path.join(tethercodeRoot, expectedName);
   if (target !== expected) throw new Error("ACP install transaction root mismatch");
   if (!await pathExists(expected)) return;
   await requireRealDirectory(expected, "ACP install transaction root");
@@ -1274,10 +1274,10 @@ async function quarantineInvalidJournal(journalPath) {
   });
 }
 
-async function validateWorkspaceTransaction(clawdexRoot, rawJournal) {
+async function validateWorkspaceTransaction(tethercodeRoot, rawJournal) {
   const journal = transactionJournalSchema.parse(rawJournal);
-  const stagingRoot = path.join(clawdexRoot, `.install-staging-${journal.transactionId}`);
-  const backupRoot = path.join(clawdexRoot, `.install-backup-${journal.transactionId}`);
+  const stagingRoot = path.join(tethercodeRoot, `.install-staging-${journal.transactionId}`);
+  const backupRoot = path.join(tethercodeRoot, `.install-backup-${journal.transactionId}`);
   if (journal.stagingRoot !== stagingRoot || journal.backupRoot !== backupRoot) {
     throw new Error("ACP install transaction roots do not match its transaction ID");
   }
@@ -1285,7 +1285,7 @@ async function validateWorkspaceTransaction(clawdexRoot, rawJournal) {
   for (const entry of journal.entries) {
     if (names.has(entry.name)) throw new Error("ACP install transaction contains duplicate entries");
     names.add(entry.name);
-    if (entry.destination !== path.join(clawdexRoot, entry.name) ||
+    if (entry.destination !== path.join(tethercodeRoot, entry.name) ||
         entry.staged !== path.join(stagingRoot, entry.name) ||
         entry.backup !== path.join(backupRoot, entry.name)) {
       throw new Error(`ACP install transaction paths do not match entry '${entry.name}'`);
@@ -1327,32 +1327,32 @@ async function rollbackWorkspaceTransaction(journalPath, journal) {
   await durableRemove(journalPath, { boundary: "rollback-cleanup:journal" });
 }
 
-async function recoverWorkspaceTransaction(clawdexRoot) {
-  const journalPath = path.join(clawdexRoot, "install-transaction.json");
+async function recoverWorkspaceTransaction(tethercodeRoot) {
+  const journalPath = path.join(tethercodeRoot, "install-transaction.json");
   if (!await pathExists(journalPath)) return;
   try {
-    await requireRealDirectory(clawdexRoot, "ACP install root");
+    await requireRealDirectory(tethercodeRoot, "ACP install root");
     const journalStat = await fsp.lstat(journalPath);
     if (!journalStat.isFile() || journalStat.isSymbolicLink()) {
       throw new Error("ACP install transaction journal must be a real file");
     }
-    const journal = await validateWorkspaceTransaction(clawdexRoot, await readJson(journalPath));
+    const journal = await validateWorkspaceTransaction(tethercodeRoot, await readJson(journalPath));
     if (journal.state === "committed") {
       if (await pathExists(journal.stagingRoot)) {
         await removeDerivedTransactionRoot(
-          clawdexRoot,
+          tethercodeRoot,
           journal.stagingRoot,
           `.install-staging-${journal.transactionId}`
         );
-        await syncDirectory(clawdexRoot);
+        await syncDirectory(tethercodeRoot);
       }
       if (await pathExists(journal.backupRoot)) {
         await removeDerivedTransactionRoot(
-          clawdexRoot,
+          tethercodeRoot,
           journal.backupRoot,
           `.install-backup-${journal.transactionId}`
         );
-        await syncDirectory(clawdexRoot);
+        await syncDirectory(tethercodeRoot);
       }
       await durableRemove(journalPath, { boundary: "recovery-cleanup:journal" });
       return;
@@ -1364,15 +1364,15 @@ async function recoverWorkspaceTransaction(clawdexRoot) {
   }
 }
 
-async function publishWorkspaceTransaction(clawdexRoot, stagingRoot, options = {}) {
+async function publishWorkspaceTransaction(tethercodeRoot, stagingRoot, options = {}) {
   const transactionId = path.basename(stagingRoot).replace(".install-staging-", "");
   if (!TRANSACTION_ID_PATTERN.test(transactionId) ||
-      stagingRoot !== path.join(clawdexRoot, `.install-staging-${transactionId}`)) {
+      stagingRoot !== path.join(tethercodeRoot, `.install-staging-${transactionId}`)) {
     throw new Error("ACP install transaction staging root is invalid");
   }
-  const backupRoot = path.join(clawdexRoot, `.install-backup-${transactionId}`);
+  const backupRoot = path.join(tethercodeRoot, `.install-backup-${transactionId}`);
   const names = ["agents", "agents.json", "registry-provenance.json"];
-  const journalPath = path.join(clawdexRoot, "install-transaction.json");
+  const journalPath = path.join(tethercodeRoot, "install-transaction.json");
   const journal = {
     version: 2,
     transactionId,
@@ -1381,20 +1381,20 @@ async function publishWorkspaceTransaction(clawdexRoot, stagingRoot, options = {
     backupRoot,
     entries: await Promise.all(names.map(async (name) => ({
       name,
-      destination: path.join(clawdexRoot, name),
+      destination: path.join(tethercodeRoot, name),
       staged: path.join(stagingRoot, name),
       backup: path.join(backupRoot, name),
-      hadPrevious: await pathExists(path.join(clawdexRoot, name)),
+      hadPrevious: await pathExists(path.join(tethercodeRoot, name)),
       phase: "pending",
     }))),
   };
-  const [rootStat, stagingStat] = await Promise.all([fsp.stat(clawdexRoot), fsp.stat(stagingRoot)]);
+  const [rootStat, stagingStat] = await Promise.all([fsp.stat(tethercodeRoot), fsp.stat(stagingRoot)]);
   if (rootStat.dev !== stagingStat.dev) {
     throw new Error("ACP install transaction roots must be on the same filesystem");
   }
   await atomicWriteJson(journalPath, journal, { ...options, boundary: "journal:prepared" });
   await fsp.mkdir(backupRoot, { mode: 0o700 });
-  await syncDirectory(clawdexRoot, options);
+  await syncDirectory(tethercodeRoot, options);
   persistenceBoundary("backup-root:parent", options);
   if ((await fsp.stat(backupRoot)).dev !== rootStat.dev) {
     throw new Error("ACP install transaction roots must be on the same filesystem");
@@ -1472,7 +1472,7 @@ async function stageAgent(agent, selected, sourceRoot, stagingRoot, options) {
       executable: relativeExecutable,
     });
     await fsp.writeFile(
-      path.join(stagingRoot, ".clawdex-install.json"),
+      path.join(stagingRoot, ".tethercode-install.json"),
       `${JSON.stringify(record, null, 2)}\n`,
       { flag: "wx", mode: 0o600 }
     );
@@ -1493,12 +1493,12 @@ async function installAgents(options) {
     throw new Error("a preferred ACP agent must be selected when installing multiple agents");
   }
   const byId = new Map(registry.agents.map((agent) => [agent.id, agent]));
-  const clawdexRoot = await ensureLocalInstallRoot(workspace);
-  const releaseLock = await acquireInstallLock(path.join(clawdexRoot, "install.lock"), options.lockTimeoutMs);
+  const tethercodeRoot = await ensureLocalInstallRoot(workspace);
+  const releaseLock = await acquireInstallLock(path.join(tethercodeRoot, "install.lock"), options.lockTimeoutMs);
   try {
-    await recoverWorkspaceTransaction(clawdexRoot);
+    await recoverWorkspaceTransaction(tethercodeRoot);
     const transactionId = `${process.pid}-${crypto.randomUUID()}`;
-    const stagingRoot = path.join(clawdexRoot, `.install-staging-${transactionId}`);
+    const stagingRoot = path.join(tethercodeRoot, `.install-staging-${transactionId}`);
     const stagedAgentsRoot = path.join(stagingRoot, "agents");
     await fsp.mkdir(stagedAgentsRoot, { recursive: true, mode: 0o700 });
     const manifests = [];
@@ -1511,7 +1511,7 @@ async function installAgents(options) {
         const resolved = await stageAgent(
           agent,
           selected,
-          path.join(clawdexRoot, "agents", relativeRoot),
+          path.join(tethercodeRoot, "agents", relativeRoot),
           path.join(stagedAgentsRoot, relativeRoot),
           { ...options, registryUrl }
         );
@@ -1520,7 +1520,7 @@ async function installAgents(options) {
           displayName: agent.name || agent.id,
           icon: agent.icon || null,
           agentId: agent.id,
-          executable: path.join(clawdexRoot, "agents", relativeRoot, resolved.executable.slice(path.join(stagedAgentsRoot, relativeRoot).length + 1)),
+          executable: path.join(tethercodeRoot, "agents", relativeRoot, resolved.executable.slice(path.join(stagedAgentsRoot, relativeRoot).length + 1)),
           argv: resolved.argv,
           environment: resolved.environment,
           resolvedVersion: agent.version,
@@ -1528,7 +1528,7 @@ async function installAgents(options) {
           verifiedDigest: resolved.verifiedDigest,
           integrity: resolved.integrity.tree ? {
             kind: "tree",
-            root: path.join(clawdexRoot, "agents", relativeRoot),
+            root: path.join(tethercodeRoot, "agents", relativeRoot),
             treeSha256: `sha256:${resolved.integrity.tree.sha256}`,
           } : { kind: "executable" },
         });
@@ -1550,7 +1550,7 @@ async function installAgents(options) {
         resolutionPolicy: "plan-before-install",
         crossTimeReproducible: false,
       }, { ...options, boundary: "staging:provenance" });
-      await publishWorkspaceTransaction(clawdexRoot, stagingRoot, options);
+      await publishWorkspaceTransaction(tethercodeRoot, stagingRoot, options);
       return manifest;
     } catch (error) {
       await fsp.rm(stagingRoot, { recursive: true, force: true });
@@ -1571,7 +1571,7 @@ function parseCliArgs(argv) {
 async function main() {
   try {
     const options = parseCliArgs(process.argv.slice(2));
-    options.workspace = process.env.CLAWDEX_WORKSPACE_ROOT || process.env.INIT_CWD || process.cwd();
+    options.workspace = process.env.TETHERCODE_WORKSPACE_ROOT || process.env.INIT_CWD || process.cwd();
     const manifest = await installAgents(options);
     console.log(`Installed ${manifest.agents.length} ACP agent(s); preferred: ${manifest.preferredAgentId}`);
   } catch (error) {

@@ -1,80 +1,96 @@
-name: CI
+name: Build and Test
 
 on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
   pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: build-and-test-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  NODE_VERSION: "22.13.1"
+  RUST_VERSION: "1.97.1"
+
 jobs:
-  npm-release-policy:
-    name: NPM Release Policy
+  repository-policy:
+    name: Repository Policy
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v5
+
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: "22.13.1"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: package-lock.json
           package-manager-cache: false
+
       - name: Install dependencies
         run: npm ci
-      - name: Validate release workflow and ownership
-        run: npm run test:scripts
 
-      - name: Validate synchronized versions
-        run: npm run version:check
-
-      - name: Audit production dependencies
-        run: npm run security:check
+      - name: Validate repository policy
+        run: |
+          npm run version:check
+          npm run docs:check
+          npm run payment:check
+          npm run test:scripts
+          npm run security:check
 
   rpc-contract:
     name: RPC Contract
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v5
+
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: "22.13.1"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: package-lock.json
           package-manager-cache: false
-      - name: Setup Rust toolchain
+
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            services/rust-bridge -> target
+
       - name: Install dependencies
         run: npm ci
+
       - name: Validate RPC contract
         run: npm run contract:check
 
   mobile:
     name: Mobile
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: "22.13.1"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: package-lock.json
           package-manager-cache: false
@@ -83,26 +99,40 @@ jobs:
         run: npm ci
 
       - name: Lint
-        run: npm run lint -w clawdex-mobile
+        run: npm run lint -w @tethercode/mobile
 
       - name: Typecheck
-        run: npm run typecheck -w clawdex-mobile
+        run: npm run typecheck -w @tethercode/mobile
 
-      - name: Test
-        run: npm run test -w clawdex-mobile
+      - name: Test with branch coverage
+        run: npm run test:coverage -w @tethercode/mobile
 
-      - name: Branch coverage
-        run: npm run test:coverage -w clawdex-mobile
+      - name: Build Expo export
+        run: npm run build -w @tethercode/mobile
+
+      - name: Upload mobile coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-coverage
+          path: apps/mobile/coverage
+          if-no-files-found: warn
+
+      - name: Upload Expo export
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-expo-export
+          path: apps/mobile/dist
 
   rust-bridge:
     name: Rust Bridge
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Setup Rust toolchain
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy,rustfmt
@@ -113,37 +143,34 @@ jobs:
           workspaces: |
             services/rust-bridge -> target
 
-      - name: Rust fmt
+      - name: Check formatting
         working-directory: services/rust-bridge
         run: cargo fmt --check
 
-      - name: Rust clippy
+      - name: Check all targets
+        working-directory: services/rust-bridge
+        run: cargo check --locked --all-targets --all-features
+
+      - name: Lint all targets
         working-directory: services/rust-bridge
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-      - name: Rust check
+      - name: Run Rust tests
         working-directory: services/rust-bridge
-        run: cargo check --locked
+        run: cargo test --locked --all-targets --all-features -- --test-threads=1
 
-      - name: Rust test
-        working-directory: services/rust-bridge
-        run: cargo test --locked -- --test-threads=1
-
-      - name: ACP integration suite
-        run: npm run test:acp
-
-  rust-bridge-coverage:
+  rust-coverage:
     name: Rust Branch Coverage
     runs-on: macos-26
     timeout-minutes: 45
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: "22.13.1"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: package-lock.json
           package-manager-cache: false
@@ -172,7 +199,7 @@ jobs:
       - name: Enforce Rust branch coverage
         run: npm run coverage:rust
 
-      - name: Upload Rust coverage report
+      - name: Upload Rust coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -180,3 +207,4 @@ jobs:
           path: |
             services/rust-bridge/target/llvm-cov/coverage.json
             services/rust-bridge/target/llvm-cov/html
+          if-no-files-found: warn

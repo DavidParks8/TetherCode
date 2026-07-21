@@ -4,10 +4,8 @@ import { Linking, Platform } from 'react-native';
 
 export const AUTO_STORE_REVIEW_THRESHOLD_MS = 10 * 60 * 1000;
 
-const STORE_REVIEW_STATE_FILE = 'clawdex-store-review.json';
-const IOS_APP_STORE_ITEM_ID = '6759833757';
-const IOS_APP_STORE_WRITE_REVIEW_WEB_URL = `https://apps.apple.com/app/id${IOS_APP_STORE_ITEM_ID}?action=write-review`;
-const IOS_APP_STORE_WRITE_REVIEW_DEEP_LINK = `itms-apps://itunes.apple.com/app/viewContentsUserReviews/id${IOS_APP_STORE_ITEM_ID}?action=write-review`;
+const STORE_REVIEW_STATE_FILE = 'tethercode-store-review.json';
+const IOS_APP_STORE_ITEM_ID = process.env.EXPO_PUBLIC_IOS_APP_STORE_ID?.trim() || null;
 
 export type AutoStoreReviewState = {
   accumulatedForegroundMs: number;
@@ -87,7 +85,7 @@ export async function requestNativeStoreReview(): Promise<boolean> {
 }
 
 export function canOpenAppStoreWriteReviewPage(): boolean {
-  return Platform.OS === 'ios';
+  return Platform.OS === 'ios' && IOS_APP_STORE_ITEM_ID !== null;
 }
 
 export async function openAppStoreWriteReviewPage(): Promise<boolean> {
@@ -95,11 +93,13 @@ export async function openAppStoreWriteReviewPage(): Promise<boolean> {
     return false;
   }
 
+  const webUrl = `https://apps.apple.com/app/id${IOS_APP_STORE_ITEM_ID}?action=write-review`;
+  const deepLink = `itms-apps://itunes.apple.com/app/viewContentsUserReviews/id${IOS_APP_STORE_ITEM_ID}?action=write-review`;
   try {
-    await Linking.openURL(IOS_APP_STORE_WRITE_REVIEW_DEEP_LINK);
+    await Linking.openURL(deepLink);
     return true;
   } catch {
-    await Linking.openURL(IOS_APP_STORE_WRITE_REVIEW_WEB_URL);
+    await Linking.openURL(webUrl);
     return true;
   }
 }

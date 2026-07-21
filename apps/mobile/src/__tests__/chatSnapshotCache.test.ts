@@ -120,7 +120,7 @@ describe('chatSnapshotCache', () => {
 
   it('uses only the profile id in the cache path', () => {
     const path = getChatSnapshotCachePath('profile-a', 'file:///documents/');
-    expect(path).toBe('file:///documents/clawdex-chat-cache/profile-a/snapshots.json');
+    expect(path).toBe('file:///documents/tethercode-chat-cache/profile-a/snapshots.json');
     expect(path).not.toContain('token');
     expect(path).not.toContain('http');
     expect(getChatSnapshotCachePath('', 'file:///documents/')).toBeNull();

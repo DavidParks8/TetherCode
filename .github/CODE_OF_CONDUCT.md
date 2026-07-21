@@ -2,7 +2,7 @@
 
 ## Our Pledge
 
-We want `clawdex-mobile` to be a respectful, technically serious, and inclusive project.
+We want `tethercode` to be a respectful, technically serious, and inclusive project.
 Contributors, maintainers, and community members are expected to engage professionally and constructively.
 
 ## Expected Behavior
@@ -36,7 +36,8 @@ They may also temporarily or permanently restrict participation when necessary.
 
 ## Reporting
 
-If you experience or witness unacceptable behavior, report it privately through GitHub’s reporting tools or contact the maintainer at `mohitpatil973@gmail.com`.
+If you experience or witness unacceptable behavior, report it privately through GitHub's reporting
+and repository moderation tools.
 
 Reports will be reviewed as promptly and discreetly as possible.
 

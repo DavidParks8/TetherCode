@@ -34,9 +34,9 @@ jest.mock('@expo/vector-icons', () => {
 describe('WorkspacePickerModal', () => {
   const theme = createAppTheme('dark');
   const oldSelectionPath =
-    '/Users/mohitpatil/Documents/github/serious-projects/clawdex-mobile';
-  const githubPath = '/Users/mohitpatil/Documents/github';
-  const seriousProjectsPath = '/Users/mohitpatil/Documents/github/serious-projects';
+    '/Users/davidparks/Documents/github/serious-projects/tethercode';
+  const githubPath = '/Users/davidparks/Documents/github';
+  const seriousProjectsPath = '/Users/davidparks/Documents/github/serious-projects';
 
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => {
@@ -55,7 +55,7 @@ describe('WorkspacePickerModal', () => {
           onBrowsePath,
           onSelectPath,
           currentPath: githubPath,
-          parentPath: '/Users/mohitpatil/Documents',
+          parentPath: '/Users/davidparks/Documents',
           entries: [directoryEntry('serious-projects', seriousProjectsPath)],
         })
       );
@@ -75,7 +75,7 @@ describe('WorkspacePickerModal', () => {
           onSelectPath,
           currentPath: seriousProjectsPath,
           parentPath: githubPath,
-          entries: [directoryEntry('clawdex-mobile', oldSelectionPath)],
+          entries: [directoryEntry('tethercode', oldSelectionPath)],
         })
       );
     });
@@ -312,7 +312,7 @@ describe('WorkspacePickerModal', () => {
     const action = root.findAll((node) => node.props.accessibilityLabel === 'Clone here')[0];
     expect(action.props.accessibilityHint).toBe('Create a checkout here');
     act(() => readOnPress(action.props)());
-    expect(onActionPress).toHaveBeenCalledWith('/Users/davidparks/Code/clawdex-mobile');
+    expect(onActionPress).toHaveBeenCalledWith('/Users/davidparks/Code/tethercode');
     act(() => (root.findByType(Modal).props.onRequestClose as () => void)());
     expect(onClose).toHaveBeenCalled();
     act(() => expectValue(rendered).unmount());
@@ -350,13 +350,13 @@ describe('WorkspacePickerModal', () => {
         <AppThemeProvider theme={theme}>
           <WorkspacePickerModal
             visible
-            selectedPath="/Users/davidparks/Code/clawdex-mobile"
+            selectedPath="/Users/davidparks/Code/tethercode"
             bridgeRoot="/Users/davidparks/Code"
             recentWorkspaces={[{ path: '/Users/davidparks/Code', chatCount: 12 }]}
             favoriteWorkspacePaths={['/Users/davidparks/Code']}
             currentPath="/Users/davidparks/Code"
             parentPath="/Users/davidparks"
-            entries={[directoryEntry('clawdex-mobile', '/Users/davidparks/Code/clawdex-mobile'), directoryEntry('notes', '/Users/davidparks/Code/notes')]}
+            entries={[directoryEntry('tethercode', '/Users/davidparks/Code/tethercode'), directoryEntry('notes', '/Users/davidparks/Code/notes')]}
             onBrowsePath={jest.fn()}
             onSelectPath={jest.fn()}
             onClose={jest.fn()}

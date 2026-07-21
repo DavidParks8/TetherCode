@@ -25,7 +25,14 @@ npm exec --workspace apps/mobile -- eas <command>
 
 - `eas-cli` installed (`npm install -g eas-cli`)
 - Logged in (`eas login`)
-- Expo project linked (`eas project:info`)
+- Access to the Expo organization `davidparks8s-team`
+
+The active app is linked as `@davidparks8s-team/tethercode` with EAS project ID
+`dc4bb45d-72cf-4c82-8fcd-f841b1ef6c71`. Verify it from `apps/mobile`:
+
+```bash
+eas project:info
+```
 
 ## Build Profiles
 
@@ -70,9 +77,19 @@ eas submit --platform ios --latest --profile production
 eas submit --platform android --latest --profile production
 ```
 
-For App Review, do not make the bridge public. Prepare the isolated private VPN/overlay deployment,
-temporary reviewer enrollment, private bridge URL, and separate bridge token described in
-`docs/app-review-notes.md` before submitting the production build.
+For App Review, do not make the bridge public. Prepare an isolated private VPN or overlay,
+temporary reviewer enrollment, a separate bridge token, sanitized repositories, and post-review
+credential revocation.
+
+## GitHub Actions
+
+Run the protected `Mobile Release` workflow manually. It accepts `ios`, `android`, or `all`, uses
+the `preview` or `production` EAS profile, and can auto-submit production builds when explicitly
+requested. Configure an `EXPO_TOKEN` secret in the protected `mobile-release` environment before
+running it. Store credentials remain in EAS or the platform stores, not in this repository.
+
+TetherCode currently includes no payment SDK, offering, tip jar, subscription, or inherited store
+product configuration.
 
 ## Local Native Build Option (No EAS Cloud)
 

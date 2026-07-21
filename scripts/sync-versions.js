@@ -70,10 +70,10 @@ function replacePackageVersionInCargoLock(source, version, relativePath) {
     .filter((index) => index >= 0);
   const bridgePackages = packageStarts.filter((start, packageIndex) => {
     const end = packageStarts[packageIndex + 1] ?? lines.length;
-    return lines.slice(start + 1, end).some((line) => line === 'name = "codex-rust-bridge"');
+    return lines.slice(start + 1, end).some((line) => line === 'name = "tethercode-bridge"');
   });
   if (bridgePackages.length !== 1) {
-    throw new Error(`Expected one codex-rust-bridge package in ${relativePath}`);
+    throw new Error(`Expected one tethercode-bridge package in ${relativePath}`);
   }
 
   const start = bridgePackages[0];
@@ -86,7 +86,7 @@ function replacePackageVersionInCargoLock(source, version, relativePath) {
     }
   }
   if (versionLines.length !== 1) {
-    throw new Error(`Expected one codex-rust-bridge version in ${relativePath}`);
+    throw new Error(`Expected one tethercode-bridge version in ${relativePath}`);
   }
   lines[versionLines[0]] = `version = "${version}"`;
   return lines.join('\n');
@@ -164,7 +164,7 @@ function collectVersionUpdates(rootDir) {
 
   const iosRoot = path.join(rootDir, 'apps/mobile/ios');
   if (fs.existsSync(iosRoot)) {
-    const infoPlistPath = 'apps/mobile/ios/ClawdexMobile/Info.plist';
+    const infoPlistPath = 'apps/mobile/ios/TetherCodeMobile/Info.plist';
     const infoPlist = load(infoPlistPath);
     updates.set(infoPlistPath, replaceExactly(
       infoPlist,
@@ -174,7 +174,7 @@ function collectVersionUpdates(rootDir) {
       'CFBundleShortVersionString'
     ));
 
-    const xcodeProjectPath = 'apps/mobile/ios/ClawdexMobile.xcodeproj/project.pbxproj';
+    const xcodeProjectPath = 'apps/mobile/ios/TetherCodeMobile.xcodeproj/project.pbxproj';
     const xcodeProject = load(xcodeProjectPath);
     updates.set(xcodeProjectPath, replaceExactly(
       xcodeProject,

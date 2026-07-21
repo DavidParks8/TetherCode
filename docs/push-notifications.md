@@ -1,6 +1,6 @@
 # Push Notifications
 
-Clawdex can notify you on your phone when a top-level agent turn finishes or when
+TetherCode can notify you on your phone when a top-level agent turn finishes or when
 it needs an approval — even when the app is backgrounded or closed. Subagent
 turn completions remain visible in the live UI but do not send push notifications.
 
@@ -19,7 +19,7 @@ ACP canonical event ──▶ bridge ──HTTPS POST──▶ Expo push service
 ```
 
 Waking a backgrounded/killed app is only possible through the OS push transports
-(APNs on iOS, FCM on Android). Clawdex reaches them via the **Expo Push
+(APNs on iOS, FCM on Android). TetherCode reaches them via the **Expo Push
 Notification Service**. Pushes are deliberately bounded; notification text can
 contain a short assistant reply preview or the bridge project folder name as
 described below.
@@ -53,7 +53,7 @@ not sent. Approval notifications never include reply content.
   - `bridge/push/register` `{ profileId, registrationId, token, platform, deviceName, events }`
   - `bridge/push/unregister` `{ profileId, registrationId }`
   - `bridge/push/list` → device list (tokens are masked to a short suffix)
-- Registrations persist to `.clawdex-push-registry.json` in the bridge working
+- Registrations persist to `.tethercode-push-registry.json` in the bridge working
   directory (gitignored).
 - A `PushService` subscribes to the canonical ACP event channel and, on final
   run completion or a permission request, POSTs to

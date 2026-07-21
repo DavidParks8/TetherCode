@@ -281,7 +281,7 @@ describe('browserPreview', () => {
   it('maps proxied backend preview navigation URLs back to their loopback origin', () => {
     expect(
       mapBrowserPreviewNavigationUrlToTargetUrl(
-        'http://100.108.165.85:8788/__clawdex_proxy__/aHR0cDovLzEyNy4wLjAuMTozMDAz/api/waitlist?source=landing',
+        'http://100.108.165.85:8788/__tethercode_proxy__/aHR0cDovLzEyNy4wLjAuMTozMDAz/api/waitlist?source=landing',
         'http://100.108.165.85:8788',
         'http://127.0.0.1:3000/'
       )
@@ -298,21 +298,21 @@ describe('browserPreview', () => {
     ).toBe('https://external.test/path');
     expect(
       mapBrowserPreviewNavigationUrlToTargetUrl(
-        'http://preview.test/__clawdex_proxy__/aHR0cDovLzEyNy4wLjAuMTozMDAw?sid=x',
+        'http://preview.test/__tethercode_proxy__/aHR0cDovLzEyNy4wLjAuMTozMDAw?sid=x',
         'http://preview.test',
         'http://127.0.0.1:4000/base'
       )
     ).toBe('http://127.0.0.1:3000/');
     expect(
       mapBrowserPreviewNavigationUrlToTargetUrl(
-        'http://preview.test/__clawdex_proxy__//fallback?frame=1&keep=yes#top',
+        'http://preview.test/__tethercode_proxy__//fallback?frame=1&keep=yes#top',
         'http://preview.test',
         'http://127.0.0.1:4000/base'
       )
     ).toBe('http://127.0.0.1:4000/fallback?keep=yes#top');
     expect(
       mapBrowserPreviewNavigationUrlToTargetUrl(
-        'http://preview.test/__clawdex_proxy__/aGVsbG8/bad',
+        'http://preview.test/__tethercode_proxy__/aGVsbG8/bad',
         'http://preview.test',
         'http://127.0.0.1:4000/'
       )

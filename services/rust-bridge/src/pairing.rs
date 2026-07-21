@@ -87,7 +87,7 @@ pub(super) fn build_pairing_payload(config: &BridgeConfig) -> Option<String> {
 
     Some(
         json!({
-            "type": "clawdex-bridge-pair",
+            "type": "tethercode-bridge-pair",
             "bridgeUrl": bridge_url,
             "bridgeToken": bridge_token,
         })
@@ -100,7 +100,7 @@ pub(super) fn build_token_only_pairing_payload(config: &BridgeConfig) -> Option<
 
     Some(
         json!({
-            "type": "clawdex-bridge-token",
+            "type": "tethercode-bridge-token",
             "bridgeToken": bridge_token,
         })
         .to_string(),

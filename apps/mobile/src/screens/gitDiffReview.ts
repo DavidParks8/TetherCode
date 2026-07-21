@@ -79,7 +79,7 @@ export function buildGitReviewPrompt(
   workspace?: string
 ): string {
   const payload = {
-    schema: 'clawdex.inline-review-comments.v1',
+    schema: 'tethercode.inline-review-comments.v1',
     workspace: workspace?.trim() || null,
     comments: comments.map(({ id, path, oldPath, newPath, side, line, hunk, context, comment }) => ({
       id,

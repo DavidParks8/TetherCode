@@ -1,7 +1,7 @@
 {
-  "algorithm": "clawdex-tree-v1",
+  "algorithm": "tethercode-tree-v1",
   "exclusions": [
-    ".clawdex-install.json"
+    ".tethercode-install.json"
   ],
   "entries": [
     {

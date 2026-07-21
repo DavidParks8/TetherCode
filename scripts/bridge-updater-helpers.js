@@ -30,7 +30,7 @@ function bridgeLauncher(packageRoot) {
 }
 
 function recoveryCommand(previousVersion) {
-  return `npm install -g clawdex-mobile@${previousVersion} && clawdex init`;
+  return `npm install -g tethercode@${previousVersion} && tethercode init`;
 }
 
 async function performUpdateTransaction(options) {
@@ -43,7 +43,7 @@ async function performUpdateTransaction(options) {
   } = options;
 
   try {
-    setStatus("upgrading", `Installing clawdex-mobile@${targetVersion}.`);
+    setStatus("upgrading", `Installing tethercode@${targetVersion}.`);
     await installVersion(targetVersion);
     setStatus("starting", "Starting the updated bridge through the background launcher.");
     await launchBridge();
@@ -56,18 +56,18 @@ async function performUpdateTransaction(options) {
   } catch (updateError) {
     setStatus(
       "rollingBack",
-      `Updated startup failed. Reinstalling clawdex-mobile@${previousVersion}.`,
+      `Updated startup failed. Reinstalling tethercode@${previousVersion}.`,
       { failure: errorMessage(updateError) }
     );
     try {
       await installVersion(previousVersion);
-      setStatus("startingPrevious", `Starting restored clawdex-mobile@${previousVersion}.`, {
+      setStatus("startingPrevious", `Starting restored tethercode@${previousVersion}.`, {
         failure: errorMessage(updateError),
       });
       await launchBridge();
       return {
         state: "recovered",
-        message: `Bridge update failed. clawdex-mobile@${previousVersion} was restored and restarted.`,
+        message: `Bridge update failed. tethercode@${previousVersion} was restored and restarted.`,
         runningVersion: previousVersion,
         recoverable: false,
         failure: errorMessage(updateError),
@@ -75,7 +75,7 @@ async function performUpdateTransaction(options) {
     } catch (rollbackError) {
       return {
         state: "stopped",
-        message: `Bridge update and automatic rollback failed. The bridge is stopped; reinstall clawdex-mobile@${previousVersion} and initialize it again.`,
+        message: `Bridge update and automatic rollback failed. The bridge is stopped; reinstall tethercode@${previousVersion} and initialize it again.`,
         runningVersion: null,
         recoverable: true,
         recoveryCommand: recoveryCommand(previousVersion),

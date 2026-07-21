@@ -20,7 +20,7 @@ const {
 } = require("../bridge-updater-helpers.js");
 
 function temporaryDirectory(t, label) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `clawdex-${label}-`));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `tethercode-${label}-`));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
@@ -125,7 +125,7 @@ test("rollback failure reports stopped recoverable state without claiming recove
   assert.equal(result.recoverable, true);
   assert.equal(
     result.recoveryCommand,
-    "npm install -g clawdex-mobile@5.2.3 && clawdex init"
+    "npm install -g tethercode@5.2.3 && tethercode init"
   );
   assert.doesNotMatch(result.message, /was restored|restarted successfully/);
 });

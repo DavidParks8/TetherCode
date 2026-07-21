@@ -99,7 +99,7 @@ type BridgeUiAction = {
 
 ## Implemented ACP Plan Example
 
-The Rust bridge maps an ACP `plan` session update into `CanonicalEvent::Plan`. The AG-UI projector emits that event as a `CUSTOM` event named `clawdex.dev/plan`, preserving the bridge thread and active run correlation when one exists. Mobile renders the entries with its existing plan surface; no agent-specific parser or component is required.
+The Rust bridge maps an ACP `plan` session update into `CanonicalEvent::Plan`. The AG-UI projector emits that event as a `CUSTOM` event named `tethercode.dev/plan`, preserving the bridge thread and active run correlation when one exists. Mobile renders the entries with its existing plan surface; no agent-specific parser or component is required.
 
 The projected AG-UI event shape is:
 
@@ -108,7 +108,7 @@ The projected AG-UI event shape is:
   "type": "CUSTOM",
   "threadId": "v1.YWNwLWFnZW50.c2Vzc2lvbi0x",
   "runId": "v1.YWNwLWFnZW50.c2Vzc2lvbi0x::turn::7",
-  "name": "clawdex.dev/plan",
+  "name": "tethercode.dev/plan",
   "value": {
     "entries": [
       {

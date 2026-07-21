@@ -135,7 +135,7 @@ describe('OnboardingScreen behavior', () => {
   it('moves between initial intro and connection setup', async () => {
     const { tree } = await renderOnboarding();
     const root = tree.root as Queryable;
-    expect(hasText(root, 'Clawdex')).toBe(true);
+    expect(hasText(root, 'TetherCode')).toBe(true);
     expect(hasText(root, 'Pair your phone with your own machine.')).toBe(true);
     await press(findPressableByText(root, 'Private connection'));
     expect(findByLabel(root, 'Bridge URL')).toBeTruthy();
@@ -239,7 +239,7 @@ describe('OnboardingScreen behavior', () => {
     await act(async () => {
       readHandler<(event: { data: string }) => void>(camera, 'onBarcodeScanned')({
         data: JSON.stringify({
-          type: 'clawdex-bridge-pair',
+          type: 'tethercode-bridge-pair',
           bridgeUrl: 'http://127.0.0.1:3001',
           bridgeToken: ' qr-token ',
         }),
@@ -260,7 +260,7 @@ describe('OnboardingScreen behavior', () => {
     await act(async () => {
       readHandler<(event: { data: string }) => void>(camera, 'onBarcodeScanned')({ data: 'not-a-pairing-code' });
     });
-    expect(hasText(root, 'QR code is not a valid Clawdex bridge pairing code.')).toBe(true);
+    expect(hasText(root, 'QR code is not a valid TetherCode bridge pairing code.')).toBe(true);
     act(() => jest.advanceTimersByTime(1200));
     await press(findByLabel(root, 'Cancel QR scan'));
     expect(hasText(root, 'Scan Pairing QR')).toBe(false);
@@ -269,9 +269,9 @@ describe('OnboardingScreen behavior', () => {
 
   it.each([
     ['bridge URL and token aliases', { url: 'ws://127.0.0.1:3001/', token: ' alias-token ' }, 'http://127.0.0.1:3001', 'alias-token'],
-    ['slash pair type', { type: ' CLAWDEX/BRIDGE-PAIR ', bridgeToken: 'slash-pair' }, '', 'slash-pair'],
-    ['dash token type', { type: 'clawdex-bridge-token', bridgeToken: 'dash-token' }, '', 'dash-token'],
-    ['slash token type', { type: 'clawdex/bridge-token', token: 'slash-token' }, '', 'slash-token'],
+    ['slash pair type', { type: ' TETHERCODE/BRIDGE-PAIR ', bridgeToken: 'slash-pair' }, '', 'slash-pair'],
+    ['dash token type', { type: 'tethercode-bridge-token', bridgeToken: 'dash-token' }, '', 'dash-token'],
+    ['slash token type', { type: 'tethercode/bridge-token', token: 'slash-token' }, '', 'slash-token'],
     ['missing type', { bridgeToken: 'typeless' }, '', 'typeless'],
   ])('accepts QR JSON payload using %s', async (_name, payload, expectedUrl, expectedToken) => {
     mockCameraGranted = true;
@@ -286,9 +286,9 @@ describe('OnboardingScreen behavior', () => {
   });
 
   it.each([
-    ['clawdex://pair?bridgeUrl=http%3A%2F%2F127.0.0.1%3A3001&bridgeToken=uri-token', 'http://127.0.0.1:3001', 'uri-token'],
-    ['clawdex://pair?url=ws%3A%2F%2F127.0.0.1%3A4001&token=alias-uri', 'http://127.0.0.1:4001', 'alias-uri'],
-    ['clawdex://pair?token=token-only', '', 'token-only'],
+    ['tethercode://pair?bridgeUrl=http%3A%2F%2F127.0.0.1%3A3001&bridgeToken=uri-token', 'http://127.0.0.1:3001', 'uri-token'],
+    ['tethercode://pair?url=ws%3A%2F%2F127.0.0.1%3A4001&token=alias-uri', 'http://127.0.0.1:4001', 'alias-uri'],
+    ['tethercode://pair?token=token-only', '', 'token-only'],
   ])('accepts pairing URI %s', async (data, expectedUrl, expectedToken) => {
     mockCameraGranted = true;
     const result = await renderOnboarding({ mode: 'add' });
@@ -305,9 +305,9 @@ describe('OnboardingScreen behavior', () => {
     '',
     JSON.stringify({ type: 42, bridgeUrl: 42, bridgeToken: 42 }),
     JSON.stringify({ type: 'other', bridgeToken: 'token' }),
-    JSON.stringify({ type: 'clawdex-bridge-pair', bridgeToken: '   ' }),
+    JSON.stringify({ type: 'tethercode-bridge-pair', bridgeToken: '   ' }),
     'https://example.com/?token=nope',
-    'clawdex://pair',
+    'tethercode://pair',
   ])('rejects invalid QR form %p', async (data) => {
     mockCameraGranted = true;
     const result = await renderOnboarding({ mode: 'add' });
@@ -315,7 +315,7 @@ describe('OnboardingScreen behavior', () => {
     await press(findPressableByText(root, 'Scan QR'));
     const camera = root.findAll((node) => node.type === 'mock-camera-view')[0];
     await act(async () => readHandler<(event: { data: string }) => void>(camera, 'onBarcodeScanned')({ data }));
-    expect(hasText(root, 'QR code is not a valid Clawdex bridge pairing code.')).toBe(true);
+    expect(hasText(root, 'QR code is not a valid TetherCode bridge pairing code.')).toBe(true);
     act(() => result.tree.unmount());
   });
 
@@ -329,7 +329,7 @@ describe('OnboardingScreen behavior', () => {
     expect(camera.props.onBarcodeScanned).toBeUndefined();
     act(() => jest.advanceTimersByTime(1200));
     const unlockedCamera = root.findAll((node) => node.type === 'mock-camera-view')[0];
-    await act(async () => readHandler<(event: { data: string }) => void>(unlockedCamera, 'onBarcodeScanned')({ data: 'clawdex://pair?token=unlocked' }));
+    await act(async () => readHandler<(event: { data: string }) => void>(unlockedCamera, 'onBarcodeScanned')({ data: 'tethercode://pair?token=unlocked' }));
     expect(findByLabel(root, 'Bridge token').props.value).toBe('unlocked');
     act(() => result.tree.unmount());
   });
@@ -390,18 +390,18 @@ describe('OnboardingScreen behavior', () => {
     const result = await renderOnboarding({ mode: 'add' });
     const root = result.tree.root as Queryable;
     await press(findPressableByText(root, 'Copy'));
-    expect(Clipboard.setStringAsync).toHaveBeenCalledWith('npm install -g clawdex-mobile@latest\nclawdex init');
+    expect(Clipboard.setStringAsync).toHaveBeenCalledWith('npm install -g tethercode@latest\ntethercode init');
     expect(hasText(root, 'Copied')).toBe(true);
     act(() => jest.advanceTimersByTime(1400));
     expect(hasText(root, 'Copy')).toBe(true);
 
     Object.defineProperty(Platform, 'OS', { configurable: true, value: 'ios' });
     await press(findByLabel(root, 'Share bridge setup guide'));
-    expect(share).toHaveBeenLastCalledWith(expect.objectContaining({ url: 'https://getclawdex.com/bridge-setup/' }));
+    expect(share).toHaveBeenLastCalledWith(expect.objectContaining({ url: 'https://github.com/DavidParks8/TetherCode/blob/main/docs/setup-and-operations.md' }));
     Object.defineProperty(Platform, 'OS', { configurable: true, value: 'android' });
     share.mockRejectedValueOnce(new Error('cancelled'));
     await press(findByLabel(root, 'Share bridge setup guide'));
-    expect(share).toHaveBeenLastCalledWith(expect.objectContaining({ message: expect.stringContaining('https://getclawdex.com/bridge-setup/') }));
+    expect(share).toHaveBeenLastCalledWith(expect.objectContaining({ message: expect.stringContaining('https://github.com/DavidParks8/TetherCode/blob/main/docs/setup-and-operations.md') }));
     act(() => result.tree.unmount());
   });
 

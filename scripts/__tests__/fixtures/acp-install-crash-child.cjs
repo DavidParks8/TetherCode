@@ -13,16 +13,16 @@ async function writeState(root, value) {
 
 async function main() {
   const [mode, workspace] = process.argv.slice(2);
-  const clawdexRoot = path.join(await fs.realpath(workspace), ".clawdex");
+  const tethercodeRoot = path.join(await fs.realpath(workspace), ".tethercode");
   if (mode === "publish") {
     const transactionId = `crash-${process.pid}`;
-    const stagingRoot = path.join(clawdexRoot, `.install-staging-${transactionId}`);
+    const stagingRoot = path.join(tethercodeRoot, `.install-staging-${transactionId}`);
     await writeState(stagingRoot, "new");
-    await installer.publishWorkspaceTransaction(clawdexRoot, stagingRoot);
+    await installer.publishWorkspaceTransaction(tethercodeRoot, stagingRoot);
     return;
   }
   if (mode === "recover") {
-    await installer.recoverWorkspaceTransaction(clawdexRoot);
+    await installer.recoverWorkspaceTransaction(tethercodeRoot);
     return;
   }
   throw new Error(`unknown crash fixture mode '${mode}'`);

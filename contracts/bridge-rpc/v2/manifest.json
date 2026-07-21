@@ -120,20 +120,20 @@
       { "type": "TOOL_CALL_ARGS", "toolCallId": "tool-1", "delta": "{}", "timestamp": 1784371200005 },
       { "type": "TOOL_CALL_END", "toolCallId": "tool-1", "timestamp": 1784371200006 },
       { "type": "TOOL_CALL_RESULT", "messageId": "tool-result-1", "toolCallId": "tool-1", "role": "tool", "content": "done", "timestamp": 1784371200007 },
-      { "type": "CUSTOM", "name": "clawdex.dev/plan", "value": { "entries": [] }, "timestamp": 1784371200008 },
+      { "type": "CUSTOM", "name": "tethercode.dev/plan", "value": { "entries": [] }, "timestamp": 1784371200008 },
       { "type": "RUN_FINISHED", "threadId": "thread-1", "runId": "run-1", "timestamp": 1784371200009 },
       { "type": "RUN_ERROR", "message": "failed", "code": "acp_run_failed", "timestamp": 1784371200010 }
     ],
     "toolRevisionEvents": [
       { "type": "TOOL_CALL_START", "toolCallId": "tool-revision", "toolCallName": "Terminal" },
       { "type": "TOOL_CALL_ARGS", "toolCallId": "tool-revision", "delta": "{}" },
-      { "type": "CUSTOM", "name": "clawdex.dev/tool-text", "value": { "toolCallId": "tool-revision", "revision": "sha256:text-first", "content": "first" } },
-      { "type": "CUSTOM", "name": "clawdex.dev/tool-content", "value": { "toolCallId": "tool-revision", "revision": "sha256:structured-one", "content": [{ "type": "terminal", "terminalId": "terminal-1" }], "locations": [] } },
-      { "type": "CUSTOM", "name": "clawdex.dev/tool-text", "value": { "toolCallId": "tool-revision", "revision": "sha256:text-second", "content": "second" } },
-      { "type": "CUSTOM", "name": "clawdex.dev/tool-content", "value": { "toolCallId": "tool-revision", "revision": "sha256:structured-two", "content": [{ "type": "terminal", "terminalId": "terminal-2" }], "locations": [] } },
+      { "type": "CUSTOM", "name": "tethercode.dev/tool-text", "value": { "toolCallId": "tool-revision", "revision": "sha256:text-first", "content": "first" } },
+      { "type": "CUSTOM", "name": "tethercode.dev/tool-content", "value": { "toolCallId": "tool-revision", "revision": "sha256:structured-one", "content": [{ "type": "terminal", "terminalId": "terminal-1" }], "locations": [] } },
+      { "type": "CUSTOM", "name": "tethercode.dev/tool-text", "value": { "toolCallId": "tool-revision", "revision": "sha256:text-second", "content": "second" } },
+      { "type": "CUSTOM", "name": "tethercode.dev/tool-content", "value": { "toolCallId": "tool-revision", "revision": "sha256:structured-two", "content": [{ "type": "terminal", "terminalId": "terminal-2" }], "locations": [] } },
       { "type": "TOOL_CALL_END", "toolCallId": "tool-revision" },
       { "type": "TOOL_CALL_RESULT", "messageId": "tool-result-revision", "toolCallId": "tool-revision", "role": "tool", "content": "!" },
-      { "type": "CUSTOM", "name": "clawdex.dev/tool-text", "value": { "toolCallId": "tool-revision", "revision": "sha256:text-second", "content": "second" } }
+      { "type": "CUSTOM", "name": "tethercode.dev/tool-text", "value": { "toolCallId": "tool-revision", "revision": "sha256:text-second", "content": "second" } }
     ],
     "threadSnapshot": {
       "id": "agent-alpha:thread-snapshot",

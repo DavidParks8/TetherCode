@@ -1,6 +1,6 @@
 {
-  "name": "clawdex-mobile",
-  "version": "5.2.3",
+  "name": "tethercode",
+  "version": "0.1.0",
   "description": "Private-network mobile bridge and CLI for installed ACP agents",
   "keywords": [
     "acp",
@@ -14,10 +14,10 @@
   "engines": {
     "node": ">=22.13.0"
   },
-  "homepage": "https://github.com/Mohit-Patil/clawdex-mobile#readme",
+  "homepage": "https://github.com/DavidParks8/TetherCode#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Mohit-Patil/clawdex-mobile.git"
+    "url": "git+https://github.com/DavidParks8/TetherCode.git"
   },
   "publishConfig": {
     "access": "public"
@@ -36,13 +36,13 @@
     "zod-to-json-schema": "^3.25.1"
   },
   "bin": {
-    "clawdex": "bin/clawdex.js"
+    "tethercode": "bin/tethercode.js"
   },
   "files": [
     "CHANGELOG.md",
     "LICENSE",
     "README.md",
-    "bin/clawdex.js",
+    "bin/tethercode.js",
     "docs/setup-and-operations.md",
     "docs/troubleshooting.md",
     "scripts/bridge-binary.js",
@@ -70,7 +70,7 @@
     "android": "./scripts/start-expo.sh android",
     "stack:lan": "./scripts/start-mobile-stack-lan.sh",
     "stack:tailscale": "./scripts/start-mobile-stack-tailscale.sh",
-    "bridge": "BRIDGE_WORKDIR=$(pwd) npm run -w @codex/rust-bridge dev",
+    "bridge": "BRIDGE_WORKDIR=$(pwd) npm run -w @tethercode/bridge dev",
     "bridge:ui:demo": "node ./scripts/send-bridge-ui-demo.js",
     "bridge:package:stage-current": "node ./scripts/bridge-binary.js stage-current",
     "setup:wizard": "./scripts/setup-wizard.sh",
@@ -84,18 +84,19 @@
     "version": "node scripts/sync-versions.js --lifecycle",
     "release:check": "node scripts/validate-npm-release-workflow.mjs",
     "security:check": "node scripts/check-production-audit.mjs",
+    "payment:check": "node scripts/check-payment-isolation.mjs",
     "docs:check": "node scripts/validate-doc-consistency.mjs",
     "test:scripts": "node --test scripts/__tests__/*.test.mjs",
     "test:release": "node --test scripts/__tests__/npm-release-policy.test.mjs",
-    "test:acp": "npm run test:acp -w @codex/rust-bridge",
+    "test:acp": "npm run test:acp -w @tethercode/bridge",
     "agui:generate": "node scripts/generate-agui-bindings.mjs",
     "agui:check": "node scripts/generate-agui-bindings.mjs --check",
-    "contract:check": "npm run agui:check && node scripts/validate-rpc-contract-fixtures.mjs && npm run test:contract -w apps/mobile && npm run test:contract -w @codex/rust-bridge",
+    "contract:check": "npm run agui:check && node scripts/validate-rpc-contract-fixtures.mjs && npm run test:contract -w @tethercode/mobile && npm run test:contract -w @tethercode/bridge",
     "build": "npm run --workspaces build",
     "typecheck": "npm run --workspaces typecheck",
     "lint": "npm run --workspaces lint",
-    "test": "npm run test:scripts && npm run test -w apps/mobile && npm run test -w @codex/rust-bridge",
-    "coverage:check": "npm run test:coverage -w apps/mobile",
+    "test": "npm run test:scripts && npm run test -w @tethercode/mobile && npm run test -w @tethercode/bridge",
+    "coverage:check": "npm run test:coverage -w @tethercode/mobile",
     "coverage:rust": "./scripts/run-rust-coverage.sh",
     "teardown": "./scripts/teardown.sh"
   }

@@ -22,7 +22,7 @@ mkdir -p "$REPORT_DIR"
   cd "$BRIDGE_DIR"
   cargo "+${TOOLCHAIN}" llvm-cov test \
     --locked \
-    --bin codex-rust-bridge \
+    --bin tethercode-bridge \
     --branch \
     --json \
     --summary-only \

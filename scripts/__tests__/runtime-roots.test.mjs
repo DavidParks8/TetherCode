@@ -10,7 +10,7 @@ const { hasBridgeSource, readEnvFile } = require("../start-bridge-secure.js");
 const { parseArgs } = require("../bridge-self-update.js");
 
 test("a clean source tree is a valid bridge runtime source", (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawdex-source-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tethercode-source-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
   fs.mkdirSync(path.join(root, "services", "rust-bridge"), { recursive: true });
@@ -21,12 +21,12 @@ test("a clean source tree is a valid bridge runtime source", (t) => {
 });
 
 test("secure env parsing retains the source-force setting", (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawdex-env-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tethercode-env-"));
   const envPath = path.join(root, ".env.secure");
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  fs.writeFileSync(envPath, "BRIDGE_HOST=127.0.0.1\nCLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=true\n");
+  fs.writeFileSync(envPath, "BRIDGE_HOST=127.0.0.1\nTETHERCODE_BRIDGE_FORCE_SOURCE_BUILD=true\n");
 
-  assert.equal(readEnvFile(envPath).CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD, "true");
+  assert.equal(readEnvFile(envPath).TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD, "true");
 });
 
 test("maintenance requires and resolves package and workspace roots", () => {

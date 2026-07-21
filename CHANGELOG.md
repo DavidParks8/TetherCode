@@ -1,65 +1,21 @@
 # Changelog
 
-All notable changes to this project are documented in this file.
+All notable TetherCode changes are documented here.
 
-## 5.2.3 - 2026-05-30
-
-### Added
-- Push notifications for agent turn completion and approval requests. Because the app suspends its WebSocket when backgrounded, the always-on bridge is the sender: devices register an Expo push token with `bridge/push/register`, `bridge/push/unregister`, and `bridge/push/list`, and the bridge POSTs a bounded payload to the Expo push service, which relays via APNs (iOS) and FCM (Android). Auto-enabled on first bridge connect; Settings → Notifications is the override (opt out + per-event toggles). Foreground banners are suppressed; tapping a notification deep-links to the thread.
-- Reply preview on turn-completed notifications: the agent's last reply line, whitespace-collapsed and capped at 140 characters. A reply snippet therefore transits Expo/Apple/Google when notifications are enabled; disclosed in the privacy policy and store data-safety answers.
-- Actionable Approve/Deny buttons on approval notifications, resolved over the authenticated bridge WebSocket without opening the conversation.
-- Android push support (Firebase project + FCM v1 credentials).
-- Prompt library in the composer: save and one-tap-insert reusable prompts, with search and inline add/edit/delete.
-
-### Improved
-- Push delivery hardened for scale: retry with exponential backoff on Expo 429/5xx and transport errors, plus delayed receipt polling that prunes unregistered device tokens.
-- Version synced to 5.2.3 across the monorepo (CLI, mobile app, and Rust bridge).
-
-## 5.2.0 - 2026-05-18
-
-### Added
-- Cursor support alongside Codex and OpenCode.
-- Bundled `cursor-app-server` in the published `clawdex-mobile` package.
-- Bridge-driven mobile UI payload support for richer runtime details.
-
-### Improved
-- `clawdex init` now gives clearer Cursor API key setup guidance.
-- Published-package setup now avoids source-checkout workspace assumptions.
-- Bridge onboarding waits longer for first-start readiness.
-
-### Fixed
-- Cursor setup now fails visibly when the API key or app-server path is missing instead of falling through silently.
-
-## 5.1.2 - 2026-04-07
-
-### Added
-- Local preview browser workflow with desktop and overview shells for mobile web inspection.
-- App-wide font preference support in the mobile client.
-
-### Improved
-- Chat transcript tool-call UX now supports grouped tool-call inspection, per-call output expansion, and file-change labels that include changed filenames.
-- Drawer, sheet, and chat header interactions feel smoother and more consistent across open/close, reconnect, and navigation flows.
-- Composer and transcript responsiveness were tightened with lower rerender churn, more stable activity indicators, and cleaner compaction presentation.
-- Browser preview controls, address handling, and preview session stability were refined for everyday use.
-- Manual npm release runs can now build every packaged bridge target without publishing to npm.
-
-### Fixed
-- Bridge restart cleanup and maintenance behavior are more reliable during repeated local development cycles.
-- Queued thread messages now use guaranteed-unique bridge queue item IDs during blocked-turn queuing.
-- Bridge self-update now reports shutdown failures cleanly while still preserving status updates and `.env.secure` backup cleanup.
-- Browser preview and mobile UI regressions caught during review and CI were resolved before release.
-
-## 1.1.0 - 2026-02-23
-
-### Added
-- Full Git diff experience in mobile Git screen with unified diff parsing and per-file tabs.
-- Diff summary with file count plus added/removed line totals.
-- Per-file stage/unstage actions and bulk `Stage all` / `Unstage all` controls.
-- Improved diff coverage for staged, unstaged, and untracked files in rust bridge.
-
-### Improved
-- File selection flow in diff viewer with loading feedback while switching files.
-- Long file path display in Git screen now wraps onto multiple lines instead of truncating.
+## 0.1.0 - Unreleased
 
 ### Changed
-- Commit behavior now commits staged changes only (no implicit `git add -A` before commit).
+
+- Rebranded the mobile app, CLI, bridge, protocol extensions, persistence paths, and package
+	identities as TetherCode.
+- Reset native and hosted-service ownership so new Expo, Apple, Google, Firebase, npm, and store
+	accounts can be connected explicitly.
+- Removed the inherited payment SDK, tip purchase flow, payment environment variables, and
+	offering configuration.
+- Replaced the inherited automation with stack-specific build, test, coverage, artifact, npm, and
+	mobile-release workflows.
+
+### Removed
+
+- Removed the predecessor static site, screenshots, store-submission material, historical plans,
+	release notes, and hosted-service identifiers.

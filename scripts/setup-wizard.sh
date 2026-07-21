@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -L)"
 PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -L)"
-ROOT_DIR="${CLAWDEX_WORKSPACE_ROOT:-${INIT_CWD:-$(pwd -L)}}"
+ROOT_DIR="${TETHERCODE_WORKSPACE_ROOT:-${INIT_CWD:-$(pwd -L)}}"
 if [[ ! -d "$ROOT_DIR" ]]; then
   ROOT_DIR="$PACKAGE_ROOT"
 fi
@@ -57,7 +57,7 @@ info() { rail_echo "${BLUE}$*${RESET}"; }
 warn() { rail_echo "${YELLOW}$*${RESET}"; }
 ok() { rail_echo "${GREEN}$*${RESET}"; }
 fail() { printf "%s ${RED}%s${RESET}\n" "$RAIL_GLYPH" "$*" >&2; }
-SETUP_VERBOSE_INSTALLS="${CLAWDEX_SETUP_VERBOSE:-false}"
+SETUP_VERBOSE_INSTALLS="${TETHERCODE_SETUP_VERBOSE:-false}"
 
 run_quiet_command() {
   local label="$1"
@@ -69,7 +69,7 @@ run_quiet_command() {
     return $?
   fi
 
-  log_file="$(mktemp "${TMPDIR:-/tmp}/clawdex-onboarding.XXXXXX.log")"
+  log_file="$(mktemp "${TMPDIR:-/tmp}/tethercode-onboarding.XXXXXX.log")"
   if "$@" >"$log_file" 2>&1; then
     rm -f "$log_file"
     return 0
@@ -184,7 +184,7 @@ load_existing_agent_selection() {
     sync_preferred_agent
     return 0
   fi
-  local manifest="$ROOT_DIR/.clawdex/agents.json"
+  local manifest="$ROOT_DIR/.tethercode/agents.json"
   if [[ -f "$manifest" ]]; then
     mapfile -t SELECTED_AGENTS < <(node -e 'const m=require(process.argv[1]); for (const a of m.agents || []) console.log(a.agentId)' "$manifest")
     PREFERRED_AGENT="$(node -e 'const m=require(process.argv[1]); process.stdout.write(m.preferredAgentId || "")' "$manifest")"
@@ -954,8 +954,8 @@ print_existing_setup_summary() {
   token="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_AUTH_TOKEN")"
   network_mode="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_NETWORK_MODE")"
   connect_url="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_CONNECT_URL")"
-  if [[ -f "$ROOT_DIR/.clawdex/agents.json" ]]; then
-    agents="$(node -e 'const m=require(process.argv[1]); process.stdout.write((m.agents || []).map((a) => a.agentId).join(","))' "$ROOT_DIR/.clawdex/agents.json")"
+  if [[ -f "$ROOT_DIR/.tethercode/agents.json" ]]; then
+    agents="$(node -e 'const m=require(process.argv[1]); process.stdout.write((m.agents || []).map((a) => a.agentId).join(","))' "$ROOT_DIR/.tethercode/agents.json")"
   fi
 
   if [[ -z "$host" ]] && [[ -z "$port" ]] && [[ -z "$token" ]]; then
@@ -988,7 +988,7 @@ print_existing_setup_summary() {
 require_security_ack() {
   print_note_box "Security" "Security warning - please read.
 
-Clawdex is still evolving. Expect sharp edges.
+TetherCode is still evolving. Expect sharp edges.
 The bridge can execute terminal commands and git actions.
 A bad prompt could trick it into unsafe operations.
 
@@ -1121,9 +1121,9 @@ has_bridge_source() {
 }
 
 source_build_requested() {
-  local configured="${CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD:-}"
+  local configured="${TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD:-}"
   if [[ -z "$configured" ]]; then
-    configured="$(extract_env_value "$SECURE_ENV_FILE" "CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD")"
+    configured="$(extract_env_value "$SECURE_ENV_FILE" "TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD")"
   fi
   [[ "$configured" == "true" ]]
 }
@@ -1157,7 +1157,7 @@ install_selected_agents() {
   if ! run_quiet_command "ACP agent installation" node "$SCRIPT_DIR/acp-agent-install.js" "${installer_args[@]}"; then
     abort_wizard "ACP agent installation failed. Review the installer output and registry trust requirements, then retry."
   fi
-  ok "Installed ACP agents into $ROOT_DIR/.clawdex/agents."
+  ok "Installed ACP agents into $ROOT_DIR/.tethercode/agents."
 }
 
 ensure_tailscale_cli() {
@@ -1316,7 +1316,7 @@ Steps:
   Android: https://play.google.com/store/apps/details?id=com.tailscale.ipn
 - Open the Tailscale app on phone and log in.
 - Confirm your phone and this machine both appear in the same Tailscale network.
-- Keep Tailscale connected while using Clawdex."
+- Keep Tailscale connected while using TetherCode."
 }
 
 confirm_phone_tailscale_quickstart() {
@@ -1510,7 +1510,7 @@ if [[ ! -t 0 ]]; then
   exit 1
 fi
 
-echo "${BOLD}Clawdex onboarding${RESET}"
+echo "${BOLD}TetherCode onboarding${RESET}"
 rail_echo "Guided setup for secure bridge launch."
 rail_echo "Project root: $ROOT_DIR"
 rail_echo "${DIM}Use Up/Down (or j/k) and Enter to select.${RESET}"
@@ -1525,7 +1525,7 @@ section "Prerequisites"
 ensure_core_tools
 if source_build_requested; then
   if ! has_bridge_source; then
-    abort_wizard "CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=true requires bridge Rust sources, but none were found in $PACKAGE_ROOT."
+    abort_wizard "TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD=true requires bridge Rust sources, but none were found in $PACKAGE_ROOT."
   fi
   info "Bridge source build requested."
   ensure_local_rust_build_toolchain
@@ -1535,7 +1535,7 @@ elif has_bridge_source; then
   info "No packaged bridge binary found; the bridge will be built from this source checkout."
   ensure_local_rust_build_toolchain
 else
-  abort_wizard "No packaged bridge binary or bridge Rust source was found for this host. Reinstall clawdex-mobile, then rerun setup."
+  abort_wizard "No packaged bridge binary or bridge Rust source was found for this host. Reinstall tethercode, then rerun setup."
 fi
 
 section "Config handling"
@@ -1616,7 +1616,7 @@ else
 
     section "Write secure config"
     BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" ACP_AGENT_IDS="$(selected_agents_csv)" ACP_PREFERRED_AGENT="$PREFERRED_AGENT" ACP_DISTRIBUTION="$ACP_DISTRIBUTION" ACP_REGISTRY_URL="$ACP_REGISTRY_URL" ACP_TRUST_UNVERIFIED="$ACP_TRUST_UNVERIFIED" ACP_TRUST_INSTALL_SCRIPTS="$ACP_TRUST_INSTALL_SCRIPTS" "$SCRIPT_DIR/setup-secure-dev.sh"
-  elif [[ -n "${CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD:-}" ]] && [[ "$(extract_env_value "$SECURE_ENV_FILE" "CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD")" != "$CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD" ]]; then
+  elif [[ -n "${TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD:-}" ]] && [[ "$(extract_env_value "$SECURE_ENV_FILE" "TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD")" != "$TETHERCODE_BRIDGE_FORCE_SOURCE_BUILD" ]]; then
     section "Write secure config"
     BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" ACP_AGENT_IDS="$(selected_agents_csv)" ACP_PREFERRED_AGENT="$PREFERRED_AGENT" ACP_DISTRIBUTION="$ACP_DISTRIBUTION" ACP_REGISTRY_URL="$ACP_REGISTRY_URL" ACP_TRUST_UNVERIFIED="$ACP_TRUST_UNVERIFIED" ACP_TRUST_INSTALL_SCRIPTS="$ACP_TRUST_INSTALL_SCRIPTS" "$SCRIPT_DIR/setup-secure-dev.sh"
   fi
@@ -1675,7 +1675,7 @@ if [[ "$AUTO_START" == "true" ]]; then
     rail_echo "Bridge token: $BRIDGE_TOKEN"
   fi
   rail_echo "Bridge logs: $ROOT_DIR/.bridge.log"
-  rail_echo "2) Stop the bridge later with: clawdex stop"
+  rail_echo "2) Stop the bridge later with: tethercode stop"
 else
   rail_echo "1) cd $ROOT_DIR && npm run secure:bridge"
   rail_echo "2) Open the mobile app and use onboarding to connect (URL + token QR)."

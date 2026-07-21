@@ -188,7 +188,7 @@ async fn main() {
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "Clawdex".to_string());
+        .unwrap_or_else(|| "TetherCode".to_string());
     let push = PushService::load(&config.workdir, project_label, metrics.clone()).await;
     push.spawn_event_loop_with_queue(&hub, backend.clone(), Some(queue.clone()));
 

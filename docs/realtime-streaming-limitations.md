@@ -52,7 +52,7 @@ not deleted by that restart.
 
 ## Operational Guidance
 
-1. Start work through Clawdex when live mobile updates are required.
+1. Start work through TetherCode when live mobile updates are required.
 2. Use `bridge/events/replay` for reconnect gaps and treat `streamId` changes as snapshot boundaries.
 3. Check `bridge/status/read` for agent lifecycle, negotiated capability, replay, queue, push, and
    request diagnostics.

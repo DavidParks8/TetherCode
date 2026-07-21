@@ -25,7 +25,6 @@ const mockLoadAutoStoreReviewState = jest.fn().mockResolvedValue({
 });
 const mockRequestNativeStoreReview = jest.fn().mockResolvedValue(false);
 const mockSaveAutoStoreReviewState = jest.fn().mockResolvedValue(undefined);
-const mockConfigureRevenueCatIfNeeded = jest.fn().mockResolvedValue(undefined);
 const mockStore = {
   initialize: jest.fn().mockResolvedValue(undefined),
   subscribe: jest.fn((listener: () => void) => {
@@ -186,9 +185,6 @@ jest.mock('../storeReview', () => ({
   loadAutoStoreReviewState: (...args: unknown[]) => mockLoadAutoStoreReviewState(...args),
   requestNativeStoreReview: (...args: unknown[]) => mockRequestNativeStoreReview(...args),
   saveAutoStoreReviewState: (...args: unknown[]) => mockSaveAutoStoreReviewState(...args),
-}));
-jest.mock('../tips', () => ({
-  configureRevenueCatIfNeeded: (...args: unknown[]) => mockConfigureRevenueCatIfNeeded(...args),
 }));
 jest.mock('../config', () => ({
   env: {
@@ -380,7 +376,7 @@ describe('App orchestration', () => {
   it('renders font/state loading and persistence recovery branches', async () => {
     mockSnapshot = snapshot({ loaded: false });
     const loading = await renderApp();
-    expect((loading.root as Queryable).findAll((node) => node.props.accessibilityLabel === 'Loading Clawdex').length).toBeGreaterThan(0);
+    expect((loading.root as Queryable).findAll((node) => node.props.accessibilityLabel === 'Loading TetherCode').length).toBeGreaterThan(0);
     act(() => loading.unmount());
 
     mockSnapshot = snapshot({
@@ -399,7 +395,7 @@ describe('App orchestration', () => {
   it('waits for fonts but proceeds with fallback fonts after a font error', async () => {
     mockFonts = [false, null];
     const waiting = await renderApp();
-    expect((waiting.root as Queryable).findAll((node) => node.props.accessibilityLabel === 'Loading Clawdex').length).toBeGreaterThan(0);
+    expect((waiting.root as Queryable).findAll((node) => node.props.accessibilityLabel === 'Loading TetherCode').length).toBeGreaterThan(0);
     act(() => waiting.unmount());
 
     mockFonts = [false, new Error('font download failed')];
@@ -782,9 +778,7 @@ describe('App orchestration', () => {
     act(() => tree.unmount());
   });
 
-  it('absorbs best-effort persistence and RevenueCat failures', async () => {
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    mockConfigureRevenueCatIfNeeded.mockRejectedValueOnce('configuration failed');
+  it('absorbs best-effort persistence failures', async () => {
     mockSaveAutoStoreReviewState.mockRejectedValueOnce(new Error('storage full'));
     const tree = await renderApp();
     jest.setSystemTime(new Date(Date.now() + 1000));
@@ -793,7 +787,6 @@ describe('App orchestration', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('configuration failed'));
     act(() => tree.unmount());
   });
 

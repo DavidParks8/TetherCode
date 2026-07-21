@@ -61,8 +61,8 @@ type ConnectionCheck =
 type OnboardingStep = 'intro' | 'connect';
 type PairingPayload = { bridgeToken: string; bridgeUrl?: string };
 
-const BRIDGE_SETUP_COMMANDS = 'npm install -g clawdex-mobile@latest\nclawdex init';
-const CLAWDEX_BRIDGE_SETUP_URL = 'https://getclawdex.com/bridge-setup/';
+const BRIDGE_SETUP_COMMANDS = 'npm install -g tethercode@latest\ntethercode init';
+const BRIDGE_SETUP_URL = 'https://github.com/DavidParks8/TetherCode/blob/main/docs/setup-and-operations.md';
 const SETUP_STAGES = [
   {
     title: 'Start',
@@ -490,7 +490,7 @@ export function OnboardingScreen({
       setScannerLocked(true);
       const pairing = parsePairingPayload(result.data);
       if (!pairing) {
-        setScannerError('QR code is not a valid Clawdex bridge pairing code.');
+        setScannerError('QR code is not a valid TetherCode bridge pairing code.');
         setTimeout(() => {
           setScannerLocked(false);
         }, 1200);
@@ -538,7 +538,7 @@ export function OnboardingScreen({
               <View style={styles.introHeader}>
                 <View style={styles.introBrandRow}>
                   <BrandMark size={24} />
-                  <Text style={styles.introBrandName}>Clawdex</Text>
+                  <Text style={styles.introBrandName}>TetherCode</Text>
                 </View>
               </View>
 
@@ -582,7 +582,7 @@ export function OnboardingScreen({
               <Animated.View style={[styles.introFooter, introActionsAnimatedStyle]}>
                 <ChoiceAction
                   variant="primary"
-                  logo="clawdex"
+                  logo="tethercode"
                   title="Private connection"
                   meta="Your machine"
                   onPress={goToConnectStep}
@@ -836,7 +836,7 @@ export function OnboardingScreen({
                   <View style={styles.primaryButtonContent}>
                     <View style={styles.primaryButtonCopy}>
                       <Text style={styles.primaryButtonText}>{continueLabel}</Text>
-                      <Text style={styles.primaryButtonSubtext}>Start using Clawdex</Text>
+                      <Text style={styles.primaryButtonSubtext}>Start using TetherCode</Text>
                     </View>
                     <Ionicons {...decorativeAccessibilityProps} name="arrow-forward" size={20} color={theme.colors.accentText} />
                   </View>
@@ -990,11 +990,11 @@ function CommandSnippet({
     }, 1400);
   }, [command]);
   const handleShareGuide = useCallback(() => {
-    const title = 'Clawdex bridge setup';
+    const title = 'TetherCode bridge setup';
     void Share.share(
       Platform.OS === 'ios'
-        ? { title, url: CLAWDEX_BRIDGE_SETUP_URL }
-        : { title, message: `${title}\n${CLAWDEX_BRIDGE_SETUP_URL}` }
+        ? { title, url: BRIDGE_SETUP_URL }
+        : { title, message: `${title}\n${BRIDGE_SETUP_URL}` }
     ).catch(() => {});
   }, []);
 
@@ -1133,10 +1133,10 @@ function parsePairingPayload(rawValue: string): PairingPayload | null {
     if (
       bridgeToken &&
       (
-        type === 'clawdex-bridge-pair' ||
-        type === 'clawdex/bridge-pair' ||
-        type === 'clawdex-bridge-token' ||
-        type === 'clawdex/bridge-token' ||
+        type === 'tethercode-bridge-pair' ||
+        type === 'tethercode/bridge-pair' ||
+        type === 'tethercode-bridge-token' ||
+        type === 'tethercode/bridge-token' ||
         !type
       )
     ) {
@@ -1148,7 +1148,7 @@ function parsePairingPayload(rawValue: string): PairingPayload | null {
 
   try {
     const parsed = new URL(raw);
-    if (parsed.protocol !== 'clawdex:') {
+    if (parsed.protocol !== 'tethercode:') {
       return null;
     }
     const bridgeUrl =

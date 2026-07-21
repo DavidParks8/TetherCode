@@ -1,10 +1,10 @@
 [package]
-name = "codex-rust-bridge"
-version = "5.2.3"
+name = "tethercode-bridge"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.97.1"
 license = "MIT"
-repository = "https://github.com/Mohit-Patil/clawdex-mobile"
+repository = "https://github.com/DavidParks8/TetherCode"
 publish = false
 
 [lints.rust]

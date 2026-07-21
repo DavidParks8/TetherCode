@@ -9,11 +9,8 @@
       "distribution": "internal",
       "env": {
         "EXPO_PUBLIC_ALLOW_QUERY_TOKEN_AUTH": "true",
-        "EXPO_PUBLIC_PRIVACY_POLICY_URL": "https://mohit-patil.github.io/clawdex-mobile/privacy/",
-        "EXPO_PUBLIC_TERMS_OF_SERVICE_URL": "https://mohit-patil.github.io/clawdex-mobile/terms/",
-        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_QkbpciHJEYZDLjakVGwwKZHDVys",
-        "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY": "appl_NyGgzMTiZcbrEYTemPoyzwtKLcb",
-        "EXPO_PUBLIC_REVENUECAT_TIPS_OFFERING_ID": "tips"
+        "EXPO_PUBLIC_PRIVACY_POLICY_URL": "https://github.com/DavidParks8/TetherCode/blob/main/docs/privacy-policy.md",
+        "EXPO_PUBLIC_TERMS_OF_SERVICE_URL": "https://github.com/DavidParks8/TetherCode/blob/main/docs/terms-of-service.md"
       }
     },
     "preview": {
@@ -24,39 +21,16 @@
       },
       "env": {
         "EXPO_PUBLIC_ALLOW_QUERY_TOKEN_AUTH": "true",
-        "EXPO_PUBLIC_PRIVACY_POLICY_URL": "https://mohit-patil.github.io/clawdex-mobile/privacy/",
-        "EXPO_PUBLIC_TERMS_OF_SERVICE_URL": "https://mohit-patil.github.io/clawdex-mobile/terms/",
-        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_QkbpciHJEYZDLjakVGwwKZHDVys",
-        "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY": "appl_NyGgzMTiZcbrEYTemPoyzwtKLcb",
-        "EXPO_PUBLIC_REVENUECAT_TIPS_OFFERING_ID": "tips"
+        "EXPO_PUBLIC_PRIVACY_POLICY_URL": "https://github.com/DavidParks8/TetherCode/blob/main/docs/privacy-policy.md",
+        "EXPO_PUBLIC_TERMS_OF_SERVICE_URL": "https://github.com/DavidParks8/TetherCode/blob/main/docs/terms-of-service.md"
       }
     },
     "production": {
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_ALLOW_QUERY_TOKEN_AUTH": "true",
-        "EXPO_PUBLIC_PRIVACY_POLICY_URL": "https://mohit-patil.github.io/clawdex-mobile/privacy/",
-        "EXPO_PUBLIC_TERMS_OF_SERVICE_URL": "https://mohit-patil.github.io/clawdex-mobile/terms/",
-        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_QkbpciHJEYZDLjakVGwwKZHDVys",
-        "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY": "appl_NyGgzMTiZcbrEYTemPoyzwtKLcb",
-        "EXPO_PUBLIC_REVENUECAT_TIPS_OFFERING_ID": "tips"
-      }
-    }
-  },
-  "submit": {
-    "closedTesting": {
-      "android": {
-        "track": "CLAWDEXTESTS",
-        "releaseStatus": "completed"
-      }
-    },
-    "production": {
-      "ios": {
-        "ascAppId": "6759833757"
-      },
-      "android": {
-        "track": "production",
-        "releaseStatus": "completed"
+        "EXPO_PUBLIC_PRIVACY_POLICY_URL": "https://github.com/DavidParks8/TetherCode/blob/main/docs/privacy-policy.md",
+        "EXPO_PUBLIC_TERMS_OF_SERVICE_URL": "https://github.com/DavidParks8/TetherCode/blob/main/docs/terms-of-service.md"
       }
     }
   }

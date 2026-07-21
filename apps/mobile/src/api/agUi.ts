@@ -187,8 +187,8 @@ export function updateAgUiLiveAssistantMessages(
       if (!canonicalId || !revision || index < 0 || index >= count || !data) {
         return previous;
       }
-      const toolChunk = event.name.startsWith('clawdex.dev/tool-content')
-        || event.name.startsWith('clawdex.dev/tool-text');
+      const toolChunk = event.name.startsWith('tethercode.dev/tool-content')
+        || event.name.startsWith('tethercode.dev/tool-text');
       const messageId = toolChunk ? `tool:${canonicalId}` : canonicalId;
       const current = findLiveMessage(previous, envelope.threadId, envelope.runId, messageId);
       const assemblyKey = `${event.name}\0${revision}`;
@@ -242,7 +242,7 @@ export function updateAgUiLiveAssistantMessages(
         return pending;
       }
     }
-    if (event.name === 'clawdex.dev/message-content') {
+    if (event.name === 'tethercode.dev/message-content') {
       const messageId = nonEmptyString(value?.messageId) ?? `${envelope.runId}:content`;
       const current = findLiveMessage(previous, envelope.threadId, envelope.runId, messageId);
       const parts = appendOrderedMessagePart(current?.parts ?? [], value?.content);
@@ -255,7 +255,7 @@ export function updateAgUiLiveAssistantMessages(
         systemKind: value?.role === 'thought' ? 'reasoning' : 'tool',
       });
     }
-    if (event.name === 'clawdex.dev/tool-content') {
+    if (event.name === 'tethercode.dev/tool-content') {
       const toolCallId = nonEmptyString(value?.toolCallId) ?? 'unknown';
       const messageId = `tool:${toolCallId}`;
       const current = findLiveMessage(previous, envelope.threadId, envelope.runId, messageId);
@@ -281,7 +281,7 @@ export function updateAgUiLiveAssistantMessages(
         structuredText,
       });
     }
-    if (event.name === 'clawdex.dev/tool-text') {
+    if (event.name === 'tethercode.dev/tool-text') {
       const toolCallId = nonEmptyString(value?.toolCallId);
       const revision = nonEmptyString(value?.revision);
       const content = typeof value?.content === 'string' ? value.content : null;
@@ -299,13 +299,13 @@ export function updateAgUiLiveAssistantMessages(
       }
       return replaceToolText(previous, envelope, toolCallId, content, revision);
     }
-    if (event.name.startsWith('clawdex.dev/')) {
+    if (event.name.startsWith('tethercode.dev/')) {
       return upsertLiveMessage(previous, envelope.threadId, {
         runId: envelope.runId,
         messageId: `${envelope.runId}:custom:${event.name}`,
-        text: `${event.name.slice('clawdex.dev/'.length)}: ${renderAgUiCustomContent(event.value)}`,
+        text: `${event.name.slice('tethercode.dev/'.length)}: ${renderAgUiCustomContent(event.value)}`,
         role: 'system',
-        systemKind: event.name === 'clawdex.dev/plan' ? 'reasoning' : 'tool',
+        systemKind: event.name === 'tethercode.dev/plan' ? 'reasoning' : 'tool',
       });
     }
   }

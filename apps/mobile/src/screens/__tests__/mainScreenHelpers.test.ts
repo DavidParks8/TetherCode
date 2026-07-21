@@ -72,9 +72,9 @@ describe('mainScreenHelpers', () => {
           stderr: '',
           cloned: false,
         },
-        'Mohit-Patil/launchkit'
+        'DavidParks8/launchkit'
       )
-    ).toBe('Git clone failed for Mohit-Patil/launchkit.');
+    ).toBe('Git clone failed for DavidParks8/launchkit.');
   });
 
   it('parses bridge UI surfaces for provider-owned workflow cards', () => {

@@ -572,7 +572,7 @@ describe('CoverageClosure AG-UI branches', () => {
   it('validates chunk metadata and handles reset, parse failure, and completed assemblies', () => {
     const chunk = (value: Record<string, unknown>): AgUiEventEnvelope => ({
       threadId: 'thread', runId: 'run',
-      event: { type: EventType.CUSTOM, name: 'clawdex.dev/message-content-chunk', value },
+      event: { type: EventType.CUSTOM, name: 'tethercode.dev/message-content-chunk', value },
     });
     const previous: AgUiLiveAssistantMessages = {};
     [
@@ -605,13 +605,13 @@ describe('CoverageClosure AG-UI branches', () => {
   it('covers custom tool fallbacks, duplicate revisions, and generic custom events', () => {
     let state: AgUiLiveAssistantMessages = {};
     const customEvents: AGUIEvent[] = [
-      { type: EventType.CUSTOM, name: 'clawdex.dev/message-content', value: { role: 'other', content: { type: 'resourceLink', uri: 'file:///a' } } },
-      { type: EventType.CUSTOM, name: 'clawdex.dev/tool-content', value: { content: [{ type: 'text', text: 'structured' }], locations: [] } },
-      { type: EventType.CUSTOM, name: 'clawdex.dev/tool-text', value: {} },
-      { type: EventType.CUSTOM, name: 'clawdex.dev/tool-text', value: { toolCallId: 'tool', revision: 'one', content: 'first' } },
-      { type: EventType.CUSTOM, name: 'clawdex.dev/tool-text', value: { toolCallId: 'tool', revision: 'one', content: 'first' } },
-      { type: EventType.CUSTOM, name: 'clawdex.dev/plan', value: { entries: [] } },
-      { type: EventType.CUSTOM, name: 'clawdex.dev/unknown', value: 'value' },
+      { type: EventType.CUSTOM, name: 'tethercode.dev/message-content', value: { role: 'other', content: { type: 'resourceLink', uri: 'file:///a' } } },
+      { type: EventType.CUSTOM, name: 'tethercode.dev/tool-content', value: { content: [{ type: 'text', text: 'structured' }], locations: [] } },
+      { type: EventType.CUSTOM, name: 'tethercode.dev/tool-text', value: {} },
+      { type: EventType.CUSTOM, name: 'tethercode.dev/tool-text', value: { toolCallId: 'tool', revision: 'one', content: 'first' } },
+      { type: EventType.CUSTOM, name: 'tethercode.dev/tool-text', value: { toolCallId: 'tool', revision: 'one', content: 'first' } },
+      { type: EventType.CUSTOM, name: 'tethercode.dev/plan', value: { entries: [] } },
+      { type: EventType.CUSTOM, name: 'tethercode.dev/unknown', value: 'value' },
     ];
     customEvents.forEach((event) => {
       state = updateAgUiLiveAssistantMessages(state, { threadId: 'thread', runId: 'run', event });
@@ -619,7 +619,7 @@ describe('CoverageClosure AG-UI branches', () => {
     expect(state.thread).toEqual(expect.arrayContaining([
       expect.objectContaining({ messageId: 'run:content', role: 'system', systemKind: 'tool' }),
       expect.objectContaining({ messageId: 'tool:unknown' }),
-      expect.objectContaining({ messageId: 'run:custom:clawdex.dev/plan', systemKind: 'reasoning' }),
+      expect.objectContaining({ messageId: 'run:custom:tethercode.dev/plan', systemKind: 'reasoning' }),
     ]));
   });
 

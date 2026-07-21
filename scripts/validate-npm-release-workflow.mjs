@@ -17,7 +17,7 @@ function assert(condition, message) {
 
 const publish = workflow.jobs?.publish;
 const quality = workflow.jobs?.quality;
-assert(workflow.on?.push?.branches?.includes('main'), 'main pushes must retain build coverage');
+assert(!workflow.on?.push?.branches, 'main pushes must use the Build and Test workflow, not release');
 assert(workflow.on?.push?.tags?.includes('v*'), 'version tags must trigger releases');
 assert(workflow.on?.workflow_dispatch, 'manual releases must remain available');
 assert(workflow.jobs?.release_metadata, 'release ownership metadata job is required');
@@ -35,9 +35,10 @@ const qualityCommands = qualitySteps.map((step) => step.run ?? '').join('\n');
 for (const command of [
   'npm run contract:check',
   'npm run test:release',
-  'npm run lint -w clawdex-mobile',
-  'npm run typecheck -w clawdex-mobile',
-  'npm run test:coverage -w clawdex-mobile',
+  'npm run payment:check',
+  'npm run lint -w @tethercode/mobile',
+  'npm run typecheck -w @tethercode/mobile',
+  'npm run test:coverage -w @tethercode/mobile',
   'cargo fmt --check',
   'cargo check --locked --all-targets --all-features',
   'cargo clippy --locked --all-targets --all-features -- -D warnings',

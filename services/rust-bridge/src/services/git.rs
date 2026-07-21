@@ -1384,7 +1384,8 @@ mod tests {
 
     impl TestDir {
         fn new(label: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("clawdex-git-{label}-{}", Uuid::new_v4()));
+            let path =
+                std::env::temp_dir().join(format!("tethercode-git-{label}-{}", Uuid::new_v4()));
             fs::create_dir(&path).expect("create test directory");
             Self(path)
         }
@@ -1407,7 +1408,7 @@ mod tests {
         fn init(&self) {
             self.git(&["init", "-b", "main"]);
             self.git(&["config", "user.email", "tests@example.com"]);
-            self.git(&["config", "user.name", "Clawdex Tests"]);
+            self.git(&["config", "user.name", "TetherCode Tests"]);
             self.git(&["config", "commit.gpgSign", "false"]);
         }
 
@@ -1429,7 +1430,7 @@ mod tests {
     fn git_cwd_policy_rejects_symlink_escape() {
         use std::os::unix::fs::symlink;
 
-        let temp = std::env::temp_dir().join(format!("clawdex-git-path-{}", Uuid::new_v4()));
+        let temp = std::env::temp_dir().join(format!("tethercode-git-path-{}", Uuid::new_v4()));
         let root = temp.join("root");
         let outside = temp.join("outside");
         fs::create_dir_all(&root).expect("create root");
@@ -1605,7 +1606,7 @@ mod tests {
     #[test]
     fn parses_effective_git_configuration_fail_closed() {
         assert!(validate_effective_git_config(
-            "local\0file:.git/config\0user.name\nClawdex Tests\0"
+            "local\0file:.git/config\0user.name\nTetherCode Tests\0"
         )
         .is_ok());
         for key_value in [
@@ -1679,8 +1680,8 @@ mod tests {
     #[test]
     fn parses_git_history_records() {
         let raw = concat!(
-            "abc123\x1fabc123\x1fMohit\x1f2026-04-05T10:00:00+05:30\x1fHEAD -> feat/test, origin/feat/test\x1fAdd history card\x1e",
-            "def456\x1fdef456\x1fMohit\x1f2026-04-04T09:00:00+05:30\x1forigin/main\x1fPrevious commit\x1e"
+            "abc123\x1fabc123\x1fDavid\x1f2026-04-05T10:00:00+05:30\x1fHEAD -> feat/test, origin/feat/test\x1fAdd history card\x1e",
+            "def456\x1fdef456\x1fDavid\x1f2026-04-04T09:00:00+05:30\x1forigin/main\x1fPrevious commit\x1e"
         );
 
         let commits = parse_git_history(raw);

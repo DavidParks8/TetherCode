@@ -108,8 +108,8 @@ pub(crate) struct UpdateService {
 
 impl UpdateService {
     pub(crate) fn discover() -> Self {
-        let package_root = explicit_root("CLAWDEX_PACKAGE_ROOT", looks_like_package_root);
-        let workspace_root = explicit_root("CLAWDEX_WORKSPACE_ROOT", |root| root.is_dir());
+        let package_root = explicit_root("TETHERCODE_PACKAGE_ROOT", looks_like_package_root);
+        let workspace_root = explicit_root("TETHERCODE_WORKSPACE_ROOT", |root| root.is_dir());
         Self::from_roots(package_root, workspace_root)
     }
 
@@ -236,13 +236,13 @@ impl UpdateService {
         match action {
             BridgeMaintenanceAction::Update if !self.is_self_update_supported() => {
                 return Err(
-                    "Bridge self-update is only supported for published clawdex-mobile CLI installs."
+                    "Bridge self-update is only supported for published tethercode CLI installs."
                         .to_string(),
                 );
             }
             BridgeMaintenanceAction::Restart if !self.is_safe_restart_supported() => {
                 return Err(
-                    "Bridge safe restart requires a detected clawdex-mobile install with .env.secure and launcher scripts available."
+                    "Bridge safe restart requires a detected tethercode install with .env.secure and launcher scripts available."
                         .to_string(),
                 );
             }
@@ -335,8 +335,7 @@ struct NpmDistTagsResponse {
 }
 
 async fn fetch_latest_npm_version() -> Option<String> {
-    fetch_latest_npm_version_from("https://registry.npmjs.org/-/package/clawdex-mobile/dist-tags")
-        .await
+    fetch_latest_npm_version_from("https://registry.npmjs.org/-/package/tethercode/dist-tags").await
 }
 
 async fn fetch_latest_npm_version_from(url: &str) -> Option<String> {
@@ -387,7 +386,7 @@ fn detect_install_kind(path: &Path) -> BridgeInstallKind {
         return BridgeInstallKind::SourceCheckout;
     }
 
-    if path.join("bin").join("clawdex.js").is_file()
+    if path.join("bin").join("tethercode.js").is_file()
         && path.join("scripts").join("bridge-self-update.js").is_file()
     {
         return BridgeInstallKind::PublishedCli;
@@ -472,7 +471,7 @@ mod tests {
 
     fn test_dir(label: &str) -> PathBuf {
         env::temp_dir().join(format!(
-            "clawdex-update-{label}-{}-{}",
+            "tethercode-update-{label}-{}-{}",
             std::process::id(),
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ))
@@ -490,7 +489,7 @@ mod tests {
             fs::create_dir_all(package.join("bin")).expect("create package bin");
             fs::create_dir_all(package.join("scripts")).expect("create package scripts");
             fs::write(package.join("package.json"), "{}").expect("write manifest");
-            fs::write(package.join("bin/clawdex.js"), "").expect("write cli");
+            fs::write(package.join("bin/tethercode.js"), "").expect("write cli");
             fs::write(package.join("scripts/start-bridge-secure.js"), "").expect("write launcher");
             fs::write(package.join("scripts/bridge-self-update.js"), "").expect("write updater");
             fs::create_dir_all(&workspace).expect("create workspace");
@@ -546,7 +545,7 @@ mod tests {
         fs::create_dir_all(package_root.join("bin")).expect("create package bin");
         fs::create_dir_all(package_root.join("scripts")).expect("create package scripts");
         fs::write(package_root.join("package.json"), "{}").expect("write package manifest");
-        fs::write(package_root.join("bin/clawdex.js"), "").expect("write cli");
+        fs::write(package_root.join("bin/tethercode.js"), "").expect("write cli");
         fs::write(package_root.join("scripts/start-bridge-secure.js"), "").expect("write launcher");
         fs::write(package_root.join("scripts/bridge-self-update.js"), "").expect("write updater");
         fs::create_dir_all(&workspace_root).expect("create workspace");
@@ -597,7 +596,7 @@ mod tests {
                 "logPath":"/tmp/updater.log",
                 "runningVersion":null,
                 "recoverable":true,
-                "recoveryCommand":"npm install -g clawdex-mobile@5.2.3 && clawdex init",
+                "recoveryCommand":"npm install -g tethercode@5.2.3 && tethercode init",
                 "failure":"startup failed; rollback: npm failed"
             }"#,
         )
@@ -612,7 +611,7 @@ mod tests {
         assert_eq!(status.recoverable, Some(true));
         assert_eq!(
             status.recovery_command.as_deref(),
-            Some("npm install -g clawdex-mobile@5.2.3 && clawdex init")
+            Some("npm install -g tethercode@5.2.3 && tethercode init")
         );
 
         fs::remove_dir_all(workspace_root).expect("remove workspace root");
@@ -622,8 +621,8 @@ mod tests {
     fn discovers_explicit_valid_roots_and_rejects_invalid_roots() {
         let _guard = env_lock().lock().expect("lock environment");
         let roots = TestRoots::published("discover");
-        env::set_var("CLAWDEX_PACKAGE_ROOT", &roots.package);
-        env::set_var("CLAWDEX_WORKSPACE_ROOT", &roots.workspace);
+        env::set_var("TETHERCODE_PACKAGE_ROOT", &roots.package);
+        env::set_var("TETHERCODE_WORKSPACE_ROOT", &roots.workspace);
         let discovered = UpdateService::discover();
         assert_eq!(
             discovered.package_root.as_deref(),
@@ -635,14 +634,14 @@ mod tests {
         );
         assert_eq!(discovered.install_kind, BridgeInstallKind::PublishedCli);
 
-        env::set_var("CLAWDEX_PACKAGE_ROOT", roots.workspace.join("missing"));
-        env::set_var("CLAWDEX_WORKSPACE_ROOT", roots.workspace.join("missing"));
+        env::set_var("TETHERCODE_PACKAGE_ROOT", roots.workspace.join("missing"));
+        env::set_var("TETHERCODE_WORKSPACE_ROOT", roots.workspace.join("missing"));
         let invalid = UpdateService::discover();
         assert!(invalid.package_root.is_none());
         assert!(invalid.workspace_root.is_none());
 
-        env::remove_var("CLAWDEX_PACKAGE_ROOT");
-        env::remove_var("CLAWDEX_WORKSPACE_ROOT");
+        env::remove_var("TETHERCODE_PACKAGE_ROOT");
+        env::remove_var("TETHERCODE_WORKSPACE_ROOT");
         let absent = UpdateService::discover();
         assert!(absent.package_root.is_none());
         assert!(absent.workspace_root.is_none());

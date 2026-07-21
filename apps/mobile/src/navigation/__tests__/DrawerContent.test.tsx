@@ -357,11 +357,11 @@ describe('DrawerContent render behavior matrix', () => {
 
     expect(actionSheet).toHaveBeenCalledTimes(2);
     expect(FileSystem.writeAsStringAsync).toHaveBeenCalledWith(
-      'file:///documents/clawdex-pinned-chats.json',
+      'file:///documents/tethercode-pinned-chats.json',
       JSON.stringify({ ids: ['chat-0'] })
     );
     expect(FileSystem.writeAsStringAsync).toHaveBeenCalledWith(
-      'file:///documents/clawdex-workspace-favorites.json',
+      'file:///documents/tethercode-workspace-favorites.json',
       JSON.stringify({ version: 1, paths: ['/repo/many'] })
     );
     act(() => tree.unmount());

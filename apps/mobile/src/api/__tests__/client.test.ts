@@ -42,7 +42,7 @@ describe('HostBridgeApiClient', () => {
         {
           clientId: 1,
           clientType: 'mobile',
-          clientName: 'Mohit iPhone',
+          clientName: 'David iPhone',
           connectedAt: '2026-01-01T00:00:00Z',
           lastSeenAt: '2026-01-01T00:00:01Z',
         },
@@ -59,7 +59,7 @@ describe('HostBridgeApiClient', () => {
 
     expect(ws.request).toHaveBeenCalledWith('bridge/status/read');
     expect(result.connectedClients).toBe(1);
-    expect(result.devices[0].clientName).toBe('Mohit iPhone');
+    expect(result.devices[0].clientName).toBe('David iPhone');
     expect(result.operational.replay.capacity).toBe(2000);
   });
 
@@ -724,11 +724,11 @@ describe('HostBridgeApiClient', () => {
   it('listWorkspaceRoots() requests bridge/workspaces/list and maps workspaces', async () => {
     const ws = createWsMock();
     ws.request.mockResolvedValue({
-      bridgeRoot: '/Users/mohit/work',
+      bridgeRoot: '/Users/david/work',
       allowOutsideRootCwd: true,
       workspaces: [
-        { path: '/Users/mohit/work/app', chatCount: 3, updatedAt: 1700000000 },
-        { path: '/Users/mohit/work/docs', chatCount: '1', updatedAt: '1700001000' },
+        { path: '/Users/david/work/app', chatCount: 3, updatedAt: 1700000000 },
+        { path: '/Users/david/work/docs', chatCount: '1', updatedAt: '1700001000' },
         { path: '', chatCount: 99, updatedAt: 1700002000 },
       ],
     });
@@ -738,16 +738,16 @@ describe('HostBridgeApiClient', () => {
 
     expect(ws.request).toHaveBeenCalledWith('bridge/workspaces/list', { limit: 200 });
     expect(result).toEqual({
-      bridgeRoot: '/Users/mohit/work',
+      bridgeRoot: '/Users/david/work',
       allowOutsideRootCwd: true,
       workspaces: [
         {
-          path: '/Users/mohit/work/app',
+          path: '/Users/david/work/app',
           chatCount: 3,
           updatedAt: new Date(1700000000 * 1000).toISOString(),
         },
         {
-          path: '/Users/mohit/work/docs',
+          path: '/Users/david/work/docs',
           chatCount: 1,
           updatedAt: new Date(1700001000 * 1000).toISOString(),
         },
@@ -758,9 +758,9 @@ describe('HostBridgeApiClient', () => {
   it('listFilesystemEntries() requests bridge/fs/list with directory browsing defaults', async () => {
     const ws = createWsMock();
     ws.request.mockResolvedValue({
-      bridgeRoot: '/Users/mohit/work',
-      path: '/Users/mohit/work',
-      parentPath: '/Users/mohit',
+      bridgeRoot: '/Users/david/work',
+      path: '/Users/david/work',
+      parentPath: '/Users/david',
       truncated: true,
       totalEntries: 3,
       omittedEntries: 2,
@@ -768,7 +768,7 @@ describe('HostBridgeApiClient', () => {
       entries: [
         {
           name: 'apps',
-          path: '/Users/mohit/work/apps',
+          path: '/Users/david/work/apps',
           kind: 'directory',
           hidden: false,
           selectable: true,
@@ -778,17 +778,17 @@ describe('HostBridgeApiClient', () => {
     });
 
     const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
-    const result = await client.listFilesystemEntries({ path: '/Users/mohit/work' });
+    const result = await client.listFilesystemEntries({ path: '/Users/david/work' });
 
     expect(ws.request).toHaveBeenCalledWith('bridge/fs/list', {
-      path: '/Users/mohit/work',
+      path: '/Users/david/work',
       includeHidden: false,
       directoriesOnly: true,
     });
     expect(result).toEqual({
-      bridgeRoot: '/Users/mohit/work',
-      path: '/Users/mohit/work',
-      parentPath: '/Users/mohit',
+      bridgeRoot: '/Users/david/work',
+      path: '/Users/david/work',
+      parentPath: '/Users/david',
       truncated: true,
       totalEntries: 3,
       omittedEntries: 2,
@@ -796,7 +796,7 @@ describe('HostBridgeApiClient', () => {
       entries: [
         {
           name: 'apps',
-          path: '/Users/mohit/work/apps',
+          path: '/Users/david/work/apps',
           kind: 'directory',
           hidden: false,
           selectable: true,
@@ -1683,7 +1683,7 @@ describe('HostBridgeApiClient', () => {
                     },
                     {
                       type: 'localImage',
-                      path: '.clawdex-mobile-attachments/example.png',
+                      path: '.tethercode-attachments/example.png',
                     },
                   ],
                 },
@@ -1701,7 +1701,7 @@ describe('HostBridgeApiClient', () => {
         { path: 'apps/mobile/src/screens/MainScreen.tsx' },
         { path: 'apps/mobile/src/api/client.ts', name: 'client.ts' },
       ],
-      localImages: [{ path: '.clawdex-mobile-attachments/example.png' }],
+      localImages: [{ path: '.tethercode-attachments/example.png' }],
     });
 
     expect(ws.request).toHaveBeenNthCalledWith(
@@ -1725,7 +1725,7 @@ describe('HostBridgeApiClient', () => {
           }),
           expect.objectContaining({
             type: 'localImage',
-            path: '.clawdex-mobile-attachments/example.png',
+            path: '.tethercode-attachments/example.png',
           }),
         ]),
       })
@@ -1740,7 +1740,7 @@ describe('HostBridgeApiClient', () => {
       headers: {},
       mimeType: 'application/json',
       body: JSON.stringify({
-        path: '.clawdex-mobile-attachments/file.txt',
+        path: '.tethercode-attachments/file.txt',
         fileName: 'file.txt',
         mimeType: 'text/plain',
         sizeBytes: 10,
@@ -1770,7 +1770,7 @@ describe('HostBridgeApiClient', () => {
       uploadType: 1,
     });
     expect(ws.request).not.toHaveBeenCalled();
-    expect(uploaded.path).toBe('.clawdex-mobile-attachments/file.txt');
+    expect(uploaded.path).toBe('.tethercode-attachments/file.txt');
   });
 
   it('interruptTurn() calls turn/interrupt with thread and turn id', async () => {

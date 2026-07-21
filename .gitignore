@@ -39,8 +39,6 @@ ios/*.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
 *.ipa
 DerivedData/
 build/
-!sites/clawdex-mobile/build/
-!sites/clawdex-mobile/build/sites-vite-plugin.ts
 
 # Android
 /android/
@@ -81,23 +79,17 @@ coverage/
 *.pid
 *.seed
 .bridge-update-status.json
-.clawdex/
-.clawdex-push-registry.json
+.tethercode/
+.tethercode-push-registry.json
 .claude/
-.clawdex-mobile-attachments/
+.tethercode-attachments/
 /app.json
 export-cheat-sheet.local.md
 .agents/
 skills-lock.json
-apps/clawdex-store-screenshots/
 screenshots/
 screenshot-preview.png
 .playwright-mcp/
 .playwright-cli/
 /demo/
 /output/
-/apps/clawdex-demo-video/
-
-# Local store-submission credentials (review bridge token etc.) — never commit
-docs/release-notes/*-credentials.local.md
-docs/release-notes/*.local.md

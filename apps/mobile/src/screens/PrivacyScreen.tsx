@@ -64,7 +64,7 @@ export function PrivacyScreen({ policyUrl, onOpenDrawer }: PrivacyScreenProps) {
 
         <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
           <Section title="What This App Does">
-            Clawdex Mobile connects to your own host bridge service and lets you view chats,
+            TetherCode connects to your own host bridge service and lets you view chats,
             run approved commands, and perform Git operations on your machine.
           </Section>
 

@@ -39,12 +39,12 @@ describe('chatImageSource', () => {
   it('proxies file scheme paths through the bridge', () => {
     expect(
       toMarkdownImageSource(
-        'file:///Users/mohitpatil/Desktop/bridge.png',
+        'file:///Users/davidparks/Desktop/bridge.png',
         'http://192.168.1.26:8787',
         null
       )
     ).toEqual({
-      uri: 'http://192.168.1.26:8787/local-image?path=%2FUsers%2Fmohitpatil%2FDesktop%2Fbridge.png',
+      uri: 'http://192.168.1.26:8787/local-image?path=%2FUsers%2Fdavidparks%2FDesktop%2Fbridge.png',
     });
   });
 

@@ -1,4 +1,4 @@
-# Contributing to Clawdex Mobile
+# Contributing to TetherCode
 
 Thanks for contributing.
 
@@ -14,11 +14,7 @@ Primary paths:
 
 - `apps/mobile`: Expo React Native client
 - `services/rust-bridge`: active backend bridge
-- `bin/clawdex.js` and `scripts/*`: CLI and local automation
-
-Reference/legacy path:
-
-- `services/mac-bridge`: older TypeScript bridge, useful as reference but not the primary runtime
+- `bin/tethercode.js` and `scripts/*`: CLI and local automation
 
 ## Development Setup
 
@@ -39,6 +35,7 @@ npm run secure:bridge
 npm run lint
 npm run typecheck
 npm run test
+npm run payment:check
 ```
 
 The repository pins Rust in `rust-toolchain.toml`. Rust linting includes formatting plus

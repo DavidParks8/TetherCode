@@ -204,12 +204,12 @@ async function treeSnapshot(root) {
 }
 
 async function assertPublishedStateConsistent(workspace) {
-  const clawdexRoot = path.join(workspace, ".clawdex");
-  const manifest = JSON.parse(await fsp.readFile(path.join(clawdexRoot, "agents.json"), "utf8"));
-  const provenance = JSON.parse(await fsp.readFile(path.join(clawdexRoot, "registry-provenance.json"), "utf8"));
+  const tethercodeRoot = path.join(workspace, ".tethercode");
+  const manifest = JSON.parse(await fsp.readFile(path.join(tethercodeRoot, "agents.json"), "utf8"));
+  const provenance = JSON.parse(await fsp.readFile(path.join(tethercodeRoot, "registry-provenance.json"), "utf8"));
   assert.equal(provenance.selectionPolicy, "authoritative");
   assert.deepEqual(provenance.agents, manifest.agents.map((agent) => agent.agentId));
-  const installedIds = (await fsp.readdir(path.join(clawdexRoot, "agents"))).sort();
+  const installedIds = (await fsp.readdir(path.join(tethercodeRoot, "agents"))).sort();
   assert.deepEqual(installedIds, [...provenance.agents].sort());
   for (const agent of manifest.agents) {
     assert.equal(await fsp.realpath(agent.executable), agent.executable);
@@ -272,7 +272,7 @@ test("rejects malformed registry data and parses arbitrary agent IDs", () => {
 
 test("dot-only registry IDs cannot derive install paths or write outside the agent root", async () => {
   for (const agentId of [".", ".."]) {
-    const parent = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-dot-id-"));
+    const parent = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-dot-id-"));
     const workspace = path.join(parent, "workspace");
     await fsp.mkdir(workspace);
     const registry = structuredClone(fixture);
@@ -295,7 +295,7 @@ test("dot-only registry IDs cannot derive install paths or write outside the age
 });
 
 test("fresh installer default is an ordinary registry selection", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-default-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-default-"));
   const body = Buffer.from("#!/bin/sh\nexit 0\n");
   const sha256 = require("node:crypto").createHash("sha256").update(body).digest("hex");
   const registry = structuredClone(fixture);
@@ -362,7 +362,7 @@ test("follows bounded credential-free HTTPS redirects including relative locatio
     });
     return req;
   };
-  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-redirect-"));
+  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-redirect-"));
   try {
     const result = await installer.downloadFile("https://downloads.example.test/start", path.join(temporary, "file"), { request });
     assert.equal(result.bytes, 7);
@@ -397,7 +397,7 @@ test("rejects redirect loops, limits, downgrade, credentials, missing locations,
     [{ "/a": { status: 302, location: "/b", body: "123" }, "/b": { status: 200, body: "456" } }, /size limit/, { maxBytes: 5 }],
   ];
   for (const [routes, error, extra = {}] of cases) {
-    const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-redirect-bad-"));
+    const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-redirect-bad-"));
     try {
       await assert.rejects(
         installer.downloadFile("https://downloads.example.test/a", path.join(temporary, "file"), {
@@ -410,7 +410,7 @@ test("rejects redirect loops, limits, downgrade, credentials, missing locations,
       await fsp.rm(temporary, { recursive: true, force: true });
     }
   }
-  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-redirect-timeout-"));
+  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-redirect-timeout-"));
   try {
     await assert.rejects(
       installer.downloadFile("https://downloads.example.test/a", path.join(temporary, "file"), {
@@ -426,7 +426,7 @@ test("rejects redirect loops, limits, downgrade, credentials, missing locations,
 
 test("rejects traversal and symlink tar archives", { timeout: 3_000 }, async () => {
   assert.throws(() => installer.safeArchivePath("/tmp/root", "../escape"), /unsafe archive/);
-  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-archive-"));
+  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-archive-"));
   try {
     await fsp.writeFile(path.join(temporary, "target"), "data");
     await fsp.symlink("target", path.join(temporary, "link"));
@@ -445,7 +445,7 @@ test("rejects traversal and symlink tar archives", { timeout: 3_000 }, async () 
 });
 
 test("rejects oversized downloads", { timeout: 3_000 }, async () => {
-  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-download-"));
+  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-download-"));
   try {
     await assert.rejects(
       installer.downloadFile("https://example.test/large", path.join(temporary, "large"), {
@@ -460,7 +460,7 @@ test("rejects oversized downloads", { timeout: 3_000 }, async () => {
 });
 
 test("installs a verified direct binary and emits the exact Rust manifest shape", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-direct-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-direct-"));
   const body = Buffer.from("#!/bin/sh\nexit 0\n");
   const sha256 = require("node:crypto").createHash("sha256").update(body).digest("hex");
   const registry = structuredClone(fixture);
@@ -482,7 +482,7 @@ test("installs a verified direct binary and emits the exact Rust manifest shape"
     assert.deepEqual(manifest.agents[0].integrity, { kind: "executable" });
     assert.equal(manifest.agents[0].environment.ACP_LOG.kind, "literal");
     const canonicalWorkspace = await fsp.realpath(workspace);
-    assert.ok(manifest.agents[0].executable.startsWith(path.join(canonicalWorkspace, ".clawdex", "agents")));
+    assert.ok(manifest.agents[0].executable.startsWith(path.join(canonicalWorkspace, ".tethercode", "agents")));
     assert.equal(manifest.agents[0].verifiedDigest, `sha256:${sha256}`);
   } finally {
     await fsp.rm(workspace, { recursive: true, force: true });
@@ -490,7 +490,7 @@ test("installs a verified direct binary and emits the exact Rust manifest shape"
 });
 
 test("rejects checksum mismatch and unsigned binaries without explicit trust", async () => {
-  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-digest-"));
+  const temporary = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-digest-"));
   const agent = fixture.agents[0];
   const binary = structuredClone(agent.distribution.binary["darwin-aarch64"]);
   const body = Buffer.from("#!/bin/sh\n");
@@ -516,7 +516,7 @@ test("rejects checksum mismatch and unsigned binaries without explicit trust", a
 });
 
 test("rejects unsigned direct binaries even with explicit trust", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-unsigned-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-unsigned-"));
   const body = Buffer.from("#!/bin/sh\nexit 0\n");
   const registry = structuredClone(fixture);
   delete registry.agents[0].distribution.binary["darwin-aarch64"].sha256;
@@ -534,8 +534,8 @@ test("rejects unsigned direct binaries even with explicit trust", async () => {
 
 test("binary archive tree detects companion content, shape, symlink, and mode tampering", async (t) => {
   if (process.platform === "win32") t.skip("archive mode and symlink receipt semantics are POSIX-specific");
-  const source = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-binary-archive-source-"));
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-binary-archive-"));
+  const source = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-binary-archive-source-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-binary-archive-"));
   const archivePath = path.join(source, "agent.tar");
   const registry = structuredClone(fixture);
   const distribution = registry.agents[0].distribution.binary["darwin-aarch64"];
@@ -554,7 +554,7 @@ test("binary archive tree detects companion content, shape, symlink, and mode ta
     distribution: "binary",
     downloadOptions: { request: (...args) => { downloads += 1; return fakeRequest(archive)(...args); } },
   });
-  const root = path.join(workspace, ".clawdex", "agents", "mixed-agent", "2.3.4");
+  const root = path.join(workspace, ".tethercode", "agents", "mixed-agent", "2.3.4");
   const companion = path.join(root, "lib", "companion.conf");
   const mutations = [
     async () => fsp.writeFile(companion, "mode=tampered\n"),
@@ -582,7 +582,7 @@ test("binary archive tree detects companion content, shape, symlink, and mode ta
 });
 
 test("resolves isolated npm and uv executables using mocked process execution", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-tools-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-tools-"));
   try {
     const npxRoot = path.join(workspace, "npx");
     await fsp.mkdir(npxRoot, { recursive: true });
@@ -646,7 +646,7 @@ test("dependency plans reject mutable sources, missing integrity, and untrusted 
 });
 
 test("frozen installs reject plan rewrites and remove failed staging", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-plan-rewrite-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-plan-rewrite-"));
   try {
     const root = path.join(workspace, "npm");
     await fsp.mkdir(root);
@@ -675,16 +675,16 @@ test("frozen installs reject plan rewrites and remove failed staging", async () 
         if (args[0] === "ci") fs.appendFileSync(path.join(commandOptions.cwd, "package-lock.json"), " ");
       },
     }), /rewrote the validated dependency plan/);
-    const clawdexEntries = await fsp.readdir(path.join(failedWorkspace, ".clawdex"));
-    assert.equal(clawdexEntries.some((name) => name.startsWith(".install-staging-")), false);
-    assert.equal(fs.existsSync(path.join(failedWorkspace, ".clawdex", "agents.json")), false);
+    const tethercodeEntries = await fsp.readdir(path.join(failedWorkspace, ".tethercode"));
+    assert.equal(tethercodeEntries.some((name) => name.startsWith(".install-staging-")), false);
+    assert.equal(fs.existsSync(path.join(failedWorkspace, ".tethercode", "agents.json")), false);
   } finally {
     await fsp.rm(workspace, { recursive: true, force: true });
   }
 });
 
 test("saved plan digest is stable for one resolution and surfaces changed resolution", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-plan-digest-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-plan-digest-"));
   async function resolveAt(root, dependencyVersion) {
     await fsp.mkdir(root);
     const result = await installer.installNpx(fixture.agents[0], fixture.agents[0].distribution.npx, root, {
@@ -716,7 +716,7 @@ test("saved plan digest is stable for one resolution and surfaces changed resolu
 });
 
 test("published provenance explicitly identifies plan digests and cross-time limitation", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-plan-provenance-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-plan-provenance-"));
   try {
     const manifest = await installer.installAgents({
       workspace,
@@ -727,7 +727,7 @@ test("published provenance explicitly identifies plan digests and cross-time lim
       distribution: "npx",
       runCommand(_command, args, commandOptions) { npmMock(commandOptions.cwd, args); },
     });
-    const provenance = JSON.parse(await fsp.readFile(path.join(workspace, ".clawdex", "registry-provenance.json"), "utf8"));
+    const provenance = JSON.parse(await fsp.readFile(path.join(workspace, ".tethercode", "registry-provenance.json"), "utf8"));
     assert.equal(provenance.resolutionPolicy, "plan-before-install");
     assert.equal(provenance.crossTimeReproducible, false);
     assert.match(provenance.dependencyPlans["mixed-agent"], /^sha256:[a-f0-9]{64}$/);
@@ -738,7 +738,7 @@ test("published provenance explicitly identifies plan digests and cross-time lim
 });
 
 test("registry lock authority skips mutable resolution and tree authority fails closed", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-lock-authority-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-lock-authority-"));
   const registry = structuredClone(fixture);
   const distribution = registry.agents[0].distribution.npx;
   const lockRoot = path.join(workspace, "lock-fixture");
@@ -775,7 +775,7 @@ test("registry lock authority skips mutable resolution and tree authority fails 
       distribution: "npx",
       runCommand(_command, args, commandOptions) { npmMock(commandOptions.cwd, args); },
     }), /tree does not match the registry authority/);
-    assert.equal(fs.existsSync(path.join(failedWorkspace, ".clawdex", "agents.json")), false);
+    assert.equal(fs.existsSync(path.join(failedWorkspace, ".tethercode", "agents.json")), false);
   } finally {
     await fsp.rm(workspace, { recursive: true, force: true });
   }
@@ -784,15 +784,15 @@ test("registry lock authority skips mutable resolution and tree authority fails 
 test("reinstalls on executable, metadata, fingerprint, args, env, or provenance tamper", async () => {
   const mutations = [
     async (root, record) => fsp.writeFile(path.join(root, record.executable), "tampered", { mode: 0o755 }),
-    async (root) => fsp.writeFile(path.join(root, ".clawdex-install.json"), "{}"),
-    async (root, record) => { record.fingerprint = "0".repeat(64); await fsp.writeFile(path.join(root, ".clawdex-install.json"), JSON.stringify(record)); },
-    async (root, record) => { record.argv = ["bad"]; await fsp.writeFile(path.join(root, ".clawdex-install.json"), JSON.stringify(record)); },
-    async (root, record) => { record.environment = {}; await fsp.writeFile(path.join(root, ".clawdex-install.json"), JSON.stringify(record)); },
-    async (root, record) => { record.provenance = "attacker"; await fsp.writeFile(path.join(root, ".clawdex-install.json"), JSON.stringify(record)); },
-    async (root, record) => { record.integrity.artifact.sha256 = "0".repeat(64); await fsp.writeFile(path.join(root, ".clawdex-install.json"), JSON.stringify(record)); },
+    async (root) => fsp.writeFile(path.join(root, ".tethercode-install.json"), "{}"),
+    async (root, record) => { record.fingerprint = "0".repeat(64); await fsp.writeFile(path.join(root, ".tethercode-install.json"), JSON.stringify(record)); },
+    async (root, record) => { record.argv = ["bad"]; await fsp.writeFile(path.join(root, ".tethercode-install.json"), JSON.stringify(record)); },
+    async (root, record) => { record.environment = {}; await fsp.writeFile(path.join(root, ".tethercode-install.json"), JSON.stringify(record)); },
+    async (root, record) => { record.provenance = "attacker"; await fsp.writeFile(path.join(root, ".tethercode-install.json"), JSON.stringify(record)); },
+    async (root, record) => { record.integrity.artifact.sha256 = "0".repeat(64); await fsp.writeFile(path.join(root, ".tethercode-install.json"), JSON.stringify(record)); },
   ];
   for (const mutate of mutations) {
-    const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-tamper-"));
+    const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-tamper-"));
     const { body, registry } = binaryFixture();
     let requests = 0;
     const options = binaryInstallOptions(workspace, body, registry, {
@@ -800,8 +800,8 @@ test("reinstalls on executable, metadata, fingerprint, args, env, or provenance 
     });
     try {
       await installer.installAgents(options);
-      const root = path.join(workspace, ".clawdex", "agents", "mixed-agent", "2.3.4");
-      const record = JSON.parse(await fsp.readFile(path.join(root, ".clawdex-install.json"), "utf8"));
+      const root = path.join(workspace, ".tethercode", "agents", "mixed-agent", "2.3.4");
+      const record = JSON.parse(await fsp.readFile(path.join(root, ".tethercode-install.json"), "utf8"));
       await mutate(root, record);
       await installer.installAgents(options);
       assert.equal(requests, 2);
@@ -812,9 +812,9 @@ test("reinstalls on executable, metadata, fingerprint, args, env, or provenance 
 });
 
 test("rejects preseeded installs, serializes concurrent attempts, and rolls back failed reinstall", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-preseed-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-preseed-"));
   const { body, registry } = binaryFixture();
-  const root = path.join(workspace, ".clawdex", "agents", "mixed-agent", "2.3.4");
+  const root = path.join(workspace, ".tethercode", "agents", "mixed-agent", "2.3.4");
   let requests = 0;
   const options = binaryInstallOptions(workspace, body, registry, {
     downloadOptions: { request: (...args) => { requests += 1; return fakeRequest(body)(...args); } },
@@ -822,12 +822,12 @@ test("rejects preseeded installs, serializes concurrent attempts, and rolls back
   try {
     await fsp.mkdir(root, { recursive: true });
     await fsp.writeFile(path.join(root, "mixed-agent.bin"), "attacker", { mode: 0o755 });
-    await fsp.writeFile(path.join(root, ".clawdex-install.json"), JSON.stringify({ executable: "mixed-agent.bin" }));
+    await fsp.writeFile(path.join(root, ".tethercode-install.json"), JSON.stringify({ executable: "mixed-agent.bin" }));
     await Promise.all([installer.installAgents(options), installer.installAgents(options)]);
     assert.equal(requests, 1);
     assert.equal(await fsp.readFile(path.join(root, "mixed-agent.bin"), "utf8"), body.toString());
 
-    const manifestPath = path.join(workspace, ".clawdex", "agents.json");
+    const manifestPath = path.join(workspace, ".tethercode", "agents.json");
     const before = await fsp.readFile(manifestPath, "utf8");
     await fsp.writeFile(path.join(root, "mixed-agent.bin"), "tampered", { mode: 0o755 });
     await assert.rejects(installer.installAgents({
@@ -842,11 +842,11 @@ test("rejects preseeded installs, serializes concurrent attempts, and rolls back
 });
 
 test("rejects a symlink-preseeded local install root", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-root-"));
-  const outside = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-outside-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-root-"));
+  const outside = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-outside-"));
   const { body, registry } = binaryFixture();
   try {
-    await fsp.symlink(outside, path.join(workspace, ".clawdex"));
+    await fsp.symlink(outside, path.join(workspace, ".tethercode"));
     await assert.rejects(installer.installAgents(binaryInstallOptions(workspace, body, registry)), /real directory/);
     assert.deepEqual(await fsp.readdir(outside), []);
   } finally {
@@ -856,7 +856,7 @@ test("rejects a symlink-preseeded local install root", async () => {
 });
 
 test("reinstalls when npm lock, uv dependency artifact, or executable mapping are tampered", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-tool-tamper-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-tool-tamper-"));
   let npmInstalls = 0;
   let uvInstalls = 0;
   try {
@@ -873,7 +873,7 @@ test("reinstalls when npm lock, uv dependency artifact, or executable mapping ar
       },
     };
     await installer.installAgents(npmOptions);
-    const npmRoot = path.join(workspace, ".clawdex", "agents", "mixed-agent", "2.3.4");
+    const npmRoot = path.join(workspace, ".tethercode", "agents", "mixed-agent", "2.3.4");
     const packageLock = JSON.parse(await fsp.readFile(path.join(npmRoot, "package-lock.json"), "utf8"));
     packageLock.packages["node_modules/@example/mixed-agent"].integrity = "sha512-tampered";
     await fsp.chmod(path.join(npmRoot, "package-lock.json"), 0o600);
@@ -899,7 +899,7 @@ test("reinstalls when npm lock, uv dependency artifact, or executable mapping ar
       },
     };
     await installer.installAgents(uvOptions);
-    const uvRoot = path.join(workspace, ".clawdex", "agents", "python-agent", "0.4.0");
+    const uvRoot = path.join(workspace, ".tethercode", "agents", "python-agent", "0.4.0");
     const dependency = (await installer.verifyInstallRecord(
       uvRoot,
       installer.installExpectation(fixture.agents[1], registryLibrary.selectDistribution(fixture.agents[1]), uvOptions)
@@ -938,7 +938,7 @@ test("uv tree receipt rejects transitive modification, add, delete, symlink subs
     async (root) => fsp.chmod(path.join(root, "tools", "lib", "python3.13", "site-packages", "dependency_one.py"), 0o555),
   ];
   for (const mutate of cases) {
-    const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-uv-tree-"));
+    const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-uv-tree-"));
     let installs = 0;
     const options = {
       workspace,
@@ -953,7 +953,7 @@ test("uv tree receipt rejects transitive modification, add, delete, symlink subs
     };
     try {
       await installer.installAgents(options);
-      const root = path.join(workspace, ".clawdex", "agents", "python-agent", "0.4.0");
+      const root = path.join(workspace, ".tethercode", "agents", "python-agent", "0.4.0");
       await mutate(root);
       await installer.installAgents(options);
       assert.equal(installs, 2, "tampered uv tree should be reinstalled");
@@ -990,14 +990,14 @@ test("npm tree receipt rejects module, dependency, shape, symlink, mode, and rec
     },
     async (root) => fsp.chmod(path.join(root, "node_modules", "dependency-one", "index.js"), 0o555),
     async (root) => {
-      const metadata = path.join(root, ".clawdex-install.json");
+      const metadata = path.join(root, ".tethercode-install.json");
       const record = JSON.parse(await fsp.readFile(metadata, "utf8"));
       record.integrity.tree.sha256 = "0".repeat(64);
       await fsp.writeFile(metadata, JSON.stringify(record));
     },
   ];
   for (const mutate of cases) {
-    const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-npm-tree-"));
+    const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-npm-tree-"));
     let installs = 0;
     const options = {
       workspace,
@@ -1015,7 +1015,7 @@ test("npm tree receipt rejects module, dependency, shape, symlink, mode, and rec
       await installer.installAgents(options);
       await installer.installAgents(options);
       assert.equal(installs, 1, "valid tree should be reused");
-      const root = path.join(workspace, ".clawdex", "agents", "mixed-agent", "2.3.4");
+      const root = path.join(workspace, ".tethercode", "agents", "mixed-agent", "2.3.4");
       await mutate(root);
       await installer.installAgents(options);
       assert.equal(installs, 2, "tampered tree should be reinstalled");
@@ -1031,7 +1031,7 @@ test("rejects uv wrong identity and missing integrity metadata", async () => {
     [{ version: "9.9.9" }, /exact requested identity/],
     [{ missingRecord: true }, /missing RECORD/],
   ]) {
-    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-uv-invalid-"));
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-uv-invalid-"));
     try {
       await assert.rejects(
         installer.installUvx(fixture.agents[1], fixture.agents[1].distribution.uvx, root, {
@@ -1051,7 +1051,7 @@ test("rejects uv wrong identity and missing integrity metadata", async () => {
 });
 
 test("reuses exact installs and preserves a working manifest after failure", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-atomic-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-atomic-"));
   const body = Buffer.from("#!/bin/sh\nexit 0\n");
   const sha256 = require("node:crypto").createHash("sha256").update(body).digest("hex");
   const registry = structuredClone(fixture);
@@ -1066,7 +1066,7 @@ test("reuses exact installs and preserves a working manifest after failure", asy
   };
   try {
     await installer.installAgents(options);
-    const manifestPath = path.join(workspace, ".clawdex", "agents.json");
+    const manifestPath = path.join(workspace, ".tethercode", "agents.json");
     const before = await fsp.readFile(manifestPath, "utf8");
     await installer.installAgents(options);
     assert.equal(requests, 1);
@@ -1078,11 +1078,11 @@ test("reuses exact installs and preserves a working manifest after failure", asy
 });
 
 test("later-agent staging failure preserves every published byte", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-later-failure-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-later-failure-"));
   const { body, registry } = binaryFixture();
   try {
     await installer.installAgents(binaryInstallOptions(workspace, body, registry));
-    const before = await treeSnapshot(path.join(workspace, ".clawdex"));
+    const before = await treeSnapshot(path.join(workspace, ".tethercode"));
     await assert.rejects(installer.installAgents({
       workspace,
       registry,
@@ -1092,7 +1092,7 @@ test("later-agent staging failure preserves every published byte", async () => {
       runCommand() { throw new Error("later install failed"); },
       downloadOptions: { request: fakeRequest(body) },
     }), /later install failed/);
-    assert.deepEqual(await treeSnapshot(path.join(workspace, ".clawdex")), before);
+    assert.deepEqual(await treeSnapshot(path.join(workspace, ".tethercode")), before);
   } finally {
     await fsp.rm(workspace, { recursive: true, force: true });
   }
@@ -1102,16 +1102,16 @@ test("failure during every workspace publish phase restores all prior bytes", as
   const phases = ["agents", "agents.json", "registry-provenance.json"]
     .flatMap((name) => [`before-backup:${name}`, `before-publish:${name}`, `after-publish:${name}`]);
   for (const phase of phases) {
-    const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-publish-failure-"));
+    const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-publish-failure-"));
     const first = binaryFixture(Buffer.from("#!/bin/sh\necho old\n"));
     const second = binaryFixture(Buffer.from("#!/bin/sh\necho new\n"));
     try {
       await installer.installAgents(binaryInstallOptions(workspace, first.body, first.registry));
-      const before = await treeSnapshot(path.join(workspace, ".clawdex"));
+      const before = await treeSnapshot(path.join(workspace, ".tethercode"));
       await assert.rejects(installer.installAgents(binaryInstallOptions(workspace, second.body, second.registry, {
         publishHook(current) { if (current === phase) throw new Error(`fault at ${phase}`); },
       })), /fault at/);
-      assert.deepEqual(await treeSnapshot(path.join(workspace, ".clawdex")), before, phase);
+      assert.deepEqual(await treeSnapshot(path.join(workspace, ".tethercode")), before, phase);
     } finally {
       await fsp.rm(workspace, { recursive: true, force: true });
     }
@@ -1123,7 +1123,7 @@ test("concurrent disjoint and overlapping selections serialize into complete aut
     [["mixed-agent"], ["python-agent"]],
     [["mixed-agent", "python-agent"], ["python-agent"]],
   ]) {
-    const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-concurrent-workspace-"));
+    const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-concurrent-workspace-"));
     const { body, registry } = binaryFixture();
     const optionsFor = (agentIds) => ({
       workspace,
@@ -1145,20 +1145,20 @@ test("concurrent disjoint and overlapping selections serialize into complete aut
 });
 
 test("next invocation rolls back an interrupted journal before publishing", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-recovery-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-recovery-"));
   const first = binaryFixture(Buffer.from("#!/bin/sh\necho old\n"));
   try {
     await installer.installAgents(binaryInstallOptions(workspace, first.body, first.registry));
-    const clawdexRoot = await fsp.realpath(path.join(workspace, ".clawdex"));
-    const before = await treeSnapshot(clawdexRoot);
-    const stagingRoot = path.join(clawdexRoot, ".install-staging-interrupted");
-    const backupRoot = path.join(clawdexRoot, ".install-backup-interrupted");
+    const tethercodeRoot = await fsp.realpath(path.join(workspace, ".tethercode"));
+    const before = await treeSnapshot(tethercodeRoot);
+    const stagingRoot = path.join(tethercodeRoot, ".install-staging-interrupted");
+    const backupRoot = path.join(tethercodeRoot, ".install-backup-interrupted");
     await fsp.mkdir(stagingRoot);
     await fsp.mkdir(backupRoot);
     await fsp.writeFile(path.join(stagingRoot, "agents"), "staged-placeholder");
-    await fsp.rename(path.join(clawdexRoot, "agents"), path.join(backupRoot, "agents"));
-    await fsp.writeFile(path.join(clawdexRoot, "agents"), "partial-new-state");
-    await fsp.writeFile(path.join(clawdexRoot, "install-transaction.json"), JSON.stringify({
+    await fsp.rename(path.join(tethercodeRoot, "agents"), path.join(backupRoot, "agents"));
+    await fsp.writeFile(path.join(tethercodeRoot, "agents"), "partial-new-state");
+    await fsp.writeFile(path.join(tethercodeRoot, "install-transaction.json"), JSON.stringify({
       version: 2,
       transactionId: "interrupted",
       state: "publishing",
@@ -1166,7 +1166,7 @@ test("next invocation rolls back an interrupted journal before publishing", asyn
       backupRoot,
       entries: [{
         name: "agents",
-        destination: path.join(clawdexRoot, "agents"),
+        destination: path.join(tethercodeRoot, "agents"),
         staged: path.join(stagingRoot, "agents"),
         backup: path.join(backupRoot, "agents"),
         hadPrevious: true,
@@ -1177,7 +1177,7 @@ test("next invocation rolls back an interrupted journal before publishing", asyn
       ...binaryInstallOptions(workspace, first.body, first.registry),
       publishHook(phase) { if (phase === "before-backup:agents") throw new Error("post-recovery fault"); },
     }), /post-recovery fault/);
-    assert.deepEqual(await treeSnapshot(clawdexRoot), before);
+    assert.deepEqual(await treeSnapshot(tethercodeRoot), before);
   } finally {
     await fsp.rm(workspace, { recursive: true, force: true });
   }
@@ -1185,16 +1185,16 @@ test("next invocation rolls back an interrupted journal before publishing", asyn
 
 test("forged recovery journals are quarantined without deleting outside sentinels", async (t) => {
   if (process.platform === "win32") t.skip("symlink and canonical path recovery checks are POSIX-specific");
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-forged-recovery-"));
-  const outside = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-forged-sentinel-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-forged-recovery-"));
+  const outside = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-forged-sentinel-"));
   const sentinel = path.join(outside, "sentinel.txt");
-  await fsp.mkdir(path.join(workspace, ".clawdex"));
-  const clawdexRoot = await fsp.realpath(path.join(workspace, ".clawdex"));
+  await fsp.mkdir(path.join(workspace, ".tethercode"));
+  const tethercodeRoot = await fsp.realpath(path.join(workspace, ".tethercode"));
   await fsp.writeFile(sentinel, "keep-me");
 
   const transactionId = "forged-transaction";
-  const expectedStaging = path.join(clawdexRoot, `.install-staging-${transactionId}`);
-  const expectedBackup = path.join(clawdexRoot, `.install-backup-${transactionId}`);
+  const expectedStaging = path.join(tethercodeRoot, `.install-staging-${transactionId}`);
+  const expectedBackup = path.join(tethercodeRoot, `.install-backup-${transactionId}`);
   const baseJournal = {
     version: 2,
     transactionId,
@@ -1203,7 +1203,7 @@ test("forged recovery journals are quarantined without deleting outside sentinel
     backupRoot: expectedBackup,
     entries: [{
       name: "agents",
-      destination: path.join(clawdexRoot, "agents"),
+      destination: path.join(tethercodeRoot, "agents"),
       staged: path.join(expectedStaging, "agents"),
       backup: path.join(expectedBackup, "agents"),
       hadPrevious: false,
@@ -1222,26 +1222,26 @@ test("forged recovery journals are quarantined without deleting outside sentinel
     for (const testCase of cases) {
       const journal = structuredClone(baseJournal);
       testCase.mutate(journal);
-      const journalPath = path.join(clawdexRoot, "install-transaction.json");
+      const journalPath = path.join(tethercodeRoot, "install-transaction.json");
       await fsp.writeFile(journalPath, JSON.stringify(journal));
       await assert.rejects(
-        installer.recoverWorkspaceTransaction(clawdexRoot),
+        installer.recoverWorkspaceTransaction(tethercodeRoot),
         /invalid; refusing unsafe recovery/,
         testCase.name
       );
       assert.equal(await fsp.readFile(sentinel, "utf8"), "keep-me", testCase.name);
       assert.equal(fs.existsSync(journalPath), false, testCase.name);
       assert.ok(
-        (await fsp.readdir(clawdexRoot)).some((name) => name.startsWith("install-transaction.invalid-")),
+        (await fsp.readdir(tethercodeRoot)).some((name) => name.startsWith("install-transaction.invalid-")),
         testCase.name
       );
     }
 
     await fsp.symlink(outside, expectedStaging);
     await fsp.mkdir(expectedBackup);
-    await fsp.writeFile(path.join(clawdexRoot, "install-transaction.json"), JSON.stringify(baseJournal));
+    await fsp.writeFile(path.join(tethercodeRoot, "install-transaction.json"), JSON.stringify(baseJournal));
     await assert.rejects(
-      installer.recoverWorkspaceTransaction(clawdexRoot),
+      installer.recoverWorkspaceTransaction(tethercodeRoot),
       /must be a real directory|symlink component/
     );
     assert.equal(await fsp.readFile(sentinel, "utf8"), "keep-me");
@@ -1253,7 +1253,7 @@ test("forged recovery journals are quarantined without deleting outside sentinel
 });
 
 test("next invocation completes cleanup for an interrupted committed transaction", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-committed-recovery-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-committed-recovery-"));
   const { body, registry } = binaryFixture();
   const options = binaryInstallOptions(workspace, body, registry);
   try {
@@ -1261,12 +1261,12 @@ test("next invocation completes cleanup for an interrupted committed transaction
       ...options,
       publishHook(phase) { if (phase === "after-commit") throw new Error("commit cleanup interrupted"); },
     }), /commit cleanup interrupted/);
-    const clawdexRoot = await fsp.realpath(path.join(workspace, ".clawdex"));
-    assert.ok(await fsp.stat(path.join(clawdexRoot, "install-transaction.json")));
+    const tethercodeRoot = await fsp.realpath(path.join(workspace, ".tethercode"));
+    assert.ok(await fsp.stat(path.join(tethercodeRoot, "install-transaction.json")));
     await installer.installAgents(options);
     await assertPublishedStateConsistent(workspace);
-    assert.equal(fs.existsSync(path.join(clawdexRoot, "install-transaction.json")), false);
-    assert.equal((await fsp.readdir(clawdexRoot)).some((name) => name.startsWith(".install-")), false);
+    assert.equal(fs.existsSync(path.join(tethercodeRoot, "install-transaction.json")), false);
+    assert.equal((await fsp.readdir(tethercodeRoot)).some((name) => name.startsWith(".install-")), false);
   } finally {
     await fsp.rm(workspace, { recursive: true, force: true });
   }
@@ -1289,37 +1289,37 @@ test("subprocess crashes at every publication persistence boundary recover to on
   const child = new URL("./fixtures/acp-install-crash-child.cjs", import.meta.url).pathname;
 
   for (const boundary of boundaries) {
-    const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-crash-boundary-"));
-    const outside = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-crash-sentinel-"));
+    const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-crash-boundary-"));
+    const outside = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-crash-sentinel-"));
     const sentinel = path.join(outside, "sentinel.txt");
-    const clawdexRoot = path.join(workspace, ".clawdex");
+    const tethercodeRoot = path.join(workspace, ".tethercode");
     try {
-      await fsp.mkdir(path.join(clawdexRoot, "agents"), { recursive: true });
-      await fsp.writeFile(path.join(clawdexRoot, "agents", "state.txt"), "old\n");
-      await fsp.writeFile(path.join(clawdexRoot, "agents.json"), `${JSON.stringify({ value: "old" })}\n`);
-      await fsp.writeFile(path.join(clawdexRoot, "registry-provenance.json"), `${JSON.stringify({ value: "old" })}\n`);
+      await fsp.mkdir(path.join(tethercodeRoot, "agents"), { recursive: true });
+      await fsp.writeFile(path.join(tethercodeRoot, "agents", "state.txt"), "old\n");
+      await fsp.writeFile(path.join(tethercodeRoot, "agents.json"), `${JSON.stringify({ value: "old" })}\n`);
+      await fsp.writeFile(path.join(tethercodeRoot, "registry-provenance.json"), `${JSON.stringify({ value: "old" })}\n`);
       await fsp.writeFile(sentinel, "keep-me");
 
       const crashed = spawnSync(process.execPath, [child, "publish", workspace], {
-        env: { ...process.env, CLAWDEX_INSTALL_TEST_CRASH_AT: boundary },
+        env: { ...process.env, TETHERCODE_INSTALL_TEST_CRASH_AT: boundary },
         encoding: "utf8",
       });
       assert.equal(crashed.status, 86, `${boundary}: ${crashed.stderr}`);
       const recovered = spawnSync(process.execPath, [child, "recover", workspace], {
-        env: { ...process.env, CLAWDEX_INSTALL_TEST_CRASH_AT: "" },
+        env: { ...process.env, TETHERCODE_INSTALL_TEST_CRASH_AT: "" },
         encoding: "utf8",
       });
       assert.equal(recovered.status, 0, `${boundary}: ${recovered.stderr}`);
 
       const values = [
-        (await fsp.readFile(path.join(clawdexRoot, "agents", "state.txt"), "utf8")).trim(),
-        JSON.parse(await fsp.readFile(path.join(clawdexRoot, "agents.json"), "utf8")).value,
-        JSON.parse(await fsp.readFile(path.join(clawdexRoot, "registry-provenance.json"), "utf8")).value,
+        (await fsp.readFile(path.join(tethercodeRoot, "agents", "state.txt"), "utf8")).trim(),
+        JSON.parse(await fsp.readFile(path.join(tethercodeRoot, "agents.json"), "utf8")).value,
+        JSON.parse(await fsp.readFile(path.join(tethercodeRoot, "registry-provenance.json"), "utf8")).value,
       ];
       assert.ok(values.every((value) => value === values[0]), `${boundary}: ${values.join(",")}`);
       assert.ok(["old", "new"].includes(values[0]), boundary);
       assert.equal(await fsp.readFile(sentinel, "utf8"), "keep-me", boundary);
-      assert.equal(fs.existsSync(path.join(clawdexRoot, "install-transaction.json")), false, boundary);
+      assert.equal(fs.existsSync(path.join(tethercodeRoot, "install-transaction.json")), false, boundary);
     } finally {
       await fsp.rm(workspace, { recursive: true, force: true });
       await fsp.rm(outside, { recursive: true, force: true });
@@ -1328,22 +1328,22 @@ test("subprocess crashes at every publication persistence boundary recover to on
 });
 
 test("publication persistence boundaries follow prepared, mutate, commit, cleanup ordering", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-persistence-order-"));
-  const clawdexRoot = path.join(await fsp.realpath(workspace), ".clawdex");
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-persistence-order-"));
+  const tethercodeRoot = path.join(await fsp.realpath(workspace), ".tethercode");
   const transactionId = "ordered-publication";
-  const stagingRoot = path.join(clawdexRoot, `.install-staging-${transactionId}`);
+  const stagingRoot = path.join(tethercodeRoot, `.install-staging-${transactionId}`);
   const boundaries = [];
   try {
-    await fsp.mkdir(path.join(clawdexRoot, "agents"), { recursive: true });
-    await fsp.writeFile(path.join(clawdexRoot, "agents", "state.txt"), "old\n");
-    await fsp.writeFile(path.join(clawdexRoot, "agents.json"), "old\n");
-    await fsp.writeFile(path.join(clawdexRoot, "registry-provenance.json"), "old\n");
+    await fsp.mkdir(path.join(tethercodeRoot, "agents"), { recursive: true });
+    await fsp.writeFile(path.join(tethercodeRoot, "agents", "state.txt"), "old\n");
+    await fsp.writeFile(path.join(tethercodeRoot, "agents.json"), "old\n");
+    await fsp.writeFile(path.join(tethercodeRoot, "registry-provenance.json"), "old\n");
     await fsp.mkdir(path.join(stagingRoot, "agents"), { recursive: true });
     await fsp.writeFile(path.join(stagingRoot, "agents", "state.txt"), "new\n");
     await fsp.writeFile(path.join(stagingRoot, "agents.json"), "new\n");
     await fsp.writeFile(path.join(stagingRoot, "registry-provenance.json"), "new\n");
 
-    await installer.publishWorkspaceTransaction(clawdexRoot, stagingRoot, {
+    await installer.publishWorkspaceTransaction(tethercodeRoot, stagingRoot, {
       persistenceHook(boundary) { boundaries.push(boundary); },
     });
 
@@ -1363,7 +1363,7 @@ test("publication persistence boundaries follow prepared, mutate, commit, cleanu
 });
 
 test("fsync failures propagate without reporting atomic publication success", async () => {
-  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "clawdex-fsync-failure-"));
+  const workspace = await fsp.mkdtemp(path.join(os.tmpdir(), "tethercode-fsync-failure-"));
   const destination = path.join(workspace, "manifest.json");
   let renameCalled = false;
   const failingFs = {

@@ -2,8 +2,6 @@ name: NPM Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -77,14 +75,15 @@ jobs:
           npm run contract:check
           npm run test:release
           npm run version:check
+          npm run payment:check
 
       - name: Lint and typecheck mobile
         run: |
-          npm run lint -w clawdex-mobile
-          npm run typecheck -w clawdex-mobile
+          npm run lint -w @tethercode/mobile
+          npm run typecheck -w @tethercode/mobile
 
       - name: Test mobile with branch coverage
-        run: npm run test:coverage -w clawdex-mobile
+        run: npm run test:coverage -w @tethercode/mobile
 
       - name: Validate Rust
         working-directory: services/rust-bridge
@@ -143,7 +142,7 @@ jobs:
           - runner: macos-26
             package_target: darwin-arm64
             rust_target: aarch64-apple-darwin
-            binary_path: services/rust-bridge/target/aarch64-apple-darwin/release/codex-rust-bridge
+            binary_path: services/rust-bridge/target/aarch64-apple-darwin/release/tethercode-bridge
             build_mode: host
             apt_packages: ""
             linker: ""
@@ -153,7 +152,7 @@ jobs:
           - runner: macos-26-intel
             package_target: darwin-x64
             rust_target: x86_64-apple-darwin
-            binary_path: services/rust-bridge/target/x86_64-apple-darwin/release/codex-rust-bridge
+            binary_path: services/rust-bridge/target/x86_64-apple-darwin/release/tethercode-bridge
             build_mode: host
             apt_packages: ""
             linker: ""
@@ -163,7 +162,7 @@ jobs:
           - runner: ubuntu-latest
             package_target: linux-x64
             rust_target: x86_64-unknown-linux-gnu
-            binary_path: services/rust-bridge/target/x86_64-unknown-linux-gnu/release/codex-rust-bridge
+            binary_path: services/rust-bridge/target/x86_64-unknown-linux-gnu/release/tethercode-bridge
             build_mode: linux-compat
             apt_packages: ""
             linker: ""
@@ -173,7 +172,7 @@ jobs:
           - runner: ubuntu-latest
             package_target: linux-arm64
             rust_target: aarch64-unknown-linux-gnu
-            binary_path: services/rust-bridge/target/aarch64-unknown-linux-gnu/release/codex-rust-bridge
+            binary_path: services/rust-bridge/target/aarch64-unknown-linux-gnu/release/tethercode-bridge
             build_mode: linux-compat
             apt_packages: gcc-aarch64-linux-gnu
             linker: aarch64-linux-gnu-gcc
@@ -183,7 +182,7 @@ jobs:
           - runner: ubuntu-latest
             package_target: linux-armv7l
             rust_target: armv7-unknown-linux-gnueabihf
-            binary_path: services/rust-bridge/target/armv7-unknown-linux-gnueabihf/release/codex-rust-bridge
+            binary_path: services/rust-bridge/target/armv7-unknown-linux-gnueabihf/release/tethercode-bridge
             build_mode: linux-compat
             apt_packages: gcc-arm-linux-gnueabihf
             linker: arm-linux-gnueabihf-gcc
@@ -193,7 +192,7 @@ jobs:
           - runner: windows-latest
             package_target: win32-x64
             rust_target: x86_64-pc-windows-msvc
-            binary_path: services/rust-bridge/target/x86_64-pc-windows-msvc/release/codex-rust-bridge.exe
+            binary_path: services/rust-bridge/target/x86_64-pc-windows-msvc/release/tethercode-bridge.exe
             build_mode: host
             apt_packages: ""
             linker: ""
@@ -383,8 +382,8 @@ jobs:
           mkdir -p vendor/bridge-binaries
           for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 linux-armv7l win32-x64; do
             case "$target" in
-              win32-x64) binary_name="codex-rust-bridge.exe" ;;
-              *) binary_name="codex-rust-bridge" ;;
+              win32-x64) binary_name="tethercode-bridge.exe" ;;
+              *) binary_name="tethercode-bridge" ;;
             esac
             source_path=".artifacts/bridge-binaries/bridge-binaries-${target}/${binary_name}"
             if [ ! -f "$source_path" ]; then
@@ -396,12 +395,12 @@ jobs:
 
       - name: Verify packaged bridge bundle layout
         run: |
-          test -f vendor/bridge-binaries/darwin-arm64/codex-rust-bridge
-          test -f vendor/bridge-binaries/darwin-x64/codex-rust-bridge
-          test -f vendor/bridge-binaries/linux-x64/codex-rust-bridge
-          test -f vendor/bridge-binaries/linux-arm64/codex-rust-bridge
-          test -f vendor/bridge-binaries/linux-armv7l/codex-rust-bridge
-          test -f vendor/bridge-binaries/win32-x64/codex-rust-bridge.exe
+          test -f vendor/bridge-binaries/darwin-arm64/tethercode-bridge
+          test -f vendor/bridge-binaries/darwin-x64/tethercode-bridge
+          test -f vendor/bridge-binaries/linux-x64/tethercode-bridge
+          test -f vendor/bridge-binaries/linux-arm64/tethercode-bridge
+          test -f vendor/bridge-binaries/linux-armv7l/tethercode-bridge
+          test -f vendor/bridge-binaries/win32-x64/tethercode-bridge.exe
 
       - name: Verify Rust bridge compiles
         working-directory: services/rust-bridge
@@ -435,12 +434,12 @@ jobs:
         run: |
           TMPDIR="$(mktemp -d)"
           TARBALL="$(npm pack --silent --pack-destination "$TMPDIR" | tail -n 1)"
-          tar -tzf "$TMPDIR/$TARBALL" | grep -q '^package/vendor/bridge-binaries/darwin-arm64/codex-rust-bridge$'
-          tar -tzf "$TMPDIR/$TARBALL" | grep -q '^package/vendor/bridge-binaries/darwin-x64/codex-rust-bridge$'
-          tar -tzf "$TMPDIR/$TARBALL" | grep -q '^package/vendor/bridge-binaries/linux-x64/codex-rust-bridge$'
-          tar -tzf "$TMPDIR/$TARBALL" | grep -q '^package/vendor/bridge-binaries/linux-arm64/codex-rust-bridge$'
-          tar -tzf "$TMPDIR/$TARBALL" | grep -q '^package/vendor/bridge-binaries/linux-armv7l/codex-rust-bridge$'
-          tar -tzf "$TMPDIR/$TARBALL" | grep -q '^package/vendor/bridge-binaries/win32-x64/codex-rust-bridge.exe$'
+          tar -tzf "$TMPDIR/$TARBALL" | grep -q '^package/vendor/bridge-binaries/darwin-arm64/tethercode-bridge$'
+          tar -tzf "$TMPDIR/$TARBALL" | grep -q '^package/vendor/bridge-binaries/darwin-x64/tethercode-bridge$'
+          tar -tzf "$TMPDIR/$TARBALL" | grep -q '^package/vendor/bridge-binaries/linux-x64/tethercode-bridge$'
+          tar -tzf "$TMPDIR/$TARBALL" | grep -q '^package/vendor/bridge-binaries/linux-arm64/tethercode-bridge$'
+          tar -tzf "$TMPDIR/$TARBALL" | grep -q '^package/vendor/bridge-binaries/linux-armv7l/tethercode-bridge$'
+          tar -tzf "$TMPDIR/$TARBALL" | grep -q '^package/vendor/bridge-binaries/win32-x64/tethercode-bridge.exe$'
 
       - name: Resolve publish target
         id: publish_target
@@ -470,26 +469,17 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-          PACKAGE_VERSION: ${{ steps.publish_target.outputs.package_version }}
         run: |
-          RELEASE_NOTES_FILE="docs/release-notes/${PACKAGE_VERSION}.md"
-          RELEASE_NOTES_CREATE_ARGS=(--generate-notes)
-          RELEASE_NOTES_EDIT_ARGS=()
-          if [ -f "${RELEASE_NOTES_FILE}" ]; then
-            RELEASE_NOTES_CREATE_ARGS=(--notes-file "${RELEASE_NOTES_FILE}")
-            RELEASE_NOTES_EDIT_ARGS=(--notes-file "${RELEASE_NOTES_FILE}")
-          fi
-
           if [ "${{ steps.publish_target.outputs.is_prerelease }}" = "true" ]; then
             if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-              gh release edit "${GITHUB_REF_NAME}" --prerelease "${RELEASE_NOTES_EDIT_ARGS[@]}"
+              gh release edit "${GITHUB_REF_NAME}" --prerelease
             else
-              gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" "${RELEASE_NOTES_CREATE_ARGS[@]}" --prerelease
+              gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes --prerelease
             fi
           else
             if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-              gh release edit "${GITHUB_REF_NAME}" --latest "${RELEASE_NOTES_EDIT_ARGS[@]}"
+              gh release edit "${GITHUB_REF_NAME}" --latest
             else
-              gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" "${RELEASE_NOTES_CREATE_ARGS[@]}" --latest
+              gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes --latest
             fi
           fi

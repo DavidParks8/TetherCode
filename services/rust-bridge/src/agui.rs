@@ -134,7 +134,7 @@ impl AgUiProjector {
                         &mut projection.events,
                         thread_id,
                         run,
-                        "clawdex.dev/message-content",
+                        "tethercode.dev/message-content",
                         message_id,
                         json!({
                             "messageId": message_id,
@@ -445,7 +445,7 @@ impl AgUiProjector {
                             &mut projection.events,
                             thread_id,
                             run,
-                            "clawdex.dev/tool-text",
+                            "tethercode.dev/tool-text",
                             tool_call_id,
                             json!({
                                 "toolCallId": tool_call_id,
@@ -461,7 +461,7 @@ impl AgUiProjector {
                         &mut projection.events,
                         thread_id,
                         run,
-                        "clawdex.dev/tool-content",
+                        "tethercode.dev/tool-content",
                         tool_call_id,
                         json!({
                             "toolCallId": tool_call_id,
@@ -558,7 +558,7 @@ impl AgUiProjector {
                 &mut projection.events,
                 &self.runs,
                 thread_id,
-                "clawdex.dev/plan",
+                "tethercode.dev/plan",
                 json!({ "entries": entries.iter().take(128).map(|entry| json!({
                     "content": bounded(&entry.content, 2 * 1024),
                     "priority": bounded(&entry.priority, 256),
@@ -576,7 +576,7 @@ impl AgUiProjector {
                 &mut projection.events,
                 &self.runs,
                 thread_id,
-                "clawdex.dev/usage",
+                "tethercode.dev/usage",
                 json!({ "used": used, "size": size, "cost": cost.as_deref().map(|value| bounded(value, 256)) }),
                 timestamp,
             ),
@@ -584,7 +584,7 @@ impl AgUiProjector {
                 &mut projection.events,
                 &self.runs,
                 thread_id,
-                "clawdex.dev/mode",
+                "tethercode.dev/mode",
                 json!({ "id": bounded(id, 256) }),
                 timestamp,
             ),
@@ -594,7 +594,7 @@ impl AgUiProjector {
                 &mut projection.events,
                 &self.runs,
                 thread_id,
-                "clawdex.dev/config",
+                "tethercode.dev/config",
                 json!({ "entries": entries.iter().take(128).map(|entry| json!({
                     "id": bounded(&entry.id, 256),
                     "value": bounded(&entry.value, 2 * 1024)
@@ -610,7 +610,7 @@ impl AgUiProjector {
                 &mut projection.events,
                 &self.runs,
                 thread_id,
-                "clawdex.dev/session-info",
+                "tethercode.dev/session-info",
                 json!({ "title": field_value(title), "updatedAt": field_value(updated_at) }),
                 timestamp,
             ),
@@ -622,7 +622,7 @@ impl AgUiProjector {
                 &mut projection.events,
                 &self.runs,
                 thread_id,
-                "clawdex.dev/commands",
+                "tethercode.dev/commands",
                 json!({ "commands": commands.iter().take(128).map(|command| json!({
                     "name": bounded(&command.name, 256),
                     "description": bounded(&command.description, 2 * 1024)
@@ -869,7 +869,7 @@ fn push_transcript_truncation(
         &run.run_id,
         run.source_turn_id.clone(),
         custom_event(
-            "clawdex.dev/transcript-truncated".to_string(),
+            "tethercode.dev/transcript-truncated".to_string(),
             json!({
                 "canonicalId": canonical_id,
                 "truncated": true,
@@ -1297,12 +1297,12 @@ mod tests {
         assert_eq!(
             names,
             [
-                "clawdex.dev/plan",
-                "clawdex.dev/usage",
-                "clawdex.dev/mode",
-                "clawdex.dev/config",
-                "clawdex.dev/session-info",
-                "clawdex.dev/commands"
+                "tethercode.dev/plan",
+                "tethercode.dev/usage",
+                "tethercode.dev/mode",
+                "tethercode.dev/config",
+                "tethercode.dev/session-info",
+                "tethercode.dev/commands"
             ]
         );
 
@@ -1546,7 +1546,7 @@ mod tests {
                 .events
                 .iter()
                 .filter(|envelope| {
-                    envelope.event.name.as_deref() == Some("clawdex.dev/transcript-truncated")
+                    envelope.event.name.as_deref() == Some("tethercode.dev/transcript-truncated")
                 })
                 .collect::<Vec<_>>();
             assert_eq!(truncations.len(), 1);
@@ -1615,7 +1615,7 @@ mod tests {
             ["CUSTOM", "TEXT_MESSAGE_START"]
         );
         let value = serde_json::to_value(&projected.events[0]).unwrap();
-        assert_eq!(value["event"]["name"], "clawdex.dev/message-content");
+        assert_eq!(value["event"]["name"], "tethercode.dev/message-content");
         assert_eq!(value["event"]["value"]["content"]["type"], "image");
         assert!(!value.to_string().contains("non-text content omitted"));
 
@@ -1701,13 +1701,13 @@ mod tests {
                 .events
                 .iter()
                 .filter(|envelope| envelope.event.name.as_deref()
-                    == Some("clawdex.dev/transcript-truncated"))
+                    == Some("tethercode.dev/transcript-truncated"))
                 .count(),
             1
         );
         let repeated = projector.project_canonical(&message);
         assert!(repeated.events.iter().all(|envelope| {
-            envelope.event.name.as_deref() != Some("clawdex.dev/transcript-truncated")
+            envelope.event.name.as_deref() != Some("tethercode.dev/transcript-truncated")
         }));
 
         if let CanonicalEvent::MessageChunk { content_block, .. } = &mut message {
@@ -1715,7 +1715,7 @@ mod tests {
         }
         let second = projector.project_canonical(&message);
         assert!(second.events.iter().all(|envelope| {
-            envelope.event.name.as_deref() != Some("clawdex.dev/transcript-truncated")
+            envelope.event.name.as_deref() != Some("tethercode.dev/transcript-truncated")
         }));
     }
 
@@ -1753,7 +1753,7 @@ mod tests {
         assert_eq!(event_types(&partial.events), ["CUSTOM"]);
         assert_eq!(
             serde_json::to_value(&partial.events[0]).unwrap()["event"]["name"],
-            "clawdex.dev/tool-text"
+            "tethercode.dev/tool-text"
         );
         assert!(projector
             .project_canonical(&tool(ToolCallStatus::InProgress, "first"))
@@ -1766,7 +1766,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(&empty_terminal.events[1]).unwrap()["event"]["name"],
-            "clawdex.dev/tool-text"
+            "tethercode.dev/tool-text"
         );
         let metadata_only = CanonicalEvent::Tool {
             agent_id: "alpha-agent".to_string(),
@@ -1896,7 +1896,7 @@ mod tests {
             ]
         );
         let custom = serde_json::to_value(projection.events.last().unwrap()).unwrap();
-        assert_eq!(custom["event"]["name"], "clawdex.dev/tool-content");
+        assert_eq!(custom["event"]["name"], "tethercode.dev/tool-content");
         assert_eq!(custom["event"]["value"]["content"][1]["type"], "diff");
         assert_eq!(custom["event"]["value"]["locations"][0]["line"], 7);
     }

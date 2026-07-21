@@ -137,7 +137,7 @@ pub(super) async fn resolve_preview_session_from_request(
         let Some(session) = preview.resolve_bootstrap(session_id, bootstrap_token).await else {
             return Err(preview_error_response(
                 StatusCode::UNAUTHORIZED,
-                "preview session is invalid or expired; reopen it from Clawdex",
+                "preview session is invalid or expired; reopen it from TetherCode",
             ));
         };
 
@@ -155,13 +155,13 @@ pub(super) async fn resolve_preview_session_from_request(
     let Some(cookie_token) = read_cookie_value(headers, BROWSER_PREVIEW_COOKIE_NAME) else {
         return Err(preview_error_response(
             StatusCode::UNAUTHORIZED,
-            "preview session is missing; reopen it from Clawdex",
+            "preview session is missing; reopen it from TetherCode",
         ));
     };
     let Some(session) = preview.resolve_cookie(&cookie_token).await else {
         return Err(preview_error_response(
             StatusCode::UNAUTHORIZED,
-            "preview session expired; reopen it from Clawdex",
+            "preview session expired; reopen it from TetherCode",
         ));
     };
 
@@ -594,7 +594,7 @@ pub(super) fn preview_desktop_shell_response(
           }} catch (_error) {{}}
           syncHistory(rawUrl);
           var nextStateJson = JSON.stringify({{
-            type: 'clawdexDesktopFrameState',
+            type: 'tethercodeDesktopFrameState',
             shellRequestKey: {shell_request_key_json},
             rawUrl: rawUrl,
             title: title,
@@ -703,8 +703,8 @@ pub(super) fn preview_desktop_shell_response(
             doc.fonts.ready.then(queueMeasureFrameHeight).catch(function() {{}});
           }}
 
-          if (!win.__clawdexDesktopFramePatched && win.history) {{
-            win.__clawdexDesktopFramePatched = true;
+          if (!win.__tethercodeDesktopFramePatched && win.history) {{
+            win.__tethercodeDesktopFramePatched = true;
             var originalPushState = typeof win.history.pushState === 'function' ? win.history.pushState.bind(win.history) : null;
             var originalReplaceState = typeof win.history.replaceState === 'function' ? win.history.replaceState.bind(win.history) : null;
             if (originalPushState) {{
@@ -734,7 +734,7 @@ pub(super) fn preview_desktop_shell_response(
         }});
         window.addEventListener('resize', queueMeasureFrameHeight, {{ passive: true }});
 
-        window.__clawdexDesktopFrame = {{
+        window.__tethercodeDesktopFrame = {{
           goBack: function() {{
             var win = currentFrameWindow();
             if (win) {{
@@ -926,7 +926,7 @@ pub(super) fn preview_overview_shell_response(
           }} catch (_error) {{}}
           syncHistory(rawUrl);
           var nextStateJson = JSON.stringify({{
-            type: 'clawdexDesktopFrameState',
+            type: 'tethercodeDesktopFrameState',
             shellRequestKey: {shell_request_key_json},
             rawUrl: rawUrl,
             title: title,
@@ -1063,8 +1063,8 @@ pub(super) fn preview_overview_shell_response(
             doc.fonts.ready.then(queueMeasureFrameHeight).catch(function() {{}});
           }}
 
-          if (!win.__clawdexDesktopFramePatched && win.history) {{
-            win.__clawdexDesktopFramePatched = true;
+          if (!win.__tethercodeDesktopFramePatched && win.history) {{
+            win.__tethercodeDesktopFramePatched = true;
             var originalPushState = typeof win.history.pushState === 'function' ? win.history.pushState.bind(win.history) : null;
             var originalReplaceState = typeof win.history.replaceState === 'function' ? win.history.replaceState.bind(win.history) : null;
             if (originalPushState) {{
@@ -1093,7 +1093,7 @@ pub(super) fn preview_overview_shell_response(
           setTimeout(queueMeasureFrameHeight, 400);
         }});
 
-        window.__clawdexDesktopFrame = {{
+        window.__tethercodeDesktopFrame = {{
           goBack: function() {{
             var win = currentFrameWindow();
             if (win) {{
@@ -1240,10 +1240,10 @@ pub(super) fn inject_preview_head_markup(document: &str, markup: &str) -> String
 pub(super) fn build_preview_runtime_script() -> String {
     format!(
         r#"(function() {{
-  if (globalThis.__clawdexPreviewRuntimeInstalled) {{
+  if (globalThis.__tethercodePreviewRuntimeInstalled) {{
     return;
   }}
-  globalThis.__clawdexPreviewRuntimeInstalled = true;
+  globalThis.__tethercodePreviewRuntimeInstalled = true;
 
   var LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
   var PROXY_PREFIX = "{proxy_prefix}";

@@ -1,6 +1,6 @@
 #!/bin/sh
 
-mode="${CLAWDEX_FAKE_BACKEND_MODE:-normal}"
+mode="${TETHERCODE_FAKE_BACKEND_MODE:-normal}"
 
 request_id() {
   value=${1#*\"id\":}
@@ -13,7 +13,7 @@ while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*)
       id=$(request_id "$line")
-      printf '{"id":%s,"result":{"serverInfo":{"name":"clawdex-fake"}}}\n' "$id"
+      printf '{"id":%s,"result":{"serverInfo":{"name":"tethercode-fake"}}}\n' "$id"
       ;;
     *'"method":"thread/read"'*)
       if [ "$mode" = "death-on-thread-read" ]; then

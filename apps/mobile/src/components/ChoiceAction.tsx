@@ -9,11 +9,11 @@ import {
   View,
 } from 'react-native';
 
-import clawdexMark from '../../assets/brand/mark.png';
+import tethercodeMark from '../../assets/brand/mark.png';
 import { useAppTheme, type AppTheme } from '../theme';
 
 type ChoiceActionVariant = 'primary' | 'secondary';
-type ChoiceActionLogo = 'github' | 'clawdex';
+type ChoiceActionLogo = 'github' | 'tethercode';
 
 interface ChoiceActionProps {
   title: string;
@@ -58,9 +58,9 @@ export function ChoiceAction({
           <ActivityIndicator size="small" color={iconColor} />
         ) : logo === 'github' ? (
           <Ionicons name="logo-github" size={19} color={iconColor} />
-        ) : logo === 'clawdex' ? (
+        ) : logo === 'tethercode' ? (
           <Image
-            source={clawdexMark}
+            source={tethercodeMark}
             resizeMode="contain"
             style={[styles.logoImage, { tintColor: iconColor }]}
           />

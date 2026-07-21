@@ -185,7 +185,7 @@ describe('component coverage closure', () => {
     const tree = render(
       <>
         <ChoiceAction title="Primary" meta="Ready" variant="primary" logo="github" onPress={onPress} />
-        <ChoiceAction title="Brand" logo="clawdex" onPress={onPress} />
+        <ChoiceAction title="Brand" logo="tethercode" onPress={onPress} />
         <ChoiceAction title="Icon" iconName="folder-outline" onPress={onPress} />
         <ChoiceAction title="Loading" loading onPress={onPress} />
         <ChoiceAction title="Disabled" disabled onPress={onPress} />

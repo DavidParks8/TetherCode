@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -L)"
 PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -L)"
-ROOT_DIR="${CLAWDEX_WORKSPACE_ROOT:-${INIT_CWD:-$(pwd -L)}}"
+ROOT_DIR="${TETHERCODE_WORKSPACE_ROOT:-${INIT_CWD:-$(pwd -L)}}"
 if [[ ! -d "$ROOT_DIR" ]]; then
   ROOT_DIR="$PACKAGE_ROOT"
 fi
@@ -129,13 +129,13 @@ stop_process_group() {
   fi
 }
 
-echo "Stopping Clawdex services for project: $ROOT_DIR"
+echo "Stopping TetherCode services for project: $ROOT_DIR"
 
 BRIDGE_PORT="${BRIDGE_PORT:-$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_PORT" || true)}"
 BRIDGE_PORT="${BRIDGE_PORT:-8787}"
 
 stop_process_group "Expo" "$ROOT_DIR_REGEX/.*/expo start|$ROOT_DIR_REGEX/node_modules/.bin/expo start"
-stop_launchctl_job "clawdex.bridge.$BRIDGE_PORT" || true
+stop_launchctl_job "tethercode.bridge.$BRIDGE_PORT" || true
 stop_process_group "Bridge launcher" "$ROOT_DIR_REGEX/scripts/start-bridge-secure\\.js|$PACKAGE_ROOT_REGEX/scripts/start-bridge-secure\\.js"
 stop_pid_file_process "Rust bridge" "$BRIDGE_PID_FILE" || true
 stop_process_group "Rust bridge" "$ROOT_DIR_REGEX/services/rust-bridge|$PACKAGE_ROOT_REGEX/services/rust-bridge"

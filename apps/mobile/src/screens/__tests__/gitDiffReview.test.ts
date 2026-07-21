@@ -42,7 +42,7 @@ describe('gitDiffReview', () => {
 
     const prompt = buildGitReviewPrompt([comment], '/repo');
 
-    expect(prompt).toContain('clawdex.inline-review-comments.v1');
+    expect(prompt).toContain('tethercode.inline-review-comments.v1');
     expect(prompt).toContain('"side": "NEW"');
     expect(prompt).toContain('"line": 2');
     expect(prompt).toContain('Handle the empty case');

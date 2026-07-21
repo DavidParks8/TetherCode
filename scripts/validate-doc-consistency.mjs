@@ -57,22 +57,6 @@ for (const relativeFile of currentMarkdown) {
   }
 }
 
-for (const htmlFile of walkFiles(path.join(root, 'site'), '.html')) {
-  const content = readFileSync(htmlFile, 'utf8');
-  assertNoPublicReviewGuidance(path.relative(root, htmlFile), content);
-  for (const match of content.matchAll(/href="([^"]+)"/g)) {
-    const target = match[1].split('#')[0];
-    if (!target || /^(?:https?:|mailto:)/.test(target)) continue;
-    const resolved = path.resolve(path.dirname(htmlFile), decodeURI(target));
-    if (!existsSync(resolved)) fail(`${path.relative(root, htmlFile)} has a broken local link: ${match[1]}`);
-  }
-}
-
-const appReview = readFileSync(path.join(root, 'docs/app-review-notes.md'), 'utf8');
-for (const required of ['VPN', 'BRIDGE_AUTH_TOKEN', 'BRIDGE_ALLOW_INSECURE_NO_AUTH=false', 'Revoke VPN access']) {
-  if (!appReview.includes(required)) fail(`app review template is missing: ${required}`);
-}
-
 const push = readFileSync(path.join(root, 'docs/push-notifications.md'), 'utf8');
 for (const method of ['bridge/push/register', 'bridge/push/unregister', 'bridge/push/list']) {
   if (!push.includes(method)) fail(`push guide is missing method ${method}`);
@@ -81,8 +65,8 @@ if (/content-free/i.test(push)) fail('push guide incorrectly describes payloads 
 
 const operations = readFileSync(path.join(root, 'docs/setup-and-operations.md'), 'utf8');
 for (const required of [
-  'clawdex-tree-v1',
-  '`.clawdex-install.json`',
+  'tethercode-tree-v1',
+  '`.tethercode-install.json`',
   '100,000 entries',
   '2 GiB',
   '4,096 UTF-8 bytes',
@@ -103,11 +87,8 @@ for (const staleClaim of ['No push notifications', 'No WebSocket reconnection'])
 }
 
 const privacy = readFileSync(path.join(root, 'docs/privacy-policy.md'), 'utf8');
-const sitePrivacy = readFileSync(path.join(root, 'site/privacy/index.html'), 'utf8');
-for (const [name, content] of [['docs privacy policy', privacy], ['site privacy policy', sitePrivacy]]) {
-  if (!/Expo Push Notification\s+Service/.test(content) || !/140/.test(content)) {
-    fail(`${name} does not disclose push-provider transit and reply preview bounds`);
-  }
+if (!/Expo Push Notification\s+Service/.test(privacy) || !/140/.test(privacy)) {
+  fail('privacy policy does not disclose push-provider transit and reply preview bounds');
 }
 
 process.stdout.write('Documentation security, contract, and local links are consistent.\n');

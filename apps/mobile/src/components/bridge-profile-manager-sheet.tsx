@@ -336,7 +336,7 @@ export function BridgeProfileManagerSheet({
                             <Text style={styles.deleteConfirmTitle}>Delete this profile?</Text>
                             <Text style={styles.deleteConfirmBody}>
                               This removes the saved connection from the device. If it is active,
-                              Clawdex will switch to another saved connection or return to
+                              TetherCode will switch to another saved connection or return to
                               onboarding.
                             </Text>
                             <View style={styles.inlineActions}>

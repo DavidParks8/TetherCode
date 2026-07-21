@@ -67,9 +67,9 @@ impl BridgeConfig {
 
         let acp_manifest_path = env::var("ACP_AGENT_MANIFEST")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| workdir.join(".clawdex/agents.json"));
+            .unwrap_or_else(|_| workdir.join(".tethercode/agents.json"));
         let acp_approved_executable_roots =
-            parse_path_list_env("ACP_AGENT_ROOTS", &[workdir.join(".clawdex/agents")])?;
+            parse_path_list_env("ACP_AGENT_ROOTS", &[workdir.join(".tethercode/agents")])?;
         let acp_initialize_timeout =
             Duration::from_millis(parse_positive_u64_env("ACP_INITIALIZE_TIMEOUT_MS", 15_000)?);
         let auth_token = env::var("BRIDGE_AUTH_TOKEN")
@@ -459,7 +459,7 @@ mod tests {
             connect_url: None,
             preview_connect_url: None,
             workdir: PathBuf::from("/tmp/workdir"),
-            acp_manifest_path: PathBuf::from("/tmp/workdir/.clawdex/agents.json"),
+            acp_manifest_path: PathBuf::from("/tmp/workdir/.tethercode/agents.json"),
             acp_approved_executable_roots: vec![PathBuf::from("/bin")],
             acp_initialize_timeout: Duration::from_secs(15),
             auth_token: None,
@@ -659,11 +659,11 @@ mod tests {
     #[test]
     fn environment_parsers_cover_missing_valid_and_invalid_values() {
         let suffix = uuid::Uuid::new_v4();
-        let bool_name = format!("CLAWDEX_TEST_BOOL_{suffix}");
-        let default_bool_name = format!("CLAWDEX_TEST_DEFAULT_BOOL_{suffix}");
-        let usize_name = format!("CLAWDEX_TEST_USIZE_{suffix}");
-        let url_name = format!("CLAWDEX_TEST_URL_{suffix}");
-        let origin_name = format!("CLAWDEX_TEST_ORIGIN_{suffix}");
+        let bool_name = format!("TETHERCODE_TEST_BOOL_{suffix}");
+        let default_bool_name = format!("TETHERCODE_TEST_DEFAULT_BOOL_{suffix}");
+        let usize_name = format!("TETHERCODE_TEST_USIZE_{suffix}");
+        let url_name = format!("TETHERCODE_TEST_URL_{suffix}");
+        let origin_name = format!("TETHERCODE_TEST_ORIGIN_{suffix}");
 
         assert!(!parse_bool_env(&bool_name));
         unsafe { env::set_var(&bool_name, " TRUE ") };
@@ -760,7 +760,7 @@ mod tests {
                 .map(|name| (*name, env::var_os(name)))
                 .collect(),
         );
-        let root = std::env::temp_dir().join(format!("clawdex-config-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("tethercode-config-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let values = [
             ("BRIDGE_HOST", "127.0.0.1"),

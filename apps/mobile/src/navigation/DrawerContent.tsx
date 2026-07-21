@@ -73,8 +73,8 @@ const DRAWER_STREAM_BATCH_DELAY_MS = 900;
 const DRAWER_DEEP_CHAT_PAGE_LIMIT = 50;
 const DRAWER_DEEP_LOAD_DELAY_MS = 2500;
 const DRAWER_DEEP_CHAT_CACHE_TTL_MS = Number.MAX_SAFE_INTEGER;
-const PINNED_CHAT_IDS_FILE = 'clawdex-pinned-chats.json';
-const PINNED_WORKSPACE_PATHS_FILE = 'clawdex-workspace-favorites.json';
+const PINNED_CHAT_IDS_FILE = 'tethercode-pinned-chats.json';
+const PINNED_WORKSPACE_PATHS_FILE = 'tethercode-workspace-favorites.json';
 const PINNED_WORKSPACE_PATHS_VERSION = 1;
 const PINNED_WORKSPACE_PATHS_LIMIT = 4;
 const DRAWER_WORKSPACE_ROW_HEIGHT = 58;
@@ -1015,7 +1015,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
                   <BrandMark size={18} />
                 </View>
                 <View style={styles.heroCopy}>
-                  <Text style={styles.heroTitle}>Clawdex</Text>
+                  <Text style={styles.heroTitle}>TetherCode</Text>
                   <Text style={styles.heroMeta} numberOfLines={1}>
                     {formatCompactCount(chats.length)} chats · {formatCompactCount(runningChatCount)} live
                   </Text>

@@ -25,15 +25,15 @@ use super::interactions::{
 use super::session::{AcpSession, ReconstructionError, SessionRegistry, SessionRouteError};
 
 const COMMAND_BUFFER: usize = 64;
-pub const STEER_METHOD: &str = "_clawdex.dev/session/steer";
+pub const STEER_METHOD: &str = "_tethercode.dev/session/steer";
 const STEER_EXTENSION_VERSION: u64 = 1;
 const MAX_EXTENSION_METADATA_BYTES: usize = 4 * 1024;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SteerExtensionMetadata {
-    #[serde(rename = "clawdex.dev")]
-    clawdex_dev: SteerExtension,
+    #[serde(rename = "tethercode.dev")]
+    tethercode_dev: SteerExtension,
 }
 
 #[derive(Deserialize)]
@@ -59,7 +59,7 @@ struct SessionSteerCapability {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonRpcRequest)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[request(method = "_clawdex.dev/session/steer", response = SteerResponse)]
+#[request(method = "_tethercode.dev/session/steer", response = SteerResponse)]
 pub struct SteerRequest {
     pub session_id: SessionId,
     pub expected_run_id: String,
@@ -175,9 +175,9 @@ impl NegotiatedInitialize {
         else {
             return false;
         };
-        metadata.clawdex_dev.version == STEER_EXTENSION_VERSION
-            && metadata.clawdex_dev.capabilities.session_steer.method == STEER_METHOD
-            && metadata.clawdex_dev.capabilities.session_steer.version == STEER_EXTENSION_VERSION
+        metadata.tethercode_dev.version == STEER_EXTENSION_VERSION
+            && metadata.tethercode_dev.capabilities.session_steer.method == STEER_METHOD
+            && metadata.tethercode_dev.capabilities.session_steer.version == STEER_EXTENSION_VERSION
     }
 }
 
@@ -1195,11 +1195,11 @@ mod tests {
 
     fn steer_meta() -> agent_client_protocol::schema::v1::Meta {
         serde_json::from_value(serde_json::json!({
-            "clawdex.dev": {
+            "tethercode.dev": {
                 "version": 1,
                 "capabilities": {
                     "sessionSteer": {
-                        "method": "_clawdex.dev/session/steer",
+                        "method": "_tethercode.dev/session/steer",
                         "version": 1
                     }
                 }
@@ -1224,17 +1224,17 @@ mod tests {
         assert!(!absent.supports_session_steer());
 
         for value in [
-            serde_json::json!({"clawdex.dev": true}),
-            serde_json::json!({"clawdex.dev": {"version": "1", "capabilities": {"sessionSteer": {"method": STEER_METHOD, "version": 1}}}}),
-            serde_json::json!({"clawdex.dev": {"version": 2, "capabilities": {}}}),
-            serde_json::json!({"clawdex.dev": {"version": 1, "capabilities": []}}),
-            serde_json::json!({"clawdex.dev": {"version": 1, "capabilities": {"sessionSteer": true}}}),
-            serde_json::json!({"clawdex.dev": {"version": 2, "capabilities": {"sessionSteer": {"method": STEER_METHOD, "version": 1}}}}),
-            serde_json::json!({"clawdex.dev": {"version": 1, "capabilities": {"sessionSteer": {"method": "wrong", "version": 1}}}}),
-            serde_json::json!({"clawdex.dev": {"version": 1, "capabilities": {"sessionSteer": {"method": STEER_METHOD, "version": 2}}}}),
-            serde_json::json!({"clawdex.dev": {"version": 1, "capabilities": {"sessionSteer": {"method": STEER_METHOD, "version": 1, "extra": true}}}}),
-            serde_json::json!({"clawdex.dev": {"version": 1, "capabilities": {"sessionSteer": {"method": STEER_METHOD, "version": 1}}, "extra": true}}),
-            serde_json::json!({"clawdex.dev": {"version": 1, "capabilities": {"sessionSteer": {"method": STEER_METHOD, "version": 1}}}, "extra": true}),
+            serde_json::json!({"tethercode.dev": true}),
+            serde_json::json!({"tethercode.dev": {"version": "1", "capabilities": {"sessionSteer": {"method": STEER_METHOD, "version": 1}}}}),
+            serde_json::json!({"tethercode.dev": {"version": 2, "capabilities": {}}}),
+            serde_json::json!({"tethercode.dev": {"version": 1, "capabilities": []}}),
+            serde_json::json!({"tethercode.dev": {"version": 1, "capabilities": {"sessionSteer": true}}}),
+            serde_json::json!({"tethercode.dev": {"version": 2, "capabilities": {"sessionSteer": {"method": STEER_METHOD, "version": 1}}}}),
+            serde_json::json!({"tethercode.dev": {"version": 1, "capabilities": {"sessionSteer": {"method": "wrong", "version": 1}}}}),
+            serde_json::json!({"tethercode.dev": {"version": 1, "capabilities": {"sessionSteer": {"method": STEER_METHOD, "version": 2}}}}),
+            serde_json::json!({"tethercode.dev": {"version": 1, "capabilities": {"sessionSteer": {"method": STEER_METHOD, "version": 1, "extra": true}}}}),
+            serde_json::json!({"tethercode.dev": {"version": 1, "capabilities": {"sessionSteer": {"method": STEER_METHOD, "version": 1}}, "extra": true}}),
+            serde_json::json!({"tethercode.dev": {"version": 1, "capabilities": {"sessionSteer": {"method": STEER_METHOD, "version": 1}}}, "extra": true}),
         ] {
             let mut response = initialized(AgentCapabilities::new());
             response.meta = serde_json::from_value(value).ok();
@@ -1253,7 +1253,7 @@ mod tests {
 
         let mut response = initialized(AgentCapabilities::new());
         response.meta = serde_json::from_value(serde_json::json!({
-            "clawdex.dev": {
+            "tethercode.dev": {
                 "version": 1,
                 "capabilities": {
                     "sessionSteer": {
