@@ -7,6 +7,7 @@ import { AppThemeProvider, createAppTheme } from '../../theme';
 import { OnboardingScreen, type OnboardingMode } from '../OnboardingScreen';
 
 const mockRequestCameraPermission = jest.fn().mockResolvedValue({ granted: false });
+const mockWsConnect = jest.fn();
 const mockWsRequest = jest.fn().mockResolvedValue({ status: 'ok' });
 const mockWsDisconnect = jest.fn();
 let mockCameraGranted = false;
@@ -21,6 +22,7 @@ jest.mock('expo-camera', () => ({
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn().mockResolvedValue(undefined) }));
 jest.mock('../../api/ws', () => ({
   HostBridgeWsClient: class {
+    connect = mockWsConnect;
     request = mockWsRequest;
     disconnect = mockWsDisconnect;
   },
@@ -192,6 +194,10 @@ describe('OnboardingScreen behavior', () => {
     expect(global.fetch).toHaveBeenCalledWith('http://127.0.0.1:3001/path/health', expect.objectContaining({
       headers: { Authorization: 'Bearer token' },
     }));
+    expect(mockWsConnect).toHaveBeenCalledTimes(1);
+    expect(mockWsConnect.mock.invocationCallOrder[0]).toBeLessThan(
+      mockWsRequest.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER
+    );
     expect(mockWsRequest).toHaveBeenCalledWith('bridge/health/read');
     expect(mockWsDisconnect).toHaveBeenCalled();
     expect(result.onSave).toHaveBeenCalledWith({ bridgeUrl: 'http://127.0.0.1:3001/path', bridgeToken: 'token' });

@@ -357,6 +357,7 @@ export function OnboardingScreen({
             allowQueryTokenAuth,
             requestTimeoutMs: CONNECTION_CHECK_TIMEOUT_MS,
           });
+          probeClient.connect();
           const rpcHealth = await probeClient.request<{ status?: string }>('bridge/health/read');
           if (rpcHealth?.status !== 'ok' && rpcHealth?.status !== 'degraded') {
             throw new Error('authenticated RPC probe returned unexpected response');
