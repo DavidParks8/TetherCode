@@ -1,0 +1,1445 @@
+{
+  "$comment": "Generated from @ag-ui/core@0.0.57 EventSchemas; source sha256 2292a14d101c9d61691a5ab4756504b196c4c8a1726bbfa54324daee8d6b9d10",
+  "x-ag-ui-core-version": "0.0.57",
+  "x-ag-ui-core-source-sha256": "2292a14d101c9d61691a5ab4756504b196c4c8a1726bbfa54324daee8d6b9d10",
+  "$ref": "#/definitions/AgUiEvent",
+  "definitions": {
+    "AgUiEvent": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "TEXT_MESSAGE_START"
+            },
+            "timestamp": {
+              "type": "number"
+            },
+            "rawEvent": {},
+            "messageId": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "developer",
+                "system",
+                "assistant",
+                "user"
+              ],
+              "default": "assistant"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "messageId"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "TEXT_MESSAGE_CONTENT"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messageId": {
+              "type": "string"
+            },
+            "delta": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "messageId",
+            "delta"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "TEXT_MESSAGE_END"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messageId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "messageId"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "TEXT_MESSAGE_CHUNK"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messageId": {
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/role"
+            },
+            "delta": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "THINKING_START"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "THINKING_END"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "THINKING_TEXT_MESSAGE_START"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "delta": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/1/properties/delta"
+            },
+            "type": {
+              "type": "string",
+              "const": "THINKING_TEXT_MESSAGE_CONTENT"
+            }
+          },
+          "required": [
+            "delta",
+            "type"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "THINKING_TEXT_MESSAGE_END"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "TOOL_CALL_START"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "toolCallId": {
+              "type": "string"
+            },
+            "toolCallName": {
+              "type": "string"
+            },
+            "parentMessageId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "toolCallId",
+            "toolCallName"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "TOOL_CALL_ARGS"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "toolCallId": {
+              "type": "string"
+            },
+            "delta": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "toolCallId",
+            "delta"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "TOOL_CALL_END"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "toolCallId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "toolCallId"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "TOOL_CALL_CHUNK"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "toolCallId": {
+              "type": "string"
+            },
+            "toolCallName": {
+              "type": "string"
+            },
+            "parentMessageId": {
+              "type": "string"
+            },
+            "delta": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "TOOL_CALL_RESULT"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messageId": {
+              "type": "string"
+            },
+            "toolCallId": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "const": "tool"
+            }
+          },
+          "required": [
+            "type",
+            "messageId",
+            "toolCallId",
+            "content"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "STATE_SNAPSHOT"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "snapshot": {}
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "STATE_DELTA"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "delta": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "type",
+            "delta"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "MESSAGES_SNAPSHOT"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messages": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string",
+                        "const": "developer"
+                      },
+                      "content": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "encryptedValue": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "role",
+                      "content"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items/anyOf/0/properties/id"
+                      },
+                      "role": {
+                        "type": "string",
+                        "const": "system"
+                      },
+                      "content": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items/anyOf/0/properties/name"
+                      },
+                      "encryptedValue": {
+                        "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items/anyOf/0/properties/encryptedValue"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "role",
+                      "content"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items/anyOf/0/properties/id"
+                      },
+                      "role": {
+                        "type": "string",
+                        "const": "assistant"
+                      },
+                      "content": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items/anyOf/0/properties/name"
+                      },
+                      "encryptedValue": {
+                        "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items/anyOf/0/properties/encryptedValue"
+                      },
+                      "toolCalls": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "type": {
+                              "type": "string",
+                              "const": "function"
+                            },
+                            "function": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                },
+                                "arguments": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "arguments"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "encryptedValue": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "type",
+                            "function"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "role"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items/anyOf/0/properties/id"
+                      },
+                      "role": {
+                        "type": "string",
+                        "const": "user"
+                      },
+                      "content": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "text"
+                                    },
+                                    "text": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "text"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "image"
+                                    },
+                                    "source": {
+                                      "anyOf": [
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "type": "string",
+                                              "const": "data"
+                                            },
+                                            "value": {
+                                              "type": "string"
+                                            },
+                                            "mimeType": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "type",
+                                            "value",
+                                            "mimeType"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "type": "string",
+                                              "const": "url"
+                                            },
+                                            "value": {
+                                              "type": "string"
+                                            },
+                                            "mimeType": {
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "type",
+                                            "value"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      ]
+                                    },
+                                    "metadata": {}
+                                  },
+                                  "required": [
+                                    "type",
+                                    "source"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "audio"
+                                    },
+                                    "source": {
+                                      "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items/anyOf/3/properties/content/anyOf/1/items/anyOf/1/properties/source"
+                                    },
+                                    "metadata": {}
+                                  },
+                                  "required": [
+                                    "type",
+                                    "source"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "video"
+                                    },
+                                    "source": {
+                                      "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items/anyOf/3/properties/content/anyOf/1/items/anyOf/1/properties/source"
+                                    },
+                                    "metadata": {}
+                                  },
+                                  "required": [
+                                    "type",
+                                    "source"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "document"
+                                    },
+                                    "source": {
+                                      "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items/anyOf/3/properties/content/anyOf/1/items/anyOf/1/properties/source"
+                                    },
+                                    "metadata": {}
+                                  },
+                                  "required": [
+                                    "type",
+                                    "source"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "binary"
+                                    },
+                                    "mimeType": {
+                                      "type": "string"
+                                    },
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "url": {
+                                      "type": "string"
+                                    },
+                                    "data": {
+                                      "type": "string"
+                                    },
+                                    "filename": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "mimeType"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      },
+                      "name": {
+                        "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items/anyOf/0/properties/name"
+                      },
+                      "encryptedValue": {
+                        "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items/anyOf/0/properties/encryptedValue"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "role",
+                      "content"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "content": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string",
+                        "const": "tool"
+                      },
+                      "toolCallId": {
+                        "type": "string"
+                      },
+                      "error": {
+                        "type": "string"
+                      },
+                      "encryptedValue": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "content",
+                      "role",
+                      "toolCallId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string",
+                        "const": "activity"
+                      },
+                      "activityType": {
+                        "type": "string"
+                      },
+                      "content": {
+                        "type": "object",
+                        "additionalProperties": {}
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "role",
+                      "activityType",
+                      "content"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string",
+                        "const": "reasoning"
+                      },
+                      "content": {
+                        "type": "string"
+                      },
+                      "encryptedValue": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "role",
+                      "content"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "type",
+            "messages"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "ACTIVITY_SNAPSHOT"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messageId": {
+              "type": "string"
+            },
+            "activityType": {
+              "type": "string"
+            },
+            "content": {
+              "type": "object",
+              "additionalProperties": {}
+            },
+            "replace": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "type",
+            "messageId",
+            "activityType",
+            "content"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "ACTIVITY_DELTA"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messageId": {
+              "type": "string"
+            },
+            "activityType": {
+              "type": "string"
+            },
+            "patch": {
+              "type": "array"
+            }
+          },
+          "required": [
+            "type",
+            "messageId",
+            "activityType",
+            "patch"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "RAW"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "event": {},
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "CUSTOM"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "name": {
+              "type": "string"
+            },
+            "value": {}
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "RUN_STARTED"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "threadId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "parentRunId": {
+              "type": "string"
+            },
+            "input": {
+              "type": "object",
+              "properties": {
+                "threadId": {
+                  "type": "string"
+                },
+                "runId": {
+                  "type": "string"
+                },
+                "parentRunId": {
+                  "type": "string"
+                },
+                "state": {},
+                "messages": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/AgUiEvent/anyOf/16/properties/messages/items"
+                  }
+                },
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "parameters": {},
+                      "metadata": {
+                        "type": "object",
+                        "additionalProperties": {}
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "context": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "description": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "description",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "forwardedProps": {},
+                "resume": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "interruptId": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "resolved",
+                          "cancelled"
+                        ]
+                      },
+                      "payload": {}
+                    },
+                    "required": [
+                      "interruptId",
+                      "status"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "threadId",
+                "runId",
+                "messages",
+                "tools",
+                "context"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "type",
+            "threadId",
+            "runId"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "RUN_FINISHED"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "threadId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "result": {},
+            "outcome": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "success"
+                        }
+                      },
+                      "required": [
+                        "type"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "interrupt"
+                        },
+                        "interrupts": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "message": {
+                                "type": "string"
+                              },
+                              "toolCallId": {
+                                "type": "string"
+                              },
+                              "responseSchema": {
+                                "type": "object",
+                                "additionalProperties": {}
+                              },
+                              "expiresAt": {
+                                "type": "string"
+                              },
+                              "metadata": {
+                                "type": "object",
+                                "additionalProperties": {}
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "minItems": 1
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "interrupts"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "threadId",
+            "runId"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "RUN_ERROR"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "message": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "STEP_STARTED"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "stepName": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "stepName"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "STEP_FINISHED"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "stepName": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "stepName"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "REASONING_START"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messageId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "messageId"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "REASONING_MESSAGE_START"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messageId": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "const": "reasoning"
+            }
+          },
+          "required": [
+            "type",
+            "messageId",
+            "role"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "REASONING_MESSAGE_CONTENT"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messageId": {
+              "type": "string"
+            },
+            "delta": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "messageId",
+            "delta"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "REASONING_MESSAGE_END"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messageId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "messageId"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "REASONING_MESSAGE_CHUNK"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messageId": {
+              "type": "string"
+            },
+            "delta": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "REASONING_END"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "messageId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "messageId"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "REASONING_ENCRYPTED_VALUE"
+            },
+            "timestamp": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/timestamp"
+            },
+            "rawEvent": {
+              "$ref": "#/definitions/AgUiEvent/anyOf/0/properties/rawEvent"
+            },
+            "subtype": {
+              "type": "string",
+              "enum": [
+                "tool-call",
+                "message"
+              ]
+            },
+            "entityId": {
+              "type": "string"
+            },
+            "encryptedValue": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "subtype",
+            "entityId",
+            "encryptedValue"
+          ],
+          "additionalProperties": true
+        }
+      ]
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -34,10 +34,27 @@ function chat(id: string, message = id): Chat {
 
 describe('chatSnapshotCache', () => {
   it('round trips exact-version snapshots for one profile', () => {
+    const typedChat = chat('thread-1');
+    typedChat.messages[0].parts = [
+      { type: 'text', text: 'A' },
+      { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
+      { type: 'text', text: 'B' },
+      { type: 'resourceLink', uri: 'file:///linked.txt', name: 'linked.txt', size: 7 },
+      {
+        type: 'resource',
+        resource: {
+          uri: 'file:///embedded.txt',
+          text: 'payload',
+          mimeType: 'text/plain',
+          metadata: { source: 'fixture' },
+        },
+      },
+      { type: 'audio', data: 'YXVkaW8=', mimeType: 'audio/wav' },
+    ];
     const updated = updateChatSnapshotCache(
       createEmptyChatSnapshotCache('profile-a'),
       'thread-1',
-      chat('thread-1'),
+      typedChat,
       '2026-07-17T00:00:00.000Z'
     );
 
@@ -48,6 +65,7 @@ describe('chatSnapshotCache', () => {
         Date.parse('2026-07-18T00:00:00.000Z')
       )
     ).toEqual(updated);
+    expect(updated.entries[0]?.chat.messages[0]?.parts).toEqual(typedChat.messages[0].parts);
     expect(parseChatSnapshotCache(JSON.stringify(updated), 'profile-b').entries).toEqual([]);
   });
 

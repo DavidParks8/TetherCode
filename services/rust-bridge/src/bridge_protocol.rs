@@ -1,5 +1,22 @@
 use crate::*;
 
+pub(super) struct InFlightRequestPermits {
+    pub(super) _client: OwnedSemaphorePermit,
+    pub(super) _global: OwnedSemaphorePermit,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BrowserPreviewCreateRequest {
+    pub(super) target_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BrowserPreviewCloseRequest {
+    pub(super) session_id: String,
+}
+
 #[derive(Debug)]
 pub(super) struct BridgeError {
     pub(super) code: i64,
@@ -68,7 +85,7 @@ pub(super) fn queue_operation_error(error: String) -> BridgeError {
     BridgeError::server(&error)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct TerminalExecRequest {
     pub(super) command: String,
@@ -391,55 +408,155 @@ pub(super) struct FileSystemListResponse {
     pub(super) max_entries: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct PendingApproval {
-    pub(super) id: String,
+    pub(super) request_id: String,
+    pub(super) agent_id: String,
     pub(super) kind: String,
     pub(super) thread_id: String,
     pub(super) turn_id: String,
     pub(super) item_id: String,
+    pub(super) title: String,
+    pub(super) message: String,
     pub(super) requested_at: String,
     pub(super) reason: Option<String>,
     pub(super) command: Option<String>,
     pub(super) cwd: Option<String>,
     pub(super) grant_root: Option<String>,
     pub(super) proposed_execpolicy_amendment: Option<Vec<String>>,
+    pub(super) options: Vec<PendingApprovalOption>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl From<crate::acp::interactions::PendingPermissionSummary> for PendingApproval {
+    fn from(entry: crate::acp::interactions::PendingPermissionSummary) -> Self {
+        Self {
+            request_id: entry.request_id,
+            agent_id: entry.agent_id,
+            kind: match entry.kind {
+                agent_client_protocol::schema::v1::ToolKind::Execute => "commandExecution",
+                _ => "fileChange",
+            }
+            .to_string(),
+            thread_id: entry.thread_id,
+            turn_id: entry.turn_id,
+            item_id: entry.tool_call_id,
+            title: entry.title.clone(),
+            message: entry.title.clone(),
+            requested_at: entry.requested_at,
+            reason: Some(entry.title),
+            command: None,
+            cwd: None,
+            grant_root: None,
+            proposed_execpolicy_amendment: None,
+            options: entry
+                .options
+                .into_iter()
+                .map(|option| PendingApprovalOption {
+                    id: option.id,
+                    label: option.name,
+                    kind: Some(format!("{:?}", option.kind)),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PendingApprovalOption {
+    pub(super) id: String,
+    pub(super) label: String,
+    pub(super) kind: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ResolveApprovalRequest {
     pub(super) id: String,
-    pub(super) decision: Value,
+    pub(super) decision: String,
     pub(super) resolution_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct UserInputAnswerPayload {
-    pub(super) answers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ResolveUserInputRequest {
     pub(super) id: String,
-    pub(super) answers: HashMap<String, UserInputAnswerPayload>,
+    #[serde(default)]
+    pub(super) answers: HashMap<String, Value>,
+    pub(super) action: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct PendingUserInputRequest {
-    pub(super) id: String,
+    pub(super) request_id: String,
+    pub(super) agent_id: Option<String>,
     pub(super) thread_id: String,
     pub(super) turn_id: String,
     pub(super) item_id: String,
+    pub(super) message: String,
     pub(super) requested_at: String,
     pub(super) questions: Vec<PendingUserInputQuestion>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl From<crate::acp::interactions::PendingElicitationSummary> for PendingUserInputRequest {
+    fn from(entry: crate::acp::interactions::PendingElicitationSummary) -> Self {
+        let message = entry.message.clone();
+        let request_id = entry.request_id;
+        let item_id = entry.tool_call_id.unwrap_or_else(|| request_id.clone());
+        Self {
+            request_id,
+            agent_id: Some(entry.agent_id),
+            thread_id: entry.thread_id,
+            turn_id: entry.turn_id,
+            item_id,
+            message: entry.message,
+            requested_at: entry.requested_at,
+            questions: entry
+                .fields
+                .into_iter()
+                .map(|field| PendingUserInputQuestion {
+                    id: field.name,
+                    header: field.title.unwrap_or_else(|| message.clone()),
+                    question: field.description.unwrap_or_else(|| message.clone()),
+                    is_other: false,
+                    is_secret: field.sensitive,
+                    required: field.required,
+                    field_type: match field.kind {
+                        crate::acp::interactions::ElicitationFieldKind::String => "string",
+                        crate::acp::interactions::ElicitationFieldKind::Integer => "integer",
+                        crate::acp::interactions::ElicitationFieldKind::Number => "number",
+                        crate::acp::interactions::ElicitationFieldKind::Boolean => "boolean",
+                        crate::acp::interactions::ElicitationFieldKind::StringArray => {
+                            "string-array"
+                        }
+                        crate::acp::interactions::ElicitationFieldKind::Unsupported => {
+                            "unsupported"
+                        }
+                    }
+                    .to_string(),
+                    default_value: field
+                        .default
+                        .and_then(|value| serde_json::to_value(value).ok()),
+                    options: (!field.options.is_empty()).then(|| {
+                        field
+                            .options
+                            .into_iter()
+                            .map(|(value, label)| PendingUserInputQuestionOption {
+                                value,
+                                label,
+                                description: String::new(),
+                            })
+                            .collect()
+                    }),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct PendingUserInputQuestion {
     pub(super) id: String,
@@ -447,14 +564,83 @@ pub(super) struct PendingUserInputQuestion {
     pub(super) question: String,
     pub(super) is_other: bool,
     pub(super) is_secret: bool,
+    pub(super) required: bool,
+    pub(super) field_type: String,
+    pub(super) default_value: Option<Value>,
     pub(super) options: Option<Vec<PendingUserInputQuestionOption>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct PendingUserInputQuestionOption {
+    pub(super) value: String,
     pub(super) label: String,
     pub(super) description: String,
+}
+
+#[cfg(test)]
+mod pending_interaction_contract_tests {
+    use agent_client_protocol::schema::v1::{PermissionOptionKind, ToolCallStatus, ToolKind};
+
+    use super::*;
+    use crate::acp::interactions::{
+        ElicitationFieldKind, ElicitationFieldSummary, PendingElicitationSummary,
+        PendingPermissionSummary, PermissionOptionSummary,
+    };
+
+    #[test]
+    fn production_pending_dtos_match_cross_language_fixtures() {
+        let manifest: Value = serde_json::from_str(include_str!(
+            "../../../contracts/bridge-rpc/v2/manifest.json"
+        ))
+        .unwrap();
+        let approval = PendingApproval::from(PendingPermissionSummary {
+            agent_id: "agent-alpha".into(),
+            request_id: "approval-1".into(),
+            thread_id: "thread-1".into(),
+            turn_id: "turn-1".into(),
+            tool_call_id: "tool-1".into(),
+            title: "Run tests".into(),
+            kind: ToolKind::Execute,
+            status: ToolCallStatus::Pending,
+            options: vec![PermissionOptionSummary {
+                id: "allow-once".into(),
+                name: "Allow once".into(),
+                kind: PermissionOptionKind::AllowOnce,
+            }],
+            requested_at: "2026-07-20T00:00:00+00:00".into(),
+            requested_order: 1,
+        });
+        assert_eq!(
+            serde_json::to_value(approval).unwrap(),
+            manifest["fixtures"]["notification"]["params"]
+        );
+
+        let user_input = PendingUserInputRequest::from(PendingElicitationSummary {
+            agent_id: "agent-alpha".into(),
+            request_id: "input-1".into(),
+            thread_id: "thread-1".into(),
+            turn_id: "turn-1".into(),
+            tool_call_id: Some("tool-1".into()),
+            message: "Deployment settings".into(),
+            fields: vec![ElicitationFieldSummary {
+                name: "environment".into(),
+                title: Some("Environment".into()),
+                description: Some("Choose an environment".into()),
+                kind: ElicitationFieldKind::String,
+                required: true,
+                sensitive: true,
+                options: vec![("production".into(), "Production".into())],
+                default: None,
+            }],
+            requested_at: "2026-07-20T00:00:01+00:00".into(),
+            requested_order: 2,
+        });
+        assert_eq!(
+            serde_json::to_value(user_input).unwrap(),
+            manifest["fixtures"]["pendingUserInput"]
+        );
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -652,6 +838,10 @@ pub(super) struct BridgeThreadQueueError {
 pub(super) struct BridgeThreadQueueState {
     pub(super) thread_id: String,
     pub(super) items: Vec<BridgeQueuedMessage>,
+    pub(super) pending_steers: Vec<BridgeQueuedMessage>,
+    pub(super) pending_steer_count: usize,
+    pub(super) waiting_for_tool_calls: bool,
+    pub(super) steering_in_flight: bool,
     pub(super) last_error: Option<BridgeThreadQueueError>,
 }
 
@@ -681,7 +871,14 @@ pub(super) struct BridgeThreadQueueActionResponse {
 #[derive(Debug, Default)]
 pub(super) struct BridgeThreadQueueRuntime {
     pub(super) items: VecDeque<BridgeQueuedMessageEntry>,
+    pub(super) pending_steers: VecDeque<BridgeQueuedMessageEntry>,
+    pub(super) steer_prepare_in_flight: bool,
+    pub(super) steer_dispatch_in_flight: Option<PendingSteerDispatch>,
     pub(super) active_turn_id: Option<String>,
+    pub(super) active_run_id: Option<String>,
+    pub(super) active_prompt_generation: Option<u64>,
+    pub(super) active_tool_call_ids: HashSet<String>,
+    pub(super) live_generation_known: bool,
     pub(super) thread_running: bool,
     pub(super) turn_start_in_flight: bool,
     pub(super) action_in_flight_item_id: Option<String>,
@@ -691,6 +888,15 @@ pub(super) struct BridgeThreadQueueRuntime {
     pub(super) last_error: Option<BridgeThreadQueueError>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct PendingSteerDispatch {
+    pub(super) entry: BridgeQueuedMessageEntry,
+    pub(super) expected_turn_id: String,
+    pub(super) expected_run_id: String,
+    pub(super) prompt_generation: u64,
+    pub(super) crossed_completion_boundary: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum QueueCompletionDisposition {
     Final,
@@ -698,7 +904,7 @@ pub(super) enum QueueCompletionDisposition {
 }
 
 pub(super) struct BridgeQueueService {
-    pub(super) backend: Arc<RuntimeBackend>,
+    pub(super) backend: Arc<dyn QueueRuntimeDispatcher>,
     pub(super) hub: Arc<ClientHub>,
     pub(super) threads: Arc<RwLock<HashMap<String, BridgeThreadQueueRuntime>>>,
     pub(super) thread_actors: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,

@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 
-import type { Chat, ChatMessage } from './api/types';
+import type { Chat, ChatMessage, ChatMessagePart } from './api/types';
 
 export const CHAT_SNAPSHOT_CACHE_VERSION = 1;
 export const CHAT_SNAPSHOT_CACHE_MAX_ENTRIES = 20;
@@ -240,8 +240,22 @@ function isChatMessage(value: unknown): value is ChatMessage {
     typeof message.id === 'string' &&
     (message.role === 'user' || message.role === 'assistant' || message.role === 'system') &&
     typeof message.content === 'string' &&
-    typeof message.createdAt === 'string'
+    typeof message.createdAt === 'string' &&
+    (message.parts === undefined ||
+      (Array.isArray(message.parts) && message.parts.every(isChatMessagePart)))
   );
+}
+
+function isChatMessagePart(value: unknown): value is ChatMessagePart {
+  if (!value || typeof value !== 'object') return false;
+  const part = value as Record<string, unknown>;
+  if (part.type === 'text') return typeof part.text === 'string';
+  if (part.type === 'image' || part.type === 'audio') return true;
+  if (part.type === 'resourceLink') return typeof part.uri === 'string';
+  return part.type === 'resource'
+    && typeof part.resource === 'object'
+    && part.resource !== null
+    && !Array.isArray(part.resource);
 }
 
 function cloneChat(chat: Chat): Chat {

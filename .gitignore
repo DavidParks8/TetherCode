@@ -81,6 +81,7 @@ coverage/
 *.pid
 *.seed
 .bridge-update-status.json
+.clawdex/
 .clawdex-push-registry.json
 .claude/
 .clawdex-mobile-attachments/

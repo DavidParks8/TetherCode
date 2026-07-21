@@ -1,0 +1,39 @@
+{
+  "algorithm": "clawdex-tree-v1",
+  "exclusions": [
+    ".clawdex-install.json"
+  ],
+  "entries": [
+    {
+      "path": "node_modules",
+      "type": "directory",
+      "mode": "0755"
+    },
+    {
+      "path": "node_modules/.bin",
+      "type": "directory",
+      "mode": "0755"
+    },
+    {
+      "path": "node_modules/.bin/agent",
+      "type": "symlink",
+      "target": "node_modules/@fixture/agent/bin/cli.js"
+    },
+    {
+      "path": "node_modules/@fixture/agent/bin/cli.js",
+      "type": "file",
+      "mode": "0555",
+      "size": 20,
+      "sha256": "a59c47872b71f12589942892464e764c0db350c20b72228645615cc36e0a0725"
+    },
+    {
+      "path": "package-lock.json",
+      "type": "file",
+      "mode": "0444",
+      "size": 3,
+      "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+    }
+  ],
+  "receipt": "{\"path\":\"node_modules\",\"type\":\"directory\",\"mode\":\"0755\"}\n{\"path\":\"node_modules/.bin\",\"type\":\"directory\",\"mode\":\"0755\"}\n{\"path\":\"node_modules/.bin/agent\",\"type\":\"symlink\",\"target\":\"node_modules/@fixture/agent/bin/cli.js\"}\n{\"path\":\"node_modules/@fixture/agent/bin/cli.js\",\"type\":\"file\",\"mode\":\"0555\",\"size\":20,\"sha256\":\"a59c47872b71f12589942892464e764c0db350c20b72228645615cc36e0a0725\"}\n{\"path\":\"package-lock.json\",\"type\":\"file\",\"mode\":\"0444\",\"size\":3,\"sha256\":\"ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356\"}\n",
+  "sha256": "d1277b27aedd803b8f49b0133641ccccd284e43826eb053243214e608f5d8928"
+}

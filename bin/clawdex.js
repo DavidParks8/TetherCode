@@ -10,11 +10,12 @@ function printUsage() {
   console.log(`Usage: clawdex <command> [options]
 
 Commands:
-  init [--no-start] [--engine codex|opencode|cursor] [--engines codex,opencode,cursor]
+    init [--no-start] [--agent <id>] [--agents <id,...>] [--preferred-agent <id>]
+      [--distribution binary|npx|uvx] [--trust-unverified] [--trust-install-scripts]
       Run interactive bridge onboarding and secure setup.
       By default, this also starts the secure bridge in the background.
       Use --no-start to configure only.
-      Use --engine or --engines to choose the backend harnesses written to .env.secure.
+      Agent packages are installed from the ACP registry into this workspace.
 
   stop
       Stop bridge services for this project.

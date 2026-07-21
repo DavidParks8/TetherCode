@@ -13,7 +13,6 @@ import type {
   BridgeThreadQueueError,
   BridgeThreadQueueState,
   Chat,
-  ChatEngine,
   ChatSummary,
   CollaborationMode,
   LocalImageInput,
@@ -23,11 +22,11 @@ import type {
   ReasoningEffort,
   RunEvent,
   ServiceTier,
+  TurnPlanUpdate,
   TurnPlanStep,
   ChatMessage as ChatTranscriptMessage,
 } from '../api/types';
 import type { ActivityTone } from '../components/ActivityBar';
-import type { ComposerUsageLimitAlertModel } from '../components/usageLimitBadges';
 
 export interface ActivityState {
   tone: ActivityTone;
@@ -102,6 +101,9 @@ export interface ThreadRuntimeSnapshot {
   pendingUserInputRequest?: PendingUserInputRequest | null;
   bridgeUiSurfaces?: BridgeUiSurface[];
   queuedMessages?: BridgeQueuedMessage[];
+  pendingSteerMessageIds?: string[];
+  waitingForToolCalls?: boolean;
+  steeringInFlight?: boolean;
   queuedMessageError?: BridgeThreadQueueError | null;
   contextUsage?: ThreadContextUsage | null;
   plan?: ActivePlanState | null;
@@ -144,7 +146,6 @@ export interface SlashCommandDefinition {
 
 export interface SlashCommandAvailability {
   hasOpenChat: boolean;
-  supportsCompact: boolean;
   supportsGoal: boolean;
   supportsPlanMode: boolean;
   supportsReview: boolean;
@@ -201,31 +202,6 @@ export const INLINE_CHOICE_CUE_PATTERNS = [
   /\bwhich\b.*\b(option|one)\b/i,
   /\bwhat\b.*\b(option|one)\b/i,
 ];
-export const CODEX_RUN_HEARTBEAT_EVENT_TYPES = new Set([
-  'taskstarted',
-  'agentreasoningdelta',
-  'reasoningcontentdelta',
-  'reasoningrawcontentdelta',
-  'agentreasoningrawcontentdelta',
-  'agentreasoningsectionbreak',
-  'agentmessagedelta',
-  'agentmessagecontentdelta',
-  'execcommandbegin',
-  'execcommandend',
-  'mcpstartupupdate',
-  'mcptoolcallbegin',
-  'websearchbegin',
-  'backgroundevent',
-]);
-export const CODEX_RUN_COMPLETION_EVENT_TYPES = new Set(['taskcomplete']);
-export const CODEX_RUN_ABORT_EVENT_TYPES = new Set([
-  'turnaborted',
-  'taskinterrupted',
-]);
-export const CODEX_RUN_FAILURE_EVENT_TYPES = new Set([
-  'taskfailed',
-  'turnfailed',
-]);
 export const EXTERNAL_RUNNING_STATUS_HINTS = new Set([
   'running',
   'inprogress',
@@ -233,17 +209,16 @@ export const EXTERNAL_RUNNING_STATUS_HINTS = new Set([
   'queued',
   'pending',
 ]);
-export const EXTERNAL_ERROR_STATUS_HINTS = new Set([
-  'failed',
-  'error',
-  'interrupted',
-  'aborted',
-]);
 export const EXTERNAL_COMPLETE_STATUS_HINTS = new Set([
-  'complete',
   'completed',
   'success',
   'succeeded',
+]);
+export const EXTERNAL_ERROR_STATUS_HINTS = new Set([
+  'error',
+  'failed',
+  'cancelled',
+  'canceled',
 ]);
 
 export interface ChatModelPreference {
@@ -260,14 +235,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     name: 'permissions',
     summary: 'Set approvals and sandbox permissions',
     mobileSupported: false,
-    availabilityNote: 'Available in Codex CLI only right now.',
-  },
-  {
-    name: 'sandbox-add-read-dir',
-    summary: 'Grant sandbox read access to extra directory',
-    argsHint: '<absolute-path>',
-    mobileSupported: false,
-    availabilityNote: 'Windows Codex CLI only.',
+    availabilityNote: 'Available in the desktop CLI only right now.',
   },
   {
     name: 'agent',
@@ -280,13 +248,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     name: 'apps',
     summary: 'Browse and insert apps/connectors',
     mobileSupported: false,
-    availabilityNote: 'Available in Codex CLI only right now.',
-  },
-  {
-    name: 'compact',
-    summary: 'Compact current thread history',
-    mobileSupported: true,
-    requiresOpenChat: true,
+    availabilityNote: 'Available in the desktop CLI only right now.',
   },
   {
     name: 'diff',
@@ -296,7 +258,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   },
   {
     name: 'exit',
-    summary: 'Exit Codex CLI',
+    summary: 'Exit the desktop CLI',
     mobileSupported: false,
     availabilityNote: 'Not applicable on mobile.',
   },
@@ -304,13 +266,13 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     name: 'experimental',
     summary: 'Toggle experimental features',
     mobileSupported: false,
-    availabilityNote: 'Available in Codex CLI only right now.',
+    availabilityNote: 'Available in the desktop CLI only right now.',
   },
   {
     name: 'feedback',
     summary: 'Send feedback diagnostics',
     mobileSupported: false,
-    availabilityNote: 'Available in Codex CLI only right now.',
+    availabilityNote: 'Available in the desktop CLI only right now.',
   },
   {
     name: 'goal',
@@ -322,26 +284,26 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     name: 'init',
     summary: 'Generate AGENTS.md scaffold',
     mobileSupported: false,
-    availabilityNote: 'Available in Codex CLI only right now.',
+    availabilityNote: 'Available in the desktop CLI only right now.',
   },
   {
     name: 'logout',
-    summary: 'Sign out from Codex',
+    summary: 'Sign out from the desktop agent',
     mobileSupported: false,
-    availabilityNote: 'Available in Codex CLI only right now.',
+    availabilityNote: 'Available in the desktop CLI only right now.',
   },
   {
     name: 'mcp',
     summary: 'List configured MCP tools',
     mobileSupported: false,
-    availabilityNote: 'Available in Codex CLI only right now.',
+    availabilityNote: 'Available in the desktop CLI only right now.',
   },
   {
     name: 'mention',
     summary: 'Attach file/folder context to prompt',
     argsHint: '<path>',
     mobileSupported: false,
-    availabilityNote: 'Available in Codex CLI only right now.',
+    availabilityNote: 'Available in the desktop CLI only right now.',
   },
   {
     name: 'model',
@@ -360,19 +322,13 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     summary: 'Set response personality',
     argsHint: '<friendly|pragmatic|none>',
     mobileSupported: false,
-    availabilityNote: 'Available in Codex CLI only right now.',
+    availabilityNote: 'Available in the desktop CLI only right now.',
   },
   {
     name: 'ps',
     summary: 'Show background terminal jobs',
     mobileSupported: false,
-    availabilityNote: 'Available in Codex CLI only right now.',
-  },
-  {
-    name: 'fork',
-    summary: 'Fork current conversation into a new chat',
-    mobileSupported: true,
-    requiresOpenChat: true,
+    availabilityNote: 'Available in the desktop CLI only right now.',
   },
   {
     name: 'resume',
@@ -387,7 +343,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   },
   {
     name: 'quit',
-    summary: 'Exit Codex CLI',
+    summary: 'Exit the desktop CLI',
     mobileSupported: false,
     aliases: ['exit'],
     availabilityNote: 'Not applicable on mobile.',
@@ -407,13 +363,13 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     name: 'debug-config',
     summary: 'Inspect config layers and diagnostics',
     mobileSupported: false,
-    availabilityNote: 'Available in Codex CLI only right now.',
+    availabilityNote: 'Available in the desktop CLI only right now.',
   },
   {
     name: 'statusline',
     summary: 'Configure footer status-line fields',
     mobileSupported: false,
-    availabilityNote: 'Available in Codex CLI only right now.',
+    availabilityNote: 'Available in the desktop CLI only right now.',
   },
   {
     name: 'approvals',
@@ -426,13 +382,6 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     name: 'help',
     summary: 'List slash commands',
     mobileSupported: true,
-  },
-  {
-    name: 'rename',
-    summary: 'Rename current chat',
-    argsHint: '<new-name>',
-    mobileSupported: true,
-    requiresOpenChat: true,
   },
 ];
 
@@ -478,6 +427,27 @@ export function readIntegerLike(value: unknown): number | null {
 
 export function readBoolean(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
+}
+
+function readUserInputFieldType(
+  value: unknown
+): PendingUserInputRequest['questions'][number]['fieldType'] {
+  return value === 'string' ||
+    value === 'integer' ||
+    value === 'number' ||
+    value === 'boolean' ||
+    value === 'string-array'
+    ? value
+    : 'string';
+}
+
+function readUserInputDefaultValue(
+  value: unknown
+): PendingUserInputRequest['questions'][number]['defaultValue'] {
+  if (typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (Array.isArray(value) && value.every((item) => typeof item === 'string')) return value;
+  return null;
 }
 
 export function mergeThreadContextUsage(
@@ -564,12 +534,7 @@ export function renderPlanStatusGlyph(status: TurnPlanStep['status']): string {
 export function toTurnPlanUpdate(
   value: unknown,
   fallbackThreadId: string | null = null
-): {
-  threadId: string;
-  turnId: string;
-  explanation: string | null;
-  plan: TurnPlanStep[];
-} | null {
+): TurnPlanUpdate | null {
   const record = toRecord(value);
   if (!record) {
     return null;
@@ -613,59 +578,23 @@ export function toTurnPlanUpdate(
   };
 }
 
-export function resolveCodexPlanTurnId(
-  value: Record<string, unknown> | null,
-  fallbackTurnId: string | null = null
-): string {
-  return (
-    readString(value?.turnId) ??
-    readString(value?.turn_id) ??
-    fallbackTurnId ??
-    'unknown-turn'
-  );
-}
-
-export function toCodexTurnPlanUpdate(
-  value: Record<string, unknown> | null,
-  threadId: string,
-  fallbackTurnId: string | null = null
-): {
-  threadId: string;
-  turnId: string;
-  explanation: string | null;
-  plan: TurnPlanStep[];
-} | null {
-  if (!value) {
-    return null;
-  }
-
-  return toTurnPlanUpdate(
-    {
-      ...value,
-      threadId,
-      turnId: resolveCodexPlanTurnId(value, fallbackTurnId),
-    },
-    threadId
-  );
-}
-
 export function toPendingUserInputRequest(value: unknown): PendingUserInputRequest | null {
   const record = toRecord(value);
   if (!record) {
     return null;
   }
 
-  const id = readString(record.id);
+  const requestId = readString(record.requestId) ?? readString(record.id);
   const threadId = readString(record.threadId);
   const turnId = readString(record.turnId);
   const itemId = readString(record.itemId);
   const requestedAt = readString(record.requestedAt);
   const rawQuestions = Array.isArray(record.questions) ? record.questions : [];
-  if (!id || !threadId || !turnId || !itemId || !requestedAt || rawQuestions.length === 0) {
+  if (!requestId || !threadId || !turnId || !itemId || !requestedAt || rawQuestions.length === 0) {
     return null;
   }
 
-  const questions = rawQuestions
+  const questions: PendingUserInputRequest['questions'] = rawQuestions
     .map((item) => {
       const itemRecord = toRecord(item);
       if (!itemRecord) {
@@ -702,18 +631,22 @@ export function toPendingUserInputRequest(value: unknown): PendingUserInputReque
                 return null;
               }
               return {
+                value: readString(optionRecord.value) ?? label,
                 label,
                 description,
               };
             })
             .filter(
-              (option): option is { label: string; description: string } => option !== null
+              (option): option is { value: string; label: string; description: string } => option !== null
             )
         : null;
       const options =
         parsedOptions && parsedOptions.length > 0
           ? parsedOptions
-          : parsedInlineOptions.options;
+          : parsedInlineOptions.options?.map((option) => ({
+              value: option.label,
+              ...option,
+            })) ?? null;
 
       return {
         id: questionId,
@@ -721,23 +654,25 @@ export function toPendingUserInputRequest(value: unknown): PendingUserInputReque
         question: parsedInlineOptions.question,
         isOther: readBoolean(itemRecord.isOther) ?? false,
         isSecret: readBoolean(itemRecord.isSecret) ?? false,
+        required: readBoolean(itemRecord.required) ?? false,
+        fieldType: readUserInputFieldType(itemRecord.fieldType),
+        defaultValue: readUserInputDefaultValue(itemRecord.defaultValue),
         options,
       } satisfies PendingUserInputRequest['questions'][number];
     })
-    .filter(
-      (question): question is PendingUserInputRequest['questions'][number] =>
-        question !== null
-    );
+    .filter((question): question is NonNullable<typeof question> => question !== null);
 
   if (questions.length === 0) {
     return null;
   }
 
   return {
-    id,
+    requestId,
+    agentId: readString(record.agentId),
     threadId,
     turnId,
     itemId,
+    message: readString(record.message) ?? questions[0]?.question ?? '',
     requestedAt,
     questions,
   };
@@ -746,7 +681,8 @@ export function toPendingUserInputRequest(value: unknown): PendingUserInputReque
 export function buildUserInputDrafts(request: PendingUserInputRequest): Record<string, string> {
   const drafts: Record<string, string> = {};
   for (const question of request.questions) {
-    drafts[question.id] = '';
+    const value = question.defaultValue;
+    drafts[question.id] = Array.isArray(value) ? value.join(', ') : value == null ? '' : String(value);
   }
   return drafts;
 }
@@ -1481,23 +1417,6 @@ export function draftContainsMentionLabel(draft: string, label: string): boolean
   return pattern.test(draft);
 }
 
-export function mergeChatEngines(
-  engines: readonly ChatEngine[],
-  ...extraEngines: Array<ChatEngine | null | undefined>
-): ChatEngine[] {
-  const merged: ChatEngine[] = [];
-  for (const engine of [...engines, ...extraEngines]) {
-    if (
-      (engine === 'codex' || engine === 'opencode' || engine === 'cursor') &&
-      !merged.includes(engine)
-    ) {
-      merged.push(engine);
-    }
-  }
-
-  return merged;
-}
-
 export function normalizeModelId(value: string | null | undefined): string | null {
   if (typeof value !== 'string') {
     return null;
@@ -1712,6 +1631,17 @@ export function parseBridgeThreadQueueState(value: unknown): BridgeThreadQueueSt
         })
         .filter((item): item is BridgeQueuedMessage => item !== null)
     : [];
+  const pendingSteers = Array.isArray(record.pendingSteers)
+    ? record.pendingSteers
+        .map((item) => {
+          const entry = toRecord(item);
+          const id = readString(entry?.id)?.trim();
+          const createdAt = readString(entry?.createdAt)?.trim();
+          const content = readString(entry?.content)?.replace(/\r\n/g, '\n');
+          return id && createdAt && content ? { id, createdAt, content } : null;
+        })
+        .filter((item): item is BridgeQueuedMessage => item !== null)
+    : [];
 
   const lastErrorRecord = toRecord(record.lastError);
   const lastErrorMessage = readString(lastErrorRecord?.message)?.trim();
@@ -1730,8 +1660,55 @@ export function parseBridgeThreadQueueState(value: unknown): BridgeThreadQueueSt
   return {
     threadId,
     items,
+    pendingSteers,
+    pendingSteerCount:
+      typeof record.pendingSteerCount === 'number' && Number.isSafeInteger(record.pendingSteerCount)
+        ? Math.max(0, record.pendingSteerCount)
+        : pendingSteers.length,
+    waitingForToolCalls: record.waitingForToolCalls === true,
+    steeringInFlight: record.steeringInFlight === true,
     lastError,
   };
+}
+
+export function canOfferQueuedMessageSteer(options: {
+  hasQueuedMessage: boolean;
+  hasSelectedThread: boolean;
+  supportsSteer: boolean;
+  isPendingSteer: boolean;
+  isOptimistic: boolean;
+  actionInFlight: boolean;
+}): boolean {
+  return (
+    options.hasQueuedMessage &&
+    options.hasSelectedThread &&
+    options.supportsSteer &&
+    !options.isPendingSteer &&
+    !options.isOptimistic &&
+    !options.actionInFlight
+  );
+}
+
+export function queuedMessageStatusLabel(options: {
+  pendingSubmission: boolean;
+  steeringActive: boolean;
+  steeringInFlight: boolean;
+  steerPending: boolean;
+  waitingForToolCalls: boolean;
+}): string {
+  if (options.pendingSubmission) {
+    return 'Queueing message';
+  }
+  if (options.steeringActive || options.steeringInFlight) {
+    return 'Steering turn';
+  }
+  if (options.steerPending && options.waitingForToolCalls) {
+    return 'Will steer after the current tool finishes';
+  }
+  if (options.steerPending) {
+    return 'Waiting to steer';
+  }
+  return 'Queued message';
 }
 
 export function getDraftScopeKey(threadId: string | null | undefined): string {
@@ -1900,9 +1877,6 @@ export function formatCollaborationModeLabel(mode: CollaborationMode): string {
   if (mode === 'plan') {
     return 'Plan mode';
   }
-  if (mode === 'ask') {
-    return 'Ask mode';
-  }
   return 'Default mode';
 }
 
@@ -1915,48 +1889,6 @@ export function isBridgeConnectionErrorMessage(value: string | null | undefined)
   return (
     normalized.includes('bridge websocket') ||
     normalized.includes('unable to connect to bridge websocket')
-  );
-}
-
-export function buildRateLimitAlertFromMessages(
-  messages: Array<string | null | undefined>
-): ComposerUsageLimitAlertModel | null {
-  return findRateLimitReachedMessage(messages)
-    ? {
-        title: 'Rate limit reached',
-        body: 'Your Codex usage limit has been reached. Try again after it resets.',
-        status: null,
-      }
-    : null;
-}
-
-export function findRateLimitReachedMessage(
-  messages: Array<string | null | undefined>
-): string | null {
-  for (const message of messages) {
-    if (isRateLimitReachedMessage(message)) {
-      return message?.trim() ?? null;
-    }
-  }
-  return null;
-}
-
-export function isRateLimitReachedMessage(value: string | null | undefined): boolean {
-  if (!value) {
-    return false;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-
-  return (
-    normalized.includes('rate limit') ||
-    normalized.includes('usage limit') ||
-    normalized.includes('quota exceeded') ||
-    normalized.includes('too many requests') ||
-    /\b429\b/.test(normalized)
   );
 }
 
@@ -2218,9 +2150,6 @@ export function isSlashCommandAvailable(
     return false;
   }
 
-  if (command.name === 'compact') {
-    return availability.supportsCompact;
-  }
   if (command.name === 'goal') {
     return availability.supportsGoal;
   }
@@ -2364,119 +2293,6 @@ export function formatLiveReasoningMessage(text: string): string {
   return ['• Reasoning', `  └ ${first}`, ...rest.map((line) => `    ${line}`)].join('\n');
 }
 
-export function formatLiveCursorToolMessage(item: Record<string, unknown> | null): string | null {
-  const tool = readString(item?.tool) ?? readString(item?.name) ?? 'unknown';
-  const status = normalizeCursorToolStatus(readString(item?.status));
-  const title =
-    status === 'error'
-      ? `• Tool failed \`${tool}\``
-      : status === 'running'
-        ? `• Calling tool \`${tool}\``
-        : `• Called tool \`${tool}\``;
-  const argsPreview = toLiveCursorToolArgsPreview(item);
-  const resultPreview = toLiveCursorToolResultPreview(item?.result);
-  const details = [
-    argsPreview ? `Input: ${argsPreview}` : null,
-    resultPreview,
-  ].filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
-
-  return formatTimelineSystemMessage(title, details);
-}
-
-export function normalizeCursorToolStatus(value: string | null): 'running' | 'complete' | 'error' {
-  const normalized = value?.trim().toLowerCase();
-  if (normalized === 'error' || normalized === 'failed') {
-    return 'error';
-  }
-  if (normalized === 'completed' || normalized === 'complete' || normalized === 'finished') {
-    return 'complete';
-  }
-  return 'running';
-}
-
-export function toLiveCursorToolArgsPreview(item: Record<string, unknown> | null): string | null {
-  const args = toRecord(item?.args);
-  if (!args) {
-    return stringifyLiveCursorPreview(item?.args, 320);
-  }
-
-  return (
-    toTickerSnippet(readString(args.path), 180) ??
-    toTickerSnippet(readString(args.filePath), 180) ??
-    toTickerSnippet(readString(args.file_path), 180) ??
-    toTickerSnippet(readString(args.globPattern), 180) ??
-    toTickerSnippet(readString(args.glob_pattern), 180) ??
-    toTickerSnippet(readString(args.command), 220) ??
-    stringifyLiveCursorPreview(args, 320)
-  );
-}
-
-export function toLiveCursorToolResultPreview(value: unknown): string | null {
-  const record = toRecord(value);
-  const branchPreview = toLiveCursorGitBranchPreview(record);
-  if (branchPreview) {
-    return branchPreview;
-  }
-
-  const status = readString(record?.status)?.trim().toLowerCase();
-  const error =
-    status === 'error' || status === 'failed'
-      ? toTickerSnippet(
-          readString(record?.error) ?? readString(toRecord(record?.error)?.message),
-          600
-        )
-      : null;
-  if (error) {
-    return `Error: ${error}`;
-  }
-
-  return stringifyLiveCursorPreview(record?.value ?? record?.result ?? value, 600);
-}
-
-export function toLiveCursorGitBranchPreview(record: Record<string, unknown> | null): string | null {
-  const branches = Array.isArray(record?.branches) ? record.branches : [];
-  if (branches.length === 0) {
-    return null;
-  }
-
-  const lines = branches
-    .map((entry) => {
-      const branch = toRecord(entry);
-      if (!branch) {
-        return null;
-      }
-      return [
-        readString(branch.branch) ? `Branch: ${readString(branch.branch)}` : null,
-        readString(branch.prUrl) || readString(branch.pr_url)
-          ? `PR: ${readString(branch.prUrl) ?? readString(branch.pr_url)}`
-          : null,
-        readString(branch.repoUrl) || readString(branch.repo_url)
-          ? `Repo: ${readString(branch.repoUrl) ?? readString(branch.repo_url)}`
-          : null,
-      ]
-        .filter(Boolean)
-        .join('\n');
-    })
-    .filter((line): line is string => Boolean(line));
-
-  return lines.length > 0 ? lines.join('\n') : null;
-}
-
-export function stringifyLiveCursorPreview(value: unknown, maxLength: number): string | null {
-  if (value == null) {
-    return null;
-  }
-  if (typeof value === 'string') {
-    return toTickerSnippet(value, maxLength);
-  }
-
-  try {
-    return toTickerSnippet(JSON.stringify(value), maxLength);
-  } catch {
-    return null;
-  }
-}
-
 export function formatTimelineSystemMessage(title: string, details: string[]): string {
   const normalizedDetails = details
     .flatMap((detail) => detail.split('\n'))
@@ -2489,15 +2305,10 @@ export function formatTimelineSystemMessage(title: string, details: string[]): s
   return [title, `  └ ${first}`, ...rest.map((line) => `    ${line}`)].join('\n');
 }
 
-export function filterReasoningMessagesForEngine(
-  messages: ChatTranscriptMessage[],
-  engine: Chat['engine'] | undefined
+export function filterReasoningMessages(
+  messages: ChatTranscriptMessage[]
 ): ChatTranscriptMessage[] {
-  if (engine !== 'codex') {
-    return messages;
-  }
-
-  return messages.filter((message) => message.systemKind !== 'reasoning');
+  return messages;
 }
 
 export function describeStartedToolEvent(
@@ -2664,97 +2475,6 @@ export function appendRunEventHistory(
   };
 
   return [...previous, next].slice(-MAX_ACTIVE_COMMANDS);
-}
-
-export function normalizeCodexEventType(value: string | null | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-  return normalized.length > 0 ? normalized : null;
-}
-
-function readErrorMessageCandidate(value: unknown, depth = 0): string | null {
-  if (depth > 3) {
-    return null;
-  }
-
-  const direct = readString(value)?.trim();
-  if (direct) {
-    return direct;
-  }
-
-  const record = toRecord(value);
-  if (!record) {
-    return null;
-  }
-
-  const fields = [
-    record.message,
-    record.errorMessage,
-    record.error_message,
-    record.detail,
-    record.details,
-    record.reason,
-    record.description,
-    record.stderr,
-    record.error,
-  ];
-
-  for (const field of fields) {
-    const message = readErrorMessageCandidate(field, depth + 1);
-    if (message) {
-      return message;
-    }
-  }
-
-  return null;
-}
-
-export function extractCodexFailureMessage(
-  params: Record<string, unknown> | null,
-  msgArg?: Record<string, unknown> | null
-): string | null {
-  const msg = msgArg ?? toRecord(params?.msg);
-  const turnRecord = toRecord(params?.turn) ?? toRecord(msg?.turn);
-  const statusRecord = toRecord(params?.status) ?? toRecord(msg?.status);
-  const candidates = [
-    msg?.error,
-    params?.error,
-    turnRecord?.error,
-    msg?.message,
-    params?.message,
-    msg?.errorMessage,
-    params?.errorMessage,
-    msg?.error_message,
-    params?.error_message,
-    msg?.detail,
-    params?.detail,
-    msg?.details,
-    params?.details,
-    msg?.reason,
-    params?.reason,
-    msg?.description,
-    params?.description,
-    msg?.stderr,
-    params?.stderr,
-    statusRecord?.message,
-    statusRecord?.error,
-  ];
-
-  for (const candidate of candidates) {
-    const message = readErrorMessageCandidate(candidate);
-    if (message) {
-      return message;
-    }
-  }
-
-  return null;
-}
-
-export function isCodexRunHeartbeatEvent(codexEventType: string): boolean {
-  return CODEX_RUN_HEARTBEAT_EVENT_TYPES.has(codexEventType);
 }
 
 export function normalizeExternalStatusHint(value: string | null | undefined): string | null {
@@ -3046,7 +2766,7 @@ export function toPendingApproval(value: unknown): PendingApproval | null {
     return null;
   }
 
-  const id = readString(record.id);
+  const requestId = readString(record.requestId) ?? readString(record.id);
   const kind = readString(record.kind);
   const threadId = readString(record.threadId);
   const turnId = readString(record.turnId);
@@ -3054,7 +2774,7 @@ export function toPendingApproval(value: unknown): PendingApproval | null {
   const requestedAt = readString(record.requestedAt);
 
   if (
-    !id ||
+    !requestId ||
     !kind ||
     !threadId ||
     !turnId ||
@@ -3066,16 +2786,28 @@ export function toPendingApproval(value: unknown): PendingApproval | null {
   }
 
   return {
-    id,
+    requestId,
+    agentId: readString(record.agentId) ?? '',
     kind,
     threadId,
     turnId,
     itemId,
+    title: readString(record.title) ?? readString(record.reason) ?? '',
+    message: readString(record.message) ?? readString(record.reason) ?? '',
     requestedAt,
     reason: readString(record.reason) ?? undefined,
     command: readString(record.command) ?? undefined,
     cwd: readString(record.cwd) ?? undefined,
     grantRoot: readString(record.grantRoot) ?? undefined,
     proposedExecpolicyAmendment: readStringArray(record.proposedExecpolicyAmendment) ?? undefined,
+    options: Array.isArray(record.options)
+      ? record.options.flatMap((value) => {
+          const option = toRecord(value);
+          const optionId = readString(option?.id);
+          const label = readString(option?.label) ?? readString(option?.name);
+          const optionKind = readString(option?.kind);
+          return optionId && label ? [{ id: optionId, label, kind: optionKind ?? undefined }] : [];
+        })
+      : [],
   };
 }

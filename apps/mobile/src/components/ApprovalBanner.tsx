@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useMemo, useState } from 'react';
 
-import type { ApprovalDecision, PendingApproval } from '../api/types';
+import type { PendingApproval } from '../api/types';
 import { useAppTheme, type AppTheme } from '../theme';
 import {
   controlAccessibilityState,
@@ -13,7 +13,7 @@ import {
 
 interface ApprovalBannerProps {
   approval: PendingApproval;
-  onResolve: (id: string, decision: ApprovalDecision) => Promise<void>;
+  onResolve: (id: string, optionId: string) => Promise<void>;
 }
 
 export function ApprovalBanner({ approval, onResolve }: ApprovalBannerProps) {
@@ -22,9 +22,9 @@ export function ApprovalBanner({ approval, onResolve }: ApprovalBannerProps) {
   const styles = useMemo(() => createStyles(theme), [theme]);
   const [resolving, setResolving] = useState<string | null>(null);
 
-  const handleResolve = async (decision: ApprovalDecision) => {
+  const handleResolve = async (optionId: string) => {
     try {
-      await runApprovalResolution(approval.id, decision, onResolve, setResolving);
+      await runApprovalResolution(approval.requestId, optionId, onResolve, setResolving);
     } catch {
       // The parent surfaces the resolution error; this card only restores retry controls.
     }
@@ -33,10 +33,6 @@ export function ApprovalBanner({ approval, onResolve }: ApprovalBannerProps) {
   const label = approval.kind === 'commandExecution'
     ? approval.command ?? 'Run command'
     : 'File change';
-  const canAllowSimilar =
-    approval.kind === 'commandExecution' &&
-    Array.isArray(approval.proposedExecpolicyAmendment) &&
-    approval.proposedExecpolicyAmendment.length > 0;
   useAccessibilityAnnouncement(
     resolving ? `Resolving approval: ${resolving}` : `Approval requested. ${label}`
   );
@@ -61,120 +57,47 @@ export function ApprovalBanner({ approval, onResolve }: ApprovalBannerProps) {
       ) : null}
 
       <View style={styles.actions}>
-        <Pressable
-          style={({ pressed }) => [styles.btn, styles.denyBtn, pressed && styles.btnPressed]}
-          onPress={() => void handleResolve('decline')}
-          disabled={resolving !== null}
-          accessibilityRole="button"
-          accessibilityLabel="Deny approval"
-          accessibilityHint="Rejects this request"
-          accessibilityState={controlAccessibilityState({ disabled: resolving !== null, busy: resolving === 'decline' })}
-        >
-          {resolving === 'decline' ? (
-            <ActivityIndicator size="small" color={colors.error} />
-          ) : (
-            <>
-              <Ionicons {...decorativeAccessibilityProps} name="close" size={14} color={colors.error} />
-              <Text style={[styles.btnText, { color: colors.error }]}>Deny</Text>
-            </>
-          )}
-        </Pressable>
-
-        <Pressable
-          style={({ pressed }) => [styles.btn, styles.acceptBtn, pressed && styles.btnPressed]}
-          onPress={() => void handleResolve('accept')}
-          disabled={resolving !== null}
-          accessibilityRole="button"
-          accessibilityLabel="Allow once"
-          accessibilityHint="Allows only this request"
-          accessibilityState={controlAccessibilityState({ disabled: resolving !== null, busy: resolving === 'accept' })}
-        >
-          {resolving === 'accept' ? (
-            <ActivityIndicator size="small" color={colors.textPrimary} />
-          ) : (
-            <>
-              <Ionicons {...decorativeAccessibilityProps} name="checkmark" size={14} color={colors.textPrimary} />
-              <Text style={[styles.btnText, { color: colors.textPrimary }]}>Allow once</Text>
-            </>
-          )}
-        </Pressable>
-
-        <Pressable
-          style={({ pressed }) => [styles.btn, styles.acceptBtn, pressed && styles.btnPressed]}
-          onPress={() => void handleResolve('acceptForSession')}
-          disabled={resolving !== null}
-          accessibilityRole="button"
-          accessibilityLabel="Allow for session"
-          accessibilityHint="Allows this request for the current session"
-          accessibilityState={controlAccessibilityState({ disabled: resolving !== null, busy: resolving === 'acceptForSession' })}
-        >
-          {resolving === 'acceptForSession' ? (
-            <ActivityIndicator size="small" color={colors.textPrimary} />
-          ) : (
-            <>
-              <Ionicons {...decorativeAccessibilityProps} name="time-outline" size={14} color={colors.textPrimary} />
-              <Text style={[styles.btnText, { color: colors.textPrimary }]}>Session</Text>
-            </>
-          )}
-        </Pressable>
-
-        {canAllowSimilar ? (
+        {approval.options.map((option) => {
+          const destructive = option.kind?.toLowerCase().includes('reject') ?? false;
+          return (
           <Pressable
+            key={option.id}
             style={({ pressed }) => [
               styles.btn,
-              styles.acceptBtn,
-              styles.allowSimilarBtn,
+              destructive ? styles.denyBtn : styles.acceptBtn,
               pressed && styles.btnPressed,
             ]}
-            onPress={() =>
-              void handleResolve({
-                acceptWithExecpolicyAmendment: {
-                  execpolicy_amendment: approval.proposedExecpolicyAmendment ?? [],
-                },
-              })
-            }
+            onPress={() => void handleResolve(option.id)}
             disabled={resolving !== null}
             accessibilityRole="button"
-            accessibilityLabel="Allow similar commands"
-            accessibilityHint="Allows commands matching the proposed execution policy"
-            accessibilityState={controlAccessibilityState({ disabled: resolving !== null, busy: resolving === 'acceptWithExecpolicyAmendment' })}
+            accessibilityLabel={option.label}
+            accessibilityState={controlAccessibilityState({ disabled: resolving !== null, busy: resolving === option.id })}
           >
-            {resolving === 'acceptWithExecpolicyAmendment' ? (
-              <ActivityIndicator size="small" color={colors.textPrimary} />
+            {resolving === option.id ? (
+              <ActivityIndicator size="small" color={destructive ? colors.error : colors.textPrimary} />
             ) : (
               <>
-                <Ionicons {...decorativeAccessibilityProps} name="flash-outline" size={14} color={colors.textPrimary} />
-                <Text style={[styles.btnText, { color: colors.textPrimary }]}>Allow similar</Text>
+                <Ionicons {...decorativeAccessibilityProps} name={destructive ? 'close' : 'checkmark'} size={14} color={destructive ? colors.error : colors.textPrimary} />
+                <Text style={[styles.btnText, { color: destructive ? colors.error : colors.textPrimary }]}>{option.label}</Text>
               </>
             )}
           </Pressable>
-        ) : null}
+          );
+        })}
       </View>
     </Animated.View>
   );
 }
 
-function decisionKey(decision: ApprovalDecision): string {
-  if (typeof decision === 'string') {
-    return decision;
-  }
-
-  if ('acceptWithExecpolicyAmendment' in decision) {
-    return 'acceptWithExecpolicyAmendment';
-  }
-
-  return 'unknown';
-}
-
 export async function runApprovalResolution(
   id: string,
-  decision: ApprovalDecision,
-  resolve: (id: string, decision: ApprovalDecision) => Promise<void>,
+  optionId: string,
+  resolve: (id: string, optionId: string) => Promise<void>,
   setResolving: (value: string | null) => void
 ): Promise<void> {
-  setResolving(decisionKey(decision));
+  setResolving(optionId);
   try {
-    await resolve(id, decision);
+    await resolve(id, optionId);
   } finally {
     setResolving(null);
   }

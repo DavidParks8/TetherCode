@@ -1,13 +1,15 @@
 import type {
   Chat,
-  ChatEngine,
+  AgentId,
   ChatMessage,
+  ChatMessagePart,
   ChatMessageSubAgentMeta,
   ChatPlanSnapshot,
   ChatStatus,
   ChatSummary,
   TurnPlanStep,
 } from './types';
+import { renderAgUiCustomContent } from './agUi';
 
 export type RawThreadStatus =
   | { type?: string }
@@ -50,7 +52,7 @@ export type RawThreadItem =
 
 export interface RawThread {
   id?: string;
-  engine?: string;
+  agentId?: unknown;
   name?: string;
   title?: string;
   preview?: string;
@@ -63,6 +65,65 @@ export interface RawThread {
   cwd?: string;
   source?: unknown;
   turns?: RawTurn[];
+  acpSnapshot?: RawAcpSnapshot;
+}
+
+export interface RawAcpSnapshot {
+  version: number;
+  messages: Array<{ id: string; role: string; parts: unknown[]; truncated: boolean }>;
+  timeline?: Array<{ sequence: number; kind: 'message' | 'reasoning' | 'tool'; canonicalId: string }>;
+  tools: Array<{
+    id: string;
+    generation?: number | null;
+    kind: string;
+    status: string;
+    title: string;
+    content: string;
+    structuredContent: unknown[];
+    locations: unknown[];
+    truncated: boolean;
+  }>;
+  messageCollection?: RawSnapshotCollectionMetadata;
+  reasoningCollection?: RawSnapshotCollectionMetadata;
+  toolCollection?: RawSnapshotCollectionMetadata;
+  continuation?: RawSnapshotContinuation;
+  plan: Array<{ content: string; priority: string; status: string }>;
+  usage: { used?: number | null; size?: number | null; cost?: string | null };
+  mode?: string | null;
+  config: Array<{ id: string; value: string }>;
+  commands: Array<{ name: string; description: string }>;
+  session: {
+    agentId: string;
+    threadId: string;
+    title?: string | null;
+    updatedAt?: string | null;
+    historyReconstruction: boolean;
+  };
+  active: {
+    runId?: string | null;
+    sourceTurnId?: string | null;
+    generation?: number | null;
+    toolIds: string[];
+  };
+}
+
+export interface RawSnapshotCollectionMetadata {
+  truncated: boolean;
+  omittedCount: number;
+  oldestAvailableSequence?: number | null;
+  newestSequence?: number | null;
+  beforeCursor?: string | null;
+  revision: number;
+}
+
+export interface RawSnapshotContinuation {
+  revision: number;
+  unavailableCount: number;
+  earliestAvailableSequence?: number | null;
+  latestAvailableSequence?: number | null;
+  maxPageSize: number;
+  maxHistoryEntries: number;
+  maxHistoryBytes: number;
 }
 
 interface ThreadSourceMetadata {
@@ -310,7 +371,7 @@ export function toRawThread(value: unknown): RawThread {
     undefined;
   return {
     id: readString(record.id) ?? undefined,
-    engine: readString(record.engine) ?? undefined,
+    agentId: record.agentId,
     name: threadName,
     title: threadName,
     preview: readString(record.preview) ?? undefined,
@@ -328,9 +389,136 @@ export function toRawThread(value: unknown): RawThread {
     status: (record.status as RawThreadStatus) ?? undefined,
     cwd: readString(record.cwd) ?? undefined,
     source: record.source,
+    acpSnapshot: toRawAcpSnapshot(record.acpSnapshot),
     turns: Array.isArray(record.turns)
       ? (record.turns.map((turn) => toRawTurn(turn)).filter(Boolean) as RawTurn[])
       : undefined,
+  };
+}
+
+function toRawAcpSnapshot(value: unknown): RawAcpSnapshot | undefined {
+  const snapshot = toRecord(value);
+  const session = toRecord(snapshot?.session);
+  const active = toRecord(snapshot?.active);
+  const version = readNumber(snapshot?.version);
+  if (!snapshot || (version !== 1 && version !== 2) || !session || !active) {
+    return undefined;
+  }
+  const messages = (Array.isArray(snapshot.messages) ? snapshot.messages : [])
+    .map(toRecord)
+    .filter((entry): entry is Record<string, unknown> => entry !== null)
+    .map((entry) => ({
+      id: readString(entry.id) ?? '',
+      role: readString(entry.role) ?? '',
+      parts: Array.isArray(entry.parts) ? entry.parts : [],
+      truncated: entry.truncated === true,
+    }))
+    .filter((entry) => entry.id && entry.role);
+  const tools = (Array.isArray(snapshot.tools) ? snapshot.tools : [])
+    .map(toRecord)
+    .filter((entry): entry is Record<string, unknown> => entry !== null)
+    .map((entry) => ({
+      id: readString(entry.id) ?? '',
+      generation: readNumber(entry.generation),
+      kind: readString(entry.kind) ?? '',
+      status: readString(entry.status) ?? '',
+      title: readString(entry.title) ?? '',
+      content: readString(entry.content) ?? '',
+      structuredContent: Array.isArray(entry.structuredContent) ? entry.structuredContent : [],
+      locations: Array.isArray(entry.locations) ? entry.locations : [],
+      truncated: entry.truncated === true,
+    }))
+    .filter((entry) => entry.id);
+  const timeline = (Array.isArray(snapshot.timeline) ? snapshot.timeline : [])
+    .map(toRecord)
+    .filter((entry): entry is Record<string, unknown> => entry !== null)
+    .map((entry) => ({
+      sequence: readNumber(entry.sequence) ?? -1,
+      kind: readString(entry.kind),
+      canonicalId: readString(entry.canonicalId) ?? '',
+    }))
+    .filter((entry): entry is NonNullable<RawAcpSnapshot['timeline']>[number] =>
+      entry.sequence >= 0 &&
+      (entry.kind === 'message' || entry.kind === 'reasoning' || entry.kind === 'tool') &&
+      Boolean(entry.canonicalId)
+    );
+  const plan = (Array.isArray(snapshot.plan) ? snapshot.plan : [])
+    .map(toRecord)
+    .filter((entry): entry is Record<string, unknown> => entry !== null)
+    .map((entry) => ({
+      content: readString(entry.content) ?? '',
+      priority: readString(entry.priority) ?? '',
+      status: readString(entry.status) ?? '',
+    }))
+    .filter((entry) => entry.content);
+  const config = (Array.isArray(snapshot.config) ? snapshot.config : [])
+    .map(toRecord)
+    .filter((entry): entry is Record<string, unknown> => entry !== null)
+    .map((entry) => ({ id: readString(entry.id) ?? '', value: readString(entry.value) ?? '' }))
+    .filter((entry) => entry.id);
+  const commands = (Array.isArray(snapshot.commands) ? snapshot.commands : [])
+    .map(toRecord)
+    .filter((entry): entry is Record<string, unknown> => entry !== null)
+    .map((entry) => ({
+      name: readString(entry.name) ?? '',
+      description: readString(entry.description) ?? '',
+    }))
+    .filter((entry) => entry.name);
+  const usage = toRecord(snapshot.usage) ?? {};
+  const readCollection = (value: unknown): RawSnapshotCollectionMetadata | undefined => {
+    const collection = toRecord(value);
+    const revision = readNumber(collection?.revision);
+    if (!collection || revision === null) return undefined;
+    return {
+      truncated: collection.truncated === true,
+      omittedCount: readNumber(collection.omittedCount) ?? 0,
+      oldestAvailableSequence: readNumber(collection.oldestAvailableSequence),
+      newestSequence: readNumber(collection.newestSequence),
+      beforeCursor: readString(collection.beforeCursor),
+      revision,
+    };
+  };
+  const continuationRecord = toRecord(snapshot.continuation);
+  const continuationRevision = readNumber(continuationRecord?.revision);
+  return {
+    version,
+    timeline: timeline.length > 0 ? timeline : undefined,
+    messages,
+    tools,
+    messageCollection: readCollection(snapshot.messageCollection),
+    reasoningCollection: readCollection(snapshot.reasoningCollection),
+    toolCollection: readCollection(snapshot.toolCollection),
+    continuation: continuationRecord && continuationRevision !== null ? {
+      revision: continuationRevision,
+      unavailableCount: readNumber(continuationRecord.unavailableCount) ?? 0,
+      earliestAvailableSequence: readNumber(continuationRecord.earliestAvailableSequence),
+      latestAvailableSequence: readNumber(continuationRecord.latestAvailableSequence),
+      maxPageSize: readNumber(continuationRecord.maxPageSize) ?? 0,
+      maxHistoryEntries: readNumber(continuationRecord.maxHistoryEntries) ?? 0,
+      maxHistoryBytes: readNumber(continuationRecord.maxHistoryBytes) ?? 0,
+    } : undefined,
+    plan,
+    usage: {
+      used: readNumber(usage.used),
+      size: readNumber(usage.size),
+      cost: readString(usage.cost),
+    },
+    mode: readString(snapshot.mode),
+    config,
+    commands,
+    session: {
+      agentId: readString(session.agentId) ?? '',
+      threadId: readString(session.threadId) ?? '',
+      title: readString(session.title),
+      updatedAt: readString(session.updatedAt),
+      historyReconstruction: session.historyReconstruction === true,
+    },
+    active: {
+      runId: readString(active.runId),
+      sourceTurnId: readString(active.sourceTurnId),
+      generation: readNumber(active.generation),
+      toolIds: readStringArray(active.toolIds),
+    },
   };
 }
 
@@ -378,10 +566,7 @@ export function mapChatSummary(raw: RawThread): ChatSummary | null {
   const previewTitle = toPreview(raw.preview || '');
   const firstUserTitle = firstUserMessagePreview(turns);
   const rawTitle = raw.name?.trim() || null;
-  const displayTitle =
-    rawTitle && !isGeneratedCursorThreadTitle(rawTitle, raw.id, raw.engine)
-      ? rawTitle
-      : previewTitle || firstUserTitle || rawTitle;
+  const displayTitle = rawTitle || previewTitle || firstUserTitle;
 
   return {
     id: raw.id,
@@ -392,7 +577,7 @@ export function mapChatSummary(raw: RawThread): ChatSummary | null {
     statusUpdatedAt: updatedAt,
     lastMessagePreview: toPreview(raw.preview || ''),
     cwd: readString(raw.cwd) ?? undefined,
-    engine: readChatEngine(raw.engine),
+    agentId: readAgentId(raw.agentId),
     modelProvider: readString(raw.modelProvider) ?? undefined,
     agentNickname: readString(raw.agentNickname) ?? undefined,
     agentRole: readString(raw.agentRole) ?? undefined,
@@ -401,48 +586,6 @@ export function mapChatSummary(raw: RawThread): ChatSummary | null {
     subAgentDepth: sourceMetadata.subAgentDepth,
     lastError: lastError ?? undefined,
   };
-}
-
-export function isGeneratedCursorThreadTitle(
-  title: string | null | undefined,
-  threadId: string | null | undefined,
-  engine?: unknown
-): boolean {
-  const value = title?.trim().toLowerCase();
-  if (!value) {
-    return true;
-  }
-
-  const normalizedThreadId = threadId?.trim().toLowerCase() ?? '';
-  const isCursorThread =
-    readChatEngine(engine) === 'cursor' ||
-    normalizedThreadId.startsWith('cursor:') ||
-    value.startsWith('chat cursor:') ||
-    value.startsWith('cursor agent');
-  if (!isCursorThread) {
-    return false;
-  }
-
-  if (
-    value === 'new agent' ||
-    value === 'cursor agent' ||
-    value === 'untitled' ||
-    value === 'untitled agent'
-  ) {
-    return true;
-  }
-
-  const unqualifiedThreadId = normalizedThreadId.replace(/^cursor:/u, '');
-  const threadPrefix = unqualifiedThreadId.slice(0, 8);
-  return (
-    (Boolean(threadPrefix) && value === `cursor ${threadPrefix}`) ||
-    value === `cursor ${normalizedThreadId}` ||
-    value === `cursor ${unqualifiedThreadId}` ||
-    value === `chat ${normalizedThreadId}` ||
-    value === `chat cursor:${unqualifiedThreadId}` ||
-    /^chat\s+cursor:[a-z0-9_-]+$/u.test(value) ||
-    /^cursor\s+agent[-\s][0-9a-f]{2,}/u.test(value)
-  );
 }
 
 function firstUserMessagePreview(turns: RawTurn[]): string | null {
@@ -485,12 +628,9 @@ function readThreadItemText(item: RawThreadItem): string {
     .join('');
 }
 
-function readChatEngine(value: unknown): ChatEngine {
-  const normalized = normalizeLifecycleStatus(readString(value));
-  if (normalized === 'opencode' || normalized === 'cursor') {
-    return normalized;
-  }
-  return 'codex';
+function readAgentId(value: unknown): AgentId | null {
+  const agentId = readString(value)?.trim();
+  return agentId ? agentId : null;
 }
 
 function readThreadSourceMetadata(source: unknown): ThreadSourceMetadata {
@@ -623,10 +763,49 @@ export function mapChat(raw: RawThread): Chat {
     ...summary,
     lastMessagePreview: lastPreview,
     messages,
+    acpSnapshot: raw.acpSnapshot,
     latestPlan: plans.latestPlan,
     latestTurnPlan: plans.latestTurnPlan,
     latestTurnStatus: plans.latestTurnStatus,
     activeTurnId: plans.activeTurnId,
+    acpUsage: raw.acpSnapshot ? {
+      used: raw.acpSnapshot.usage.used ?? null,
+      size: raw.acpSnapshot.usage.size ?? null,
+      cost: raw.acpSnapshot.usage.cost ?? null,
+    } : null,
+    acpMode: raw.acpSnapshot?.mode ?? null,
+    acpConfig: raw.acpSnapshot?.config ?? [],
+    acpCommands: raw.acpSnapshot?.commands ?? [],
+    acpActive: raw.acpSnapshot ? {
+      runId: raw.acpSnapshot.active.runId ?? null,
+      sourceTurnId: raw.acpSnapshot.active.sourceTurnId ?? null,
+      generation: raw.acpSnapshot.active.generation ?? null,
+      toolIds: raw.acpSnapshot.active.toolIds,
+    } : null,
+  };
+}
+
+export function applySnapshotToChat(chat: Chat, acpSnapshot: RawAcpSnapshot): Chat {
+  const mapped = mapChat({
+    id: chat.id,
+    agentId: chat.agentId,
+    name: chat.title,
+    preview: chat.lastMessagePreview,
+    modelProvider: chat.modelProvider,
+    createdAt: Date.parse(chat.createdAt) / 1000,
+    updatedAt: Date.parse(chat.updatedAt) / 1000,
+    status: { type: chat.status },
+    cwd: chat.cwd,
+    source: chat.sourceKind ? { kind: chat.sourceKind } : undefined,
+    acpSnapshot,
+  });
+  return {
+    ...chat,
+    ...mapped,
+    title: chat.title,
+    status: chat.status,
+    statusUpdatedAt: chat.statusUpdatedAt,
+    acpSnapshot,
   };
 }
 
@@ -641,6 +820,29 @@ function extractChatPlans(raw: RawThread): {
   const latestTurn = turns.length > 0 ? turns[turns.length - 1] : null;
   const latestTurnStatus = readString(latestTurn?.status);
   const activeTurnId = extractActiveTurnId(turns);
+
+  if (threadId && raw.acpSnapshot) {
+    const steps = raw.acpSnapshot.plan.map((entry) => ({
+      step: entry.content,
+      status: entry.status === 'completed'
+        ? 'completed' as const
+        : entry.status === 'inProgress' || entry.status === 'in_progress'
+          ? 'inProgress' as const
+          : 'pending' as const,
+    }));
+    const plan = steps.length > 0 ? {
+      threadId,
+      turnId: raw.acpSnapshot.active.sourceTurnId ?? `${threadId}::snapshot`,
+      explanation: null,
+      steps,
+    } : null;
+    return {
+      latestPlan: plan,
+      latestTurnPlan: plan,
+      latestTurnStatus: raw.acpSnapshot.active.runId ? 'running' : 'completed',
+      activeTurnId: raw.acpSnapshot.active.sourceTurnId ?? null,
+    };
+  }
 
   if (!threadId || turns.length === 0) {
     return {
@@ -713,6 +915,79 @@ function extractActiveTurnId(turns: RawTurn[]): string | null {
 }
 
 function mapMessages(raw: RawThread, fallbackCreatedAt: string): ChatMessage[] {
+  if (raw.acpSnapshot) {
+    const baseTs = new Date(fallbackCreatedAt).getTime();
+    const messagesById = new Map(raw.acpSnapshot.messages.map((message) => [message.id, message]));
+    const toolsById = new Map(raw.acpSnapshot.tools.map((tool) => [tool.id, tool]));
+    const timeline = raw.acpSnapshot.timeline ?? [
+      ...raw.acpSnapshot.messages.map((message, sequence) => ({
+        sequence,
+        kind: message.role === 'thought' ? 'reasoning' as const : 'message' as const,
+        canonicalId: message.id,
+      })),
+      ...raw.acpSnapshot.tools.map((tool, index) => ({
+        sequence: raw.acpSnapshot!.messages.length + index,
+        kind: 'tool' as const,
+        canonicalId: tool.id,
+      })),
+    ];
+    const mapped = [...timeline].sort((left, right) => left.sequence - right.sequence).flatMap<ChatMessage>((entry, index) => {
+      if (entry.kind === 'tool') {
+        const tool = toolsById.get(entry.canonicalId);
+        if (!tool) return [];
+        const structured = renderAgUiCustomContent({
+          content: tool.structuredContent,
+          locations: tool.locations,
+        });
+        const details = [tool.title || tool.kind, tool.content, structured].filter(Boolean).join('\n');
+        return [{
+          id: `tool:${tool.id}`,
+          role: 'system' as const,
+          content: `${details || tool.id}${tool.truncated ? '\n[tool content truncated]' : ''}`,
+          systemKind: 'tool' as const,
+          createdAt: new Date(baseTs + index * 1000).toISOString(),
+        }];
+      }
+      const message = messagesById.get(entry.canonicalId);
+      if (!message) return [];
+      const parts = message.parts.filter(isChatMessagePart);
+      const content = parts
+        .map((part) => renderAgUiCustomContent(part))
+        .filter(Boolean)
+        .join('\n');
+      if (!content) {
+        return [];
+      }
+      return [{
+        id: message.id,
+        role: message.role === 'agent' ? 'assistant' as const : message.role === 'user' ? 'user' as const : 'system' as const,
+        content: `${content}${message.truncated ? '\n[message content truncated]' : ''}`,
+        parts,
+        systemKind: message.role === 'thought' ? 'reasoning' as const : undefined,
+        createdAt: new Date(baseTs + index * 1000).toISOString(),
+      }];
+    });
+    const collections = [
+      ['messages', raw.acpSnapshot.messageCollection],
+      ['reasoning', raw.acpSnapshot.reasoningCollection],
+      ['tools', raw.acpSnapshot.toolCollection],
+    ] as const;
+    const truncated = collections
+      .filter(([, collection]) => collection?.truncated)
+      .map(([name, collection]) => `${name}: ${String(collection?.omittedCount ?? 0)} omitted`);
+    if ((raw.acpSnapshot.continuation?.unavailableCount ?? 0) > 0) {
+      truncated.push(`older history unavailable: ${String(raw.acpSnapshot.continuation?.unavailableCount)}`);
+    }
+    if (truncated.length > 0) {
+      mapped.unshift({
+        id: `${raw.id ?? 'thread'}::snapshot-truncated`,
+        role: 'system',
+        content: `Snapshot truncated (${truncated.join(', ')})`,
+        createdAt: new Date(baseTs - 1).toISOString(),
+      });
+    }
+    return mapped;
+  }
   const turns = Array.isArray(raw.turns) ? raw.turns : [];
   if (turns.length === 0) {
     return [];
@@ -787,6 +1062,15 @@ function mapMessages(raw: RawThread, fallbackCreatedAt: string): ChatMessage[] {
   }
 
   return messages;
+}
+
+function isChatMessagePart(value: unknown): value is ChatMessagePart {
+  const part = toRecord(value);
+  if (!part || typeof part.type !== 'string') return false;
+  if (part.type === 'text') return typeof part.text === 'string';
+  if (part.type === 'image' || part.type === 'audio') return true;
+  if (part.type === 'resourceLink') return typeof part.uri === 'string';
+  return part.type === 'resource' && toRecord(part.resource) !== null;
 }
 
 function stringifyStructuredMessageContent(itemRecord: Record<string, unknown>): string {
@@ -996,23 +1280,6 @@ function toToolLikeMessage(item: Record<string, unknown>): string | null {
         ? `• Tool failed \`${label}\``
         : `• Called tool \`${label}\``;
     return withNestedDetail(title, detail);
-  }
-
-  if (type === 'toolcall') {
-    const tool = normalizeInline(readString(item.tool) ?? readString(item.name), 120) ?? 'unknown';
-    const status = normalizeType(readString(item.status) ?? '');
-    const title =
-      status === 'failed' || status === 'error'
-        ? `• Tool failed \`${tool}\``
-        : status === 'running' || status === 'inprogress'
-          ? `• Calling tool \`${tool}\``
-          : `• Called tool \`${tool}\``;
-    const argsDetail = toCursorToolArgsPreview(item);
-    const resultDetail = toCursorToolResultPreview(item.result);
-    const detail = [argsDetail ? `Input: ${argsDetail}` : null, resultDetail]
-      .filter(Boolean)
-      .join('\n');
-    return withNestedDetail(title, detail || null);
   }
 
   if (type === 'functioncall' || type === 'customtoolcall') {
@@ -1314,78 +1581,6 @@ function readPatchTargetPaths(input: string): string[] {
   }
 
   return paths;
-}
-
-function toCursorToolArgsPreview(item: Record<string, unknown>): string | null {
-  const args = toRecord(item.args);
-  if (!args) {
-    return toStructuredPreview(item.args, 320);
-  }
-
-  const directTarget =
-    normalizeInline(readString(args.path), 180) ??
-    normalizeInline(readString(args.filePath), 180) ??
-    normalizeInline(readString(args.file_path), 180) ??
-    normalizeInline(readString(args.globPattern), 180) ??
-    normalizeInline(readString(args.glob_pattern), 180) ??
-    normalizeInline(readString(args.command), 220);
-  if (directTarget) {
-    return directTarget;
-  }
-
-  return toStructuredPreview(args, 320);
-}
-
-function toCursorToolResultPreview(value: unknown): string | null {
-  const record = toRecord(value);
-  const status = normalizeType(readString(record?.status) ?? '');
-  const isError = status === 'error' || status === 'failed';
-  const gitPreview = toCursorGitResultPreview(record ?? toRecord(toRecord(value)?.value));
-  if (gitPreview) {
-    return gitPreview;
-  }
-  const preview = toStructuredPreview(record?.value ?? record?.result ?? value, 600);
-  if (isError) {
-    const error =
-      normalizeMultiline(readString(record?.error), 600) ??
-      normalizeMultiline(readString(toRecord(record?.error)?.message), 600);
-    return error ? `Error: ${error}` : preview;
-  }
-  return preview;
-}
-
-function toCursorGitResultPreview(record: Record<string, unknown> | null): string | null {
-  const rawBranches = Array.isArray(record?.branches) ? record.branches : [];
-  if (rawBranches.length === 0) {
-    return null;
-  }
-
-  const lines = rawBranches
-    .map((entry) => {
-      const branchRecord = toRecord(entry);
-      if (!branchRecord) {
-        return null;
-      }
-      const branch = normalizeInline(readString(branchRecord.branch), 180);
-      const prUrl = normalizeInline(
-        readString(branchRecord.prUrl) ?? readString(branchRecord.pr_url),
-        220
-      );
-      const repoUrl = normalizeInline(
-        readString(branchRecord.repoUrl) ?? readString(branchRecord.repo_url),
-        220
-      );
-      return [
-        branch ? `Branch: ${branch}` : null,
-        prUrl ? `PR: ${prUrl}` : null,
-        repoUrl ? `Repo: ${repoUrl}` : null,
-      ]
-        .filter(Boolean)
-        .join('\n');
-    })
-    .filter((line): line is string => Boolean(line));
-
-  return lines.length > 0 ? lines.join('\n') : null;
 }
 
 function toSubAgentMeta(item: Record<string, unknown>): ChatMessageSubAgentMeta | undefined {

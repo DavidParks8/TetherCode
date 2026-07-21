@@ -20,6 +20,18 @@ At minimum, generate and keep a `THIRD_PARTY_NOTICES` file for each release buil
 - license identifier
 - attribution text when required by license
 
+The mobile runtime directly depends on `@ag-ui/core` version `0.0.57` under the MIT License.
+Include its distributed `LICENSE` text in generated mobile notices.
+
+The Rust bridge directly depends on `agent-client-protocol` version `1.2.0`
+with the `unstable_elicitation` feature. Include its Apache-2.0 license text
+and any transitive notices required by the resolved Cargo lockfile in bridge
+distribution notices.
+
+The setup-time ACP installer directly depends on `tar`, `yauzl`, and
+`unbzip2-stream` for bounded archive handling. Include their resolved npm
+licenses and transitive notices in CLI distribution notices.
+
 ## Practical Policy
 
 - Do not remove existing license headers from source files.

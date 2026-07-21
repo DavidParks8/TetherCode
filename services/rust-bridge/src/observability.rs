@@ -37,18 +37,6 @@ pub(crate) struct RequestMetrics {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct LiveSyncMetrics {
-    pub(crate) discovery_runs: u64,
-    pub(crate) poll_runs: u64,
-    pub(crate) tracked_files: u64,
-    pub(crate) emitted_events: u64,
-    pub(crate) deduplicated_lines: u64,
-    pub(crate) errors: u64,
-    pub(crate) last_event_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct PushMetrics {
     pub(crate) attempted: u64,
     pub(crate) accepted: u64,
@@ -70,13 +58,6 @@ pub(crate) struct OperationalMetrics {
     requests_completed: AtomicU64,
     requests_failed: AtomicU64,
     requests_timed_out: AtomicU64,
-    live_sync_discovery_runs: AtomicU64,
-    live_sync_poll_runs: AtomicU64,
-    live_sync_tracked_files: AtomicU64,
-    live_sync_emitted_events: AtomicU64,
-    live_sync_deduplicated_lines: AtomicU64,
-    live_sync_errors: AtomicU64,
-    live_sync_last_event_at: Mutex<Option<String>>,
     push_attempted: AtomicU64,
     push_accepted: AtomicU64,
     push_failed: AtomicU64,
@@ -92,13 +73,6 @@ impl OperationalMetrics {
             requests_completed: AtomicU64::new(0),
             requests_failed: AtomicU64::new(0),
             requests_timed_out: AtomicU64::new(0),
-            live_sync_discovery_runs: AtomicU64::new(0),
-            live_sync_poll_runs: AtomicU64::new(0),
-            live_sync_tracked_files: AtomicU64::new(0),
-            live_sync_emitted_events: AtomicU64::new(0),
-            live_sync_deduplicated_lines: AtomicU64::new(0),
-            live_sync_errors: AtomicU64::new(0),
-            live_sync_last_event_at: Mutex::new(None),
             push_attempted: AtomicU64::new(0),
             push_accepted: AtomicU64::new(0),
             push_failed: AtomicU64::new(0),
@@ -133,6 +107,15 @@ impl OperationalMetrics {
             self.requests_completed.fetch_add(1, Ordering::Relaxed);
         } else {
             self.requests_failed.fetch_add(1, Ordering::Relaxed);
+            if outcome == "timeout" {
+                self.requests_timed_out.fetch_add(1, Ordering::Relaxed);
+                self.record_error(
+                    Some(&trace.request_id),
+                    Some(&trace.method),
+                    Some(&trace.backend),
+                    "request_timeout",
+                );
+            }
         }
         structured_log(
             if outcome == "ok" { "info" } else { "warn" },
@@ -142,26 +125,6 @@ impl OperationalMetrics {
             Some(&trace.backend),
             Some(trace.started_at.elapsed().as_millis() as u64),
             Some(outcome),
-        );
-    }
-
-    pub(crate) fn time_out_request(&self, trace: &RequestTrace) {
-        self.requests_failed.fetch_add(1, Ordering::Relaxed);
-        self.requests_timed_out.fetch_add(1, Ordering::Relaxed);
-        self.record_error(
-            Some(&trace.request_id),
-            Some(&trace.method),
-            Some(&trace.backend),
-            "request_timeout",
-        );
-        structured_log(
-            "warn",
-            "request_finished",
-            Some(&trace.request_id),
-            Some(&trace.method),
-            Some(&trace.backend),
-            Some(trace.started_at.elapsed().as_millis() as u64),
-            Some("timeout"),
         );
     }
 
@@ -209,52 +172,6 @@ impl OperationalMetrics {
             .iter()
             .cloned()
             .collect()
-    }
-
-    pub(crate) fn live_sync_discovery(&self, tracked_files: usize) {
-        self.live_sync_discovery_runs
-            .fetch_add(1, Ordering::Relaxed);
-        self.live_sync_tracked_files
-            .store(tracked_files as u64, Ordering::Relaxed);
-    }
-
-    pub(crate) fn live_sync_poll(&self) {
-        self.live_sync_poll_runs.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn live_sync_event(&self) {
-        self.live_sync_emitted_events
-            .fetch_add(1, Ordering::Relaxed);
-        *self
-            .live_sync_last_event_at
-            .lock()
-            .unwrap_or_else(|entry| entry.into_inner()) = Some(now_iso());
-    }
-
-    pub(crate) fn live_sync_deduplicated(&self) {
-        self.live_sync_deduplicated_lines
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn live_sync_error(&self, kind: &str) {
-        self.live_sync_errors.fetch_add(1, Ordering::Relaxed);
-        self.record_error(None, None, Some("codex"), kind);
-    }
-
-    pub(crate) fn live_sync_snapshot(&self) -> LiveSyncMetrics {
-        LiveSyncMetrics {
-            discovery_runs: self.live_sync_discovery_runs.load(Ordering::Relaxed),
-            poll_runs: self.live_sync_poll_runs.load(Ordering::Relaxed),
-            tracked_files: self.live_sync_tracked_files.load(Ordering::Relaxed),
-            emitted_events: self.live_sync_emitted_events.load(Ordering::Relaxed),
-            deduplicated_lines: self.live_sync_deduplicated_lines.load(Ordering::Relaxed),
-            errors: self.live_sync_errors.load(Ordering::Relaxed),
-            last_event_at: self
-                .live_sync_last_event_at
-                .lock()
-                .unwrap_or_else(|entry| entry.into_inner())
-                .clone(),
-        }
     }
 
     pub(crate) fn push_attempted(&self, count: usize) {
@@ -367,7 +284,7 @@ mod tests {
         let completed = metrics.start_request("bridge/status/read", "bridge");
         metrics.finish_request(&completed, "ok");
         let timed_out = metrics.start_request("thread/read", "codex");
-        metrics.time_out_request(&timed_out);
+        metrics.finish_request(&timed_out, "timeout");
         let snapshot = metrics.request_snapshot();
         assert_eq!(snapshot.total, 2);
         assert_eq!(snapshot.completed, 1);
@@ -389,32 +306,6 @@ mod tests {
         assert_eq!(snapshot.failed, 1);
         assert_eq!(snapshot.pending, 1);
         assert!(!pending.request_id.is_empty());
-    }
-
-    #[test]
-    fn live_sync_metrics_track_every_outcome() {
-        let metrics = OperationalMetrics::new();
-        let empty = metrics.live_sync_snapshot();
-        assert!(empty.last_event_at.is_none());
-
-        metrics.live_sync_discovery(4);
-        metrics.live_sync_discovery(2);
-        metrics.live_sync_poll();
-        metrics.live_sync_event();
-        metrics.live_sync_deduplicated();
-        metrics.live_sync_error("rollout_read_failed");
-
-        let snapshot = metrics.live_sync_snapshot();
-        assert_eq!(snapshot.discovery_runs, 2);
-        assert_eq!(snapshot.poll_runs, 1);
-        assert_eq!(snapshot.tracked_files, 2);
-        assert_eq!(snapshot.emitted_events, 1);
-        assert_eq!(snapshot.deduplicated_lines, 1);
-        assert_eq!(snapshot.errors, 1);
-        assert!(snapshot.last_event_at.is_some());
-        let errors = metrics.recent_errors();
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].backend.as_deref(), Some("codex"));
     }
 
     #[test]

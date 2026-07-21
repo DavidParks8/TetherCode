@@ -1,27 +1,19 @@
-import type { ChatEngine, ChatSummary } from '../api/types';
-import { resolveChatEngine } from '../chatEngines';
-
-export const DEFAULT_DRAWER_CHAT_ENGINES: ReadonlyArray<ChatEngine> = [
-  'codex',
-  'opencode',
-  'cursor',
-];
+import type { AgentId, ChatSummary } from '../api/types';
 
 export function filterDrawerChats(chats: ChatSummary[]): ChatSummary[] {
   return chats.filter((chat) => !isSubAgentChat(chat));
 }
 
-export function filterDrawerChatsByEngines(
+export function filterDrawerChatsByAgents(
   chats: ChatSummary[],
-  engines: ReadonlyArray<ChatEngine>
+  agentIds: ReadonlyArray<AgentId>
 ): ChatSummary[] {
-  const normalizedEngines = Array.from(new Set(engines.map((engine) => resolveChatEngine(engine))));
-  if (normalizedEngines.length === 0 || normalizedEngines.length >= DEFAULT_DRAWER_CHAT_ENGINES.length) {
+  const normalizedAgentIds = Array.from(new Set(agentIds.map((id) => id.trim()).filter(Boolean)));
+  if (normalizedAgentIds.length === 0) {
     return chats;
   }
-
-  const allowedEngines = new Set(normalizedEngines);
-  return chats.filter((chat) => allowedEngines.has(resolveChatEngine(chat.engine)));
+  const allowedAgentIds = new Set(normalizedAgentIds);
+  return chats.filter((chat) => chat.agentId != null && allowedAgentIds.has(chat.agentId));
 }
 
 export function searchDrawerChats(chats: ChatSummary[], query: string): ChatSummary[] {

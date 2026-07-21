@@ -139,17 +139,6 @@ stop_launchctl_job "clawdex.bridge.$BRIDGE_PORT" || true
 stop_process_group "Bridge launcher" "$ROOT_DIR_REGEX/scripts/start-bridge-secure\\.js|$PACKAGE_ROOT_REGEX/scripts/start-bridge-secure\\.js"
 stop_pid_file_process "Rust bridge" "$BRIDGE_PID_FILE" || true
 stop_process_group "Rust bridge" "$ROOT_DIR_REGEX/services/rust-bridge|$PACKAGE_ROOT_REGEX/services/rust-bridge"
-stop_process_group "Legacy TS bridge" "$ROOT_DIR_REGEX/services/mac-bridge|$PACKAGE_ROOT_REGEX/services/mac-bridge"
-
-if [[ -f "$SECURE_ENV_FILE" ]]; then
-  BRIDGE_ENABLED_ENGINES="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_ENABLED_ENGINES" || true)"
-  BRIDGE_ACTIVE_ENGINE="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_ACTIVE_ENGINE" || true)"
-  BRIDGE_OPENCODE_PORT="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_OPENCODE_PORT" || true)"
-  BRIDGE_OPENCODE_PORT="${BRIDGE_OPENCODE_PORT:-4090}"
-  if [[ ",$BRIDGE_ENABLED_ENGINES,$BRIDGE_ACTIVE_ENGINE," == *",opencode,"* ]]; then
-    stop_process_group "OpenCode server" "opencode serve --hostname .* --port $BRIDGE_OPENCODE_PORT|\\.opencode serve --hostname .* --port $BRIDGE_OPENCODE_PORT"
-  fi
-fi
 
 rm -f "$BRIDGE_PID_FILE" "$EXPO_PID_FILE"
 echo "Done."

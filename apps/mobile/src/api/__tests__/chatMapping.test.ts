@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
 import {
-  isGeneratedCursorThreadTitle,
   mapChat,
   mapChatSummary,
   readString,
@@ -7,8 +9,153 @@ import {
   toRawThread,
   toRecord,
 } from '../chatMapping';
+import { renderAgUiCustomContent } from '../agUi';
 
 describe('chatMapping', () => {
+  it('converges snapshot and live chronology across messages, tools, reasoning, and updates', () => {
+    const snapshot = mapChat(toRawThread({
+      id: 'thread-order',
+      createdAt: 1784419200,
+      acpSnapshot: {
+        version: 2,
+        timeline: [
+          { sequence: 0, kind: 'message', canonicalId: 'message-a' },
+          { sequence: 1, kind: 'tool', canonicalId: 'tool-t' },
+          { sequence: 2, kind: 'message', canonicalId: 'message-b' },
+          { sequence: 3, kind: 'reasoning', canonicalId: 'reasoning-r' },
+        ],
+        messages: [
+          { id: 'message-a', role: 'agent', parts: [{ type: 'text', text: 'A' }] },
+          { id: 'message-b', role: 'agent', parts: [{ type: 'text', text: 'B' }] },
+          { id: 'reasoning-r', role: 'thought', parts: [{ type: 'text', text: 'R' }] },
+        ],
+        tools: [{
+          id: 'tool-t', kind: 'read', status: 'completed', title: 'T', content: 'updated',
+          structuredContent: [], locations: [],
+        }],
+        plan: [], usage: {}, config: [], commands: [],
+        session: { agentId: 'agent', threadId: 'thread-order', historyReconstruction: false },
+        active: { toolIds: [] },
+      },
+    }));
+
+    expect(snapshot.messages.map((message) => message.id)).toEqual([
+      'message-a', 'tool:tool-t', 'message-b', 'reasoning-r',
+    ]);
+  });
+
+  it('maps the checked Rust ACP snapshot fixture without legacy turns', () => {
+    const manifest = JSON.parse(
+      readFileSync(
+        path.resolve(__dirname, '../../../../../contracts/bridge-rpc/v2/manifest.json'),
+        'utf8'
+      )
+    ) as { fixtures: { threadSnapshot: unknown } };
+    const raw = toRawThread(manifest.fixtures.threadSnapshot);
+    const chat = mapChat(raw);
+
+    expect(chat.messages.map((message) => message.id)).toEqual([
+      'message-1',
+      'tool:tool-1',
+      'reasoning-1',
+    ]);
+    expect(chat.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'message-1',
+          role: 'assistant',
+          content: expect.stringMatching(/Snapshot A[\s\S]*\[image: data:image\/png;base64,aW1hZ2U=\][\s\S]*Snapshot B[\s\S]*\[resource: file:\/\/\/tmp\/result.txt\][\s\S]*embedded result[\s\S]*\[audio: audio\/wav\]/),
+        }),
+        expect.objectContaining({ id: 'reasoning-1', systemKind: 'reasoning' }),
+        expect.objectContaining({
+          id: 'tool:tool-1',
+          systemKind: 'tool',
+          content: expect.stringMatching(/done[\s\S]*structured[\s\S]*\[diff: src\/file.ts\][\s\S]*\[terminal: terminal-1\][\s\S]*\[location: src\/file.ts:7\]/),
+        }),
+      ])
+    );
+    const snapshotTool = raw.acpSnapshot?.tools[0];
+    expect(snapshotTool).toBeDefined();
+    expect(chat.messages.find((message) => message.id === 'tool:tool-1')?.content).toContain(
+      renderAgUiCustomContent({
+        content: snapshotTool?.structuredContent,
+        locations: snapshotTool?.locations,
+      })
+    );
+    expect(chat.latestPlan?.steps).toEqual([
+      { step: 'Inspect state', status: 'completed' },
+    ]);
+    expect(chat.activeTurnId).toBe('turn-7');
+    expect(chat).toMatchObject({
+      acpUsage: { used: 120, size: 4096, cost: '$0.01' },
+      acpMode: 'plan',
+      acpConfig: [{ id: 'model', value: 'example-model' }],
+      acpCommands: [{ name: 'test', description: 'Run tests' }],
+      acpActive: { runId: 'run-7', generation: 7, toolIds: ['tool-live'] },
+    });
+    expect(raw.acpSnapshot?.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'message-1',
+        parts: [
+          { type: 'text', text: 'Snapshot A' },
+          expect.objectContaining({ type: 'image' }),
+          { type: 'text', text: 'Snapshot B' },
+          expect.objectContaining({ type: 'resource' }),
+          expect.objectContaining({ type: 'audio' }),
+        ],
+      }),
+    ]));
+    expect(chat.messages[0]?.parts).toEqual(raw.acpSnapshot?.messages[0]?.parts);
+    expect(raw.acpSnapshot?.tools[0]).toMatchObject({
+      structuredContent: expect.arrayContaining([
+        expect.objectContaining({ type: 'diff' }),
+        expect.objectContaining({ type: 'terminal' }),
+      ]),
+      locations: [{ path: 'src/file.ts', line: 7 }],
+    });
+    expect(raw.acpSnapshot).toMatchObject({
+      usage: { used: 120, size: 4096, cost: '$0.01' },
+      mode: 'plan',
+      config: [{ id: 'model', value: 'example-model' }],
+      commands: [{ name: 'test', description: 'Run tests' }],
+      active: { runId: 'run-7', generation: 7, toolIds: ['tool-live'] },
+    });
+  });
+
+  it('preserves and presents message, reasoning, tool, and unavailable-history truncation', () => {
+    const raw = toRawThread({
+      id: 'truncated-thread',
+      createdAt: 1784419200,
+      acpSnapshot: {
+        version: 2,
+        timeline: [
+          { sequence: 4, kind: 'message', canonicalId: 'message' },
+          { sequence: 5, kind: 'reasoning', canonicalId: 'reasoning' },
+          { sequence: 6, kind: 'tool', canonicalId: 'tool' },
+        ],
+        messages: [
+          { id: 'message', role: 'agent', parts: [{ type: 'text', text: 'answer' }], truncated: true },
+          { id: 'reasoning', role: 'thought', parts: [{ type: 'text', text: 'thought' }], truncated: true },
+        ],
+        tools: [{ id: 'tool', kind: 'read', status: 'completed', title: 'Read', content: 'result', structuredContent: [], locations: [], truncated: true }],
+        messageCollection: { truncated: true, omittedCount: 2, revision: 7 },
+        reasoningCollection: { truncated: true, omittedCount: 1, revision: 7 },
+        toolCollection: { truncated: true, omittedCount: 3, revision: 7 },
+        continuation: { revision: 7, unavailableCount: 4, maxPageSize: 100, maxHistoryEntries: 1024, maxHistoryBytes: 4194304 },
+        plan: [], usage: {}, config: [], commands: [],
+        session: { agentId: 'agent', threadId: 'truncated-thread', historyReconstruction: false },
+        active: { toolIds: [] },
+      },
+    });
+    const chat = mapChat(raw);
+    expect(raw.acpSnapshot?.messages.every((message) => message.truncated)).toBe(true);
+    expect(raw.acpSnapshot?.tools[0]?.truncated).toBe(true);
+    expect(chat.messages[0]?.content).toContain('Snapshot truncated');
+    expect(chat.messages[0]?.content).toContain('older history unavailable: 4');
+    expect(chat.messages.find((message) => message.id === 'message')?.content).toContain('[message content truncated]');
+    expect(chat.messages.find((message) => message.id === 'tool:tool')?.content).toContain('[tool content truncated]');
+  });
+
   it('falls back to createdAt for missing updatedAt instead of using the current time', () => {
     const chat = mapChat(
       toRawThread({
@@ -208,57 +355,7 @@ describe('chatMapping', () => {
     expect(systemMessages[3].content).toContain('apps/mobile/src/screens/MainScreen.tsx');
   });
 
-  it('maps generic Cursor tool calls into visible tool timeline entries', () => {
-    const chat = mapChat(
-      toRawThread({
-        id: 'thr_cursor_tool',
-        engine: 'cursor',
-        preview: 'tools',
-        createdAt: 1700000000,
-        updatedAt: 1700000002,
-        status: { type: 'idle' },
-        turns: [
-          {
-            status: 'completed',
-            items: [
-              {
-                type: 'userMessage',
-                id: 'u1',
-                content: [{ type: 'text', text: 'Inspect package' }],
-              },
-              {
-                type: 'toolCall',
-                id: 'cursor_tool_read',
-                tool: 'read',
-                status: 'completed',
-                args: { path: '/repo/package.json' },
-                result: {
-                  status: 'success',
-                  value: {
-                    content: '{ "name": "clawdex-mobile" }',
-                  },
-                },
-              },
-              {
-                type: 'agentMessage',
-                id: 'a1',
-                text: 'The package is clawdex-mobile.',
-              },
-            ],
-          },
-        ],
-      })
-    );
-
-    const systemMessages = chat.messages.filter((message) => message.role === 'system');
-    expect(systemMessages).toHaveLength(1);
-    expect(systemMessages[0].systemKind).toBe('tool');
-    expect(systemMessages[0].content).toContain('• Called tool `read`');
-    expect(systemMessages[0].content).toContain('Input: /repo/package.json');
-    expect(systemMessages[0].content).toContain('clawdex-mobile');
-  });
-
-  it('maps Codex function call items into visible tool timeline entries', () => {
+  it('maps function call items into visible tool timeline entries', () => {
     const chat = mapChat(
       toRawThread({
         id: 'thr_function_call',
@@ -316,7 +413,7 @@ describe('chatMapping', () => {
     expect(systemMessages[2].content).toContain('custom output');
   });
 
-  it('maps Codex MCP and search function calls into readable timeline entries', () => {
+  it('maps MCP and search function calls into readable timeline entries', () => {
     const chat = mapChat(
       toRawThread({
         id: 'thr_function_call_specialized',
@@ -433,25 +530,6 @@ describe('chatMapping', () => {
     expect(chat.messages[0].content).toContain('apps/mobile/src/screens/NewName.tsx');
   });
 
-  it('uses Cursor summary preview instead of generated Cursor chat names', () => {
-    const chat = mapChat(
-      toRawThread({
-        id: 'cursor:a7f3b2c1',
-        engine: 'cursor',
-        name: 'Chat cursor:a7f3b2c1',
-        title: 'Chat cursor:a7f3b2c1',
-        preview: 'Analyzed the Clawdex mobile bridge.',
-        createdAt: 1700000000,
-        updatedAt: 1700000002,
-        status: { type: 'idle' },
-        turns: [],
-      })
-    );
-
-    expect(chat.title).toBe('Analyzed the Clawdex mobile bridge.');
-    expect(chat.lastMessagePreview).toBe('Analyzed the Clawdex mobile bridge.');
-  });
-
   it('maps reasoning items into visible transcript system messages', () => {
     const chat = mapChat(
       toRawThread({
@@ -516,10 +594,10 @@ describe('chatMapping', () => {
     expect(chat.messages[0].content).toContain('Compacted conversation context');
   });
 
-  it('maps Codex reasoning items that use content arrays', () => {
+  it('maps reasoning items that use content arrays', () => {
     const chat = mapChat(
       toRawThread({
-        id: 'thr_codex_reasoning',
+        id: 'thr_agent_reasoning',
         preview: 'thinking',
         createdAt: 1700000000,
         updatedAt: 1700000002,
@@ -530,7 +608,7 @@ describe('chatMapping', () => {
             items: [
               {
                 type: 'reasoning',
-                id: 'reasoning_codex_1',
+                id: 'reasoning_agent_1',
                 summary: ['Inspecting workspace'],
                 content: [
                   'Checking how the bridge forwards live events.',
@@ -1119,20 +1197,6 @@ describe('chatMapping', () => {
   });
 
   it.each([
-    [null, null, undefined, true],
-    ['A real title', 'cursor:id', 'codex', false],
-    ['New Agent', 'cursor:id', 'cursor', true],
-    ['Untitled Agent', 'cursor:id', 'cursor', true],
-    ['Cursor abcdef12', 'cursor:abcdef123456', 'cursor', true],
-    ['Cursor cursor:abcdef123456', 'cursor:abcdef123456', 'cursor', true],
-    ['Cursor abcdef123456', 'cursor:abcdef123456', 'cursor', true],
-    ['Chat cursor:abcdef123456', 'cursor:abcdef123456', 'cursor', true],
-    ['Cursor agent-abcd', 'other', 'codex', true],
-  ])('classifies generated title %#', (title, id, engine, expected) => {
-    expect(isGeneratedCursorThreadTitle(title, id, engine)).toBe(expected);
-  });
-
-  it.each([
     ['string source', 'cli', { sourceKind: 'cli' }],
     ['legacy source', { kind: 'subAgent', parent_thread_id: 'root', agent_depth: '2' }, { sourceKind: 'subAgent', parentThreadId: 'root', subAgentDepth: 2 }],
     ['review source', { subAgent: 'review' }, { sourceKind: 'subAgentReview' }],
@@ -1157,8 +1221,6 @@ describe('chatMapping', () => {
           { type: 'commandExecution', command: '', status: 'failed', exit_code: '2' },
           { type: 'mcpToolCall', status: 'error', error: { message: 'mcp failed' } },
           { type: 'mcpToolCall', server: 'srv', tool: 'read', status: 'failed', error: 'plain failure' },
-          { type: 'toolCall', name: 'reader', status: 'running', args: 'input', result: { status: 'error', error: { message: 'cursor failed' } } },
-          { type: 'toolCall', tool: 'git', status: 'failed', args: { file_path: 'a.ts' }, result: { branches: [null, { branch: 'main', pr_url: 'pr', repo_url: 'repo' }] } },
           { type: 'function_call', name: 'functions.exec_command', status: 'running', args: { command: ['npm', '', 'test'] } },
           { type: 'function_call', name: 'mcp__srv__tool__part', status: 'failed', args: { value: 1 } },
           { type: 'function_call', name: 'generic', status: 'running', arguments: '{bad json' },
@@ -1178,8 +1240,6 @@ describe('chatMapping', () => {
     expect(text).toContain('Command failed `command`');
     expect(text).toContain('exit code 2');
     expect(text).toContain('Tool failed `MCP tool call`');
-    expect(text).toContain('cursor failed');
-    expect(text).toContain('Branch: main');
     expect(text).toContain('Running command `npm test`');
     expect(text).toContain('Tool failed `srv / tool__part`');
     expect(text).toContain('Calling tool `generic`');

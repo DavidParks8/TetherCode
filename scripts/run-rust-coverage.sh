@@ -5,7 +5,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRIDGE_DIR="$ROOT_DIR/services/rust-bridge"
 TOOLCHAIN="nightly-2026-07-15"
 REPORT_DIR="$BRIDGE_DIR/target/llvm-cov"
-IGNORE_REGEX='(^|/)src/boundary_integration\.rs$'
 
 if ! rustup toolchain list | grep -q "^${TOOLCHAIN}"; then
   echo "Missing Rust coverage toolchain. Install it with:" >&2
@@ -25,7 +24,6 @@ mkdir -p "$REPORT_DIR"
     --locked \
     --bin codex-rust-bridge \
     --branch \
-    --ignore-filename-regex "$IGNORE_REGEX" \
     --json \
     --summary-only \
     --output-path "$REPORT_DIR/coverage.json" \
@@ -33,7 +31,6 @@ mkdir -p "$REPORT_DIR"
     --test-threads=1
   cargo "+${TOOLCHAIN}" llvm-cov report \
     --branch \
-    --ignore-filename-regex "$IGNORE_REGEX" \
     --html \
     --output-dir "$REPORT_DIR/html"
 )

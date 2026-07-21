@@ -54,39 +54,15 @@ pub(crate) fn is_forwarded_method(method: &str) -> bool {
             | "account/rateLimits/read"
             | "account/read"
             | "agent/list"
-            | "app/list"
-            | "collaborationMode/list"
-            | "config/batchWrite"
-            | "config/mcpServer/reload"
             | "config/read"
-            | "config/value/write"
-            | "configRequirements/read"
-            | "experimentalFeature/list"
-            | "feedback/upload"
-            | "fuzzyFileSearch/sessionStart"
-            | "fuzzyFileSearch/sessionStop"
-            | "fuzzyFileSearch/sessionUpdate"
-            | "mcpServer/oauth/login"
-            | "mcpServerStatus/list"
-            | "mock/experimentalMethod"
             | "model/list"
             | "review/start"
-            | "skills/config/write"
-            | "skills/list"
-            | "skills/remote/export"
-            | "skills/remote/list"
-            | "thread/archive"
-            | "thread/backgroundTerminals/clean"
-            | "thread/compact/start"
-            | "thread/fork"
             | "thread/list"
+            | "thread/snapshot/page"
             | "thread/loaded/list"
-            | "thread/name/set"
             | "thread/read"
             | "thread/resume"
-            | "thread/rollback"
             | "thread/start"
-            | "thread/unarchive"
             | "turn/interrupt"
             | "turn/start"
             | "turn/steer"
@@ -145,5 +121,24 @@ mod tests {
         assert!(is_forwarded_method("turn/start"));
         assert!(!is_forwarded_method("bridge/status/read"));
         assert!(!is_forwarded_method("thread/read/extra"));
+    }
+
+    #[test]
+    fn contract_fixture_manifest() {
+        let manifest: Value = serde_json::from_str(include_str!(
+            "../../../contracts/bridge-rpc/v2/manifest.json"
+        ))
+        .expect("v2 contract fixture parses");
+        assert_eq!(manifest["protocolVersion"], crate::BRIDGE_PROTOCOL_VERSION);
+        assert_eq!(manifest["fixtures"]["capabilities"]["agUiEvents"], true);
+        assert_eq!(
+            manifest["fixtures"]["capabilities"]["preferredAgentId"],
+            "local-primary"
+        );
+        let methods = manifest["mobileForwardedMethods"]
+            .as_array()
+            .expect("forwarded method inventory");
+        assert!(methods.iter().any(|method| method == "thread/start"));
+        assert!(methods.iter().any(|method| method == "turn/start"));
     }
 }

@@ -1,8 +1,10 @@
 use std::path::Path;
 
+#[cfg(test)]
 use tokio::{fs, io::AsyncWriteExt};
 use uuid::Uuid;
 
+#[cfg(test)]
 fn private_open_options(create_new: bool) -> fs::OpenOptions {
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).create_new(create_new);
@@ -14,6 +16,7 @@ fn private_open_options(create_new: bool) -> fs::OpenOptions {
     options
 }
 
+#[cfg(test)]
 pub(crate) async fn write_private_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = private_open_options(true).open(path).await?;
     file.write_all(bytes).await?;
@@ -21,27 +24,130 @@ pub(crate) async fn write_private_new(path: &Path, bytes: &[u8]) -> std::io::Res
 }
 
 pub(crate) async fn atomic_write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "storage path has no parent",
-        )
-    })?;
+    atomic_write_private_with(path, bytes, |_| Ok(()), |_| Ok(())).await
+}
+
+async fn atomic_write_private_with<BeforePublish, BeforeParentSync>(
+    path: &Path,
+    bytes: &[u8],
+    before_publish: BeforePublish,
+    before_parent_sync: BeforeParentSync,
+) -> std::io::Result<()>
+where
+    BeforePublish: FnOnce(&Path) -> std::io::Result<()> + Send + 'static,
+    BeforeParentSync: FnOnce(&Path) -> std::io::Result<()> + Send + 'static,
+{
+    let parent = path
+        .parent()
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "storage path has no parent",
+            )
+        })?
+        .to_path_buf();
     let file_name = path
         .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("state");
-    let temporary = parent.join(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
-    let result = async {
-        write_private_new(&temporary, bytes).await?;
-        fs::rename(&temporary, path).await?;
-        #[cfg(unix)]
-        fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).await?;
-        Ok(())
-    }
-    .await;
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "storage path has no file name",
+            )
+        })?
+        .to_os_string();
+    let bytes = bytes.to_vec();
+    tokio::task::spawn_blocking(move || {
+        atomic_write_private_blocking(
+            &parent,
+            &file_name,
+            &bytes,
+            before_publish,
+            before_parent_sync,
+        )
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+#[cfg(unix)]
+fn atomic_write_private_blocking<BeforePublish, BeforeParentSync>(
+    parent: &Path,
+    file_name: &std::ffi::OsStr,
+    bytes: &[u8],
+    before_publish: BeforePublish,
+    before_parent_sync: BeforeParentSync,
+) -> std::io::Result<()>
+where
+    BeforePublish: FnOnce(&Path) -> std::io::Result<()>,
+    BeforeParentSync: FnOnce(&Path) -> std::io::Result<()>,
+{
+    use rustix::fs::{open, openat, renameat, unlinkat, AtFlags, Mode, OFlags};
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent_fd = open(
+        parent,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )?;
+    let parent_file = std::fs::File::from(parent_fd);
+    let temporary_name = format!(".{}.{}.tmp", file_name.to_string_lossy(), Uuid::new_v4());
+    let temporary_path = parent.join(&temporary_name);
+    let result = (|| {
+        let temporary_fd = openat(
+            &parent_file,
+            &temporary_name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        )?;
+        let mut temporary_file = std::fs::File::from(temporary_fd);
+        temporary_file.write_all(bytes)?;
+        temporary_file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        before_publish(&temporary_path)?;
+        temporary_file.sync_all()?;
+        renameat(&parent_file, &temporary_name, &parent_file, file_name)?;
+        before_parent_sync(parent)?;
+        parent_file.sync_all()
+    })();
     if result.is_err() {
-        let _ = fs::remove_file(&temporary).await;
+        let _ = unlinkat(&parent_file, &temporary_name, AtFlags::empty());
+    }
+    result
+}
+
+#[cfg(not(unix))]
+fn atomic_write_private_blocking<BeforePublish, BeforeParentSync>(
+    parent: &Path,
+    file_name: &std::ffi::OsStr,
+    bytes: &[u8],
+    before_publish: BeforePublish,
+    before_parent_sync: BeforeParentSync,
+) -> std::io::Result<()>
+where
+    BeforePublish: FnOnce(&Path) -> std::io::Result<()>,
+    BeforeParentSync: FnOnce(&Path) -> std::io::Result<()>,
+{
+    use std::io::Write;
+
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        Uuid::new_v4()
+    ));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        before_publish(&temporary)?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, parent.join(file_name))?;
+        before_parent_sync(parent)?;
+        std::fs::File::open(parent)?.sync_all()
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
     }
     result
 }
@@ -49,7 +155,9 @@ pub(crate) async fn atomic_write_private(path: &Path, bytes: &[u8]) -> std::io::
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::{atomic_write_private, private_open_options, write_private_new};
+    use super::{
+        atomic_write_private, atomic_write_private_with, private_open_options, write_private_new,
+    };
     use std::fs;
     use uuid::Uuid;
 
@@ -96,6 +204,38 @@ mod tests {
             .await
             .is_err());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn atomic_write_secures_before_publish_and_propagates_parent_sync_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("clawdex-storage-durable-{}", Uuid::new_v4()));
+        fs::create_dir(&dir).expect("create test directory");
+        let path = dir.join("state.json");
+        fs::write(&path, b"old").expect("seed state");
+        atomic_write_private_with(
+            &path,
+            b"new",
+            |temporary| {
+                assert_eq!(fs::metadata(temporary)?.permissions().mode() & 0o777, 0o600);
+                Ok(())
+            },
+            |_| Err(std::io::Error::other("injected parent sync failure")),
+        )
+        .await
+        .expect_err("parent sync failure must propagate");
+        assert_eq!(fs::read(&path).expect("reopen replacement"), b"new");
+        assert_eq!(
+            fs::read_dir(&dir)
+                .expect("list storage directory")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+                .count(),
+            0
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }

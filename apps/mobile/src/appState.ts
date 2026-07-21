@@ -1,10 +1,8 @@
 import type {
+  AgentDefaultSettingsMap,
+  AgentId,
   ApprovalMode,
-  ChatEngine,
   CollaborationMode,
-  EngineDefaultSettingsMap,
-  ReasoningEffort,
-  ServiceTier,
 } from './api/types';
 import {
   APP_SETTINGS_VERSION,
@@ -57,8 +55,8 @@ export interface PushSettingsState {
 
 export interface AppSettingsState {
   defaultStartCwd: string | null;
-  defaultChatEngine: ChatEngine;
-  defaultEngineSettings: EngineDefaultSettingsMap;
+  preferredAgentId: AgentId | null;
+  agentSettings: AgentDefaultSettingsMap;
   approvalMode: ApprovalMode;
   showToolCalls: boolean;
   workspaceChatLimit: WorkspaceChatLimit;
@@ -117,10 +115,7 @@ export type AppStateAction =
   | { type: 'settings/update'; patch: Partial<AppSettingsState> }
   | {
       type: 'settings/remember-thread';
-      engine: ChatEngine;
-      modelId: string | null;
-      effort: ReasoningEffort | null;
-      serviceTier: ServiceTier | null;
+      agentId: AgentId;
       collaborationMode: CollaborationMode;
     }
   | { type: 'profiles/save'; draft: BridgeProfileDraft }
@@ -141,8 +136,8 @@ export type AppStateAction =
 export function createDefaultAppSettings(): AppSettingsState {
   return {
     defaultStartCwd: null,
-    defaultChatEngine: 'codex',
-    defaultEngineSettings: createEmptyEngineDefaultSettingsMap(),
+    preferredAgentId: null,
+    agentSettings: {},
     approvalMode: 'normal',
     showToolCalls: true,
     workspaceChatLimit: DEFAULT_WORKSPACE_CHAT_LIMIT,
@@ -177,22 +172,17 @@ export function appStateReducer(state: AppStateData, action: AppStateAction): Ap
         settings: normalizeAppSettings({ ...state.settings, ...action.patch }),
       };
     case 'settings/remember-thread': {
-      const engine = normalizeChatEngine(action.engine);
+      const agentId = normalizeNullableString(action.agentId);
+      if (!agentId) return state;
       return {
         ...state,
         settings: {
           ...state.settings,
-          defaultChatEngine: engine,
-          defaultEngineSettings: {
-            ...state.settings.defaultEngineSettings,
-            [engine]: {
-              modelId: normalizeNullableString(action.modelId),
-              effort: normalizeReasoningEffort(action.effort),
-              serviceTier: action.serviceTier === 'fast' ? 'fast' : null,
-              collaborationMode: normalizeCollaborationMode(
-                action.collaborationMode,
-                engine
-              ),
+          preferredAgentId: agentId,
+          agentSettings: {
+            ...state.settings.agentSettings,
+            [agentId]: {
+              collaborationMode: normalizeCollaborationMode(action.collaborationMode),
             },
           },
         },
@@ -687,8 +677,8 @@ function normalizeAppSettings(value: unknown): AppSettingsState {
     JSON.stringify({
       version: APP_SETTINGS_VERSION,
       defaultStartCwd: record.defaultStartCwd,
-      lastUsedChatEngine: record.defaultChatEngine,
-      lastUsedEngineSettings: record.defaultEngineSettings,
+      preferredAgentId: record.preferredAgentId,
+      agentSettings: record.agentSettings,
       approvalMode: record.approvalMode,
       showToolCalls: record.showToolCalls,
       workspaceChatLimit: record.workspaceChatLimit,
@@ -700,8 +690,8 @@ function normalizeAppSettings(value: unknown): AppSettingsState {
   );
   return {
     defaultStartCwd: parsed.defaultStartCwd,
-    defaultChatEngine: parsed.defaultChatEngine,
-    defaultEngineSettings: parsed.defaultEngineSettings,
+    preferredAgentId: parsed.preferredAgentId,
+    agentSettings: parsed.agentSettings,
     approvalMode: parsed.approvalMode,
     showToolCalls: parsed.showToolCalls,
     workspaceChatLimit: parsed.workspaceChatLimit,
@@ -716,38 +706,12 @@ function normalizeAppSettings(value: unknown): AppSettingsState {
   };
 }
 
-function createEmptyEngineDefaultSettingsMap(): EngineDefaultSettingsMap {
-  return {
-    codex: { modelId: null, effort: null, serviceTier: null, collaborationMode: 'default' },
-    opencode: { modelId: null, effort: null, serviceTier: null, collaborationMode: 'default' },
-    cursor: { modelId: null, effort: null, serviceTier: null, collaborationMode: 'default' },
-  };
-}
-
-function normalizeChatEngine(value: unknown): ChatEngine {
-  return value === 'opencode' || value === 'cursor' ? value : 'codex';
-}
-
 function normalizeNullableString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
-function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
-  return value === 'none' ||
-    value === 'minimal' ||
-    value === 'low' ||
-    value === 'medium' ||
-    value === 'high' ||
-    value === 'xhigh'
-    ? value
-    : null;
-}
-
-function normalizeCollaborationMode(
-  value: CollaborationMode,
-  engine: ChatEngine
-): CollaborationMode {
-  return value === 'plan' || (value === 'ask' && engine === 'cursor') ? value : 'default';
+function normalizeCollaborationMode(value: CollaborationMode): CollaborationMode {
+  return value === 'plan' ? value : 'default';
 }
 
 function persistenceError(

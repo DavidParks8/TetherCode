@@ -7,6 +7,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const workflowPath = path.join(root, '.github/workflows/npm-release.yml');
 const workflowSource = readFileSync(workflowPath, 'utf8');
 const workflow = parse(workflowSource);
+const packageJson = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 
 function assert(condition, message) {
   if (!condition) {
@@ -15,11 +16,38 @@ function assert(condition, message) {
 }
 
 const publish = workflow.jobs?.publish;
+const quality = workflow.jobs?.quality;
 assert(workflow.on?.push?.branches?.includes('main'), 'main pushes must retain build coverage');
 assert(workflow.on?.push?.tags?.includes('v*'), 'version tags must trigger releases');
 assert(workflow.on?.workflow_dispatch, 'manual releases must remain available');
 assert(workflow.jobs?.release_metadata, 'release ownership metadata job is required');
+assert(quality?.['runs-on'] === 'macos-26', 'release quality must use the same pinned Rust coverage runner as CI');
+const qualitySteps = quality?.steps ?? [];
+const qualityNodeStep = qualitySteps.find((step) => step.name === 'Setup Node.js');
+assert(qualityNodeStep?.with?.['node-version'] === '22.13.1', 'release quality Node.js must match CI exactly');
+const qualityNightlyStep = qualitySteps.find((step) => step.name === 'Setup pinned nightly Rust');
+assert(qualityNightlyStep?.with?.toolchain === 'nightly-2026-07-15', 'release Rust coverage nightly must be pinned');
+const llvmCovStep = qualitySteps.find((step) => step.name === 'Install cargo-llvm-cov');
+assert(llvmCovStep?.uses === 'taiki-e/install-action@v2.83.4', 'cargo-llvm-cov installer action must be pinned');
+assert(llvmCovStep?.with?.tool === 'cargo-llvm-cov@0.8.7', 'cargo-llvm-cov version must match CI exactly');
+assert(llvmCovStep?.with?.fallback === 'none', 'cargo-llvm-cov must not use an unpinned fallback');
+const qualityCommands = qualitySteps.map((step) => step.run ?? '').join('\n');
+for (const command of [
+  'npm run contract:check',
+  'npm run test:release',
+  'npm run lint -w clawdex-mobile',
+  'npm run typecheck -w clawdex-mobile',
+  'npm run test:coverage -w clawdex-mobile',
+  'cargo fmt --check',
+  'cargo check --locked --all-targets --all-features',
+  'cargo clippy --locked --all-targets --all-features -- -D warnings',
+  'cargo test --locked --all-targets --all-features -- --test-threads=1',
+  'npm run coverage:rust',
+]) {
+  assert(qualityCommands.includes(command), `release quality must run ${command}`);
+}
 assert(workflow.jobs?.build_bridge_binaries?.needs === 'release_metadata', 'builds must wait for tag validation');
+assert(Array.isArray(publish?.needs) && publish.needs.includes('quality'), 'publish must require release quality in the same workflow execution');
 const releaseMetadataSteps = workflow.jobs.release_metadata.steps ?? [];
 const releaseCheckoutStep = releaseMetadataSteps.find((step) => step.name === 'Checkout');
 assert(releaseCheckoutStep?.with?.['fetch-depth'] === 0, 'release ownership must check out complete history');
@@ -49,6 +77,13 @@ const jobsContainingPublish = Object.entries(workflow.jobs ?? {})
   .filter(([, job]) => JSON.stringify(job).includes('npm publish'))
   .map(([name]) => name);
 assert(jobsContainingPublish.length === 1 && jobsContainingPublish[0] === 'publish', 'npm publish must have exactly one gated owner');
+
+for (const file of ['scripts/acp-agent-install.js', 'scripts/acp-agent-registry.js']) {
+  assert(packageJson.files?.includes(file), `published package must include ${file}`);
+}
+for (const dependency of ['tar', 'unbzip2-stream', 'yauzl', 'zod']) {
+  assert(packageJson.dependencies?.[dependency], `published package must include runtime dependency ${dependency}`);
+}
 
 const publishStep = publish?.steps?.find((step) => step.name === 'Publish to npm (OIDC trusted publishing)');
 assert(publishStep, 'publish step is required');

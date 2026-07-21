@@ -41,24 +41,14 @@ describe('PushResponseController', () => {
       )
     ).toBe(false);
     expect(navigate).toHaveBeenCalledTimes(1);
-    expect(api.resolveApproval).toHaveBeenCalledWith(
-      'approval-1',
-      'accept',
-      'notification-1:approve'
-    );
+    expect(api.resolveApproval).not.toHaveBeenCalled();
   });
 
-  it('cancels deferred approval listeners and timers on profile change', () => {
-    jest.useFakeTimers();
-    const unsubscribe = jest.fn();
-    const statusHandler: { current: ((connected: boolean) => void) | null } = { current: null };
+  it('does not subscribe or resolve when a push action lacks an advertised permission option', () => {
     const api = { resolveApproval: jest.fn() };
     const ws = {
       isConnected: false,
-      onStatus: jest.fn((handler) => {
-        statusHandler.current = handler;
-        return unsubscribe;
-      }),
+      onStatus: jest.fn(),
     };
     const controller = new PushResponseController(jest.fn());
     controller.setProfile({
@@ -69,12 +59,9 @@ describe('PushResponseController', () => {
     });
     controller.handle(event());
     controller.setProfile(null);
-    statusHandler.current?.(true);
-    jest.runAllTimers();
 
-    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(ws.onStatus).not.toHaveBeenCalled();
     expect(api.resolveApproval).not.toHaveBeenCalled();
-    jest.useRealTimers();
   });
 
   it('handles a cold response after its profile client is installed', () => {
@@ -92,7 +79,7 @@ describe('PushResponseController', () => {
     });
 
     expect(navigate).toHaveBeenCalledTimes(1);
-    expect(api.resolveApproval).toHaveBeenCalledTimes(1);
+    expect(api.resolveApproval).not.toHaveBeenCalled();
   });
 
   it('ignores same-profile updates and non-action taps', () => {
@@ -123,19 +110,14 @@ describe('PushResponseController', () => {
     expect(api.resolveApproval).not.toHaveBeenCalled();
   });
 
-  it('resolves a deferred denial after the websocket connects', async () => {
-    jest.useFakeTimers();
-    const unsubscribe = jest.fn();
-    let statusHandler: ((connected: boolean) => void) | undefined;
+  it('navigates a denial response without guessing a permission option id', () => {
+    const navigate = jest.fn();
     const api = { resolveApproval: jest.fn().mockResolvedValue({ ok: true }) };
     const ws = {
       isConnected: false,
-      onStatus: jest.fn((handler) => {
-        statusHandler = handler;
-        return unsubscribe;
-      }),
+      onStatus: jest.fn(),
     };
-    const controller = new PushResponseController(jest.fn());
+    const controller = new PushResponseController(navigate);
     controller.setProfile({
       profileId: 'profile-1',
       registrationId: 'registration-1',
@@ -143,22 +125,13 @@ describe('PushResponseController', () => {
       ws: ws as never,
     });
     controller.handle(event({ actionId: 'notification-1:deny', action: 'deny' }));
-    statusHandler?.(false);
-    expect(api.resolveApproval).not.toHaveBeenCalled();
-    statusHandler?.(true);
-    await Promise.resolve();
 
-    expect(unsubscribe).toHaveBeenCalled();
-    expect(api.resolveApproval).toHaveBeenCalledWith(
-      'approval-1',
-      'decline',
-      'notification-1:deny'
-    );
-    jest.useRealTimers();
+    expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ action: 'deny' }));
+    expect(ws.onStatus).not.toHaveBeenCalled();
+    expect(api.resolveApproval).not.toHaveBeenCalled();
   });
 
-  it('retries failed approval resolution up to four attempts', async () => {
-    jest.useFakeTimers();
+  it('does not retry an unadvertised approval choice', () => {
     const api = { resolveApproval: jest.fn().mockRejectedValue(new Error('offline')) };
     const controller = new PushResponseController(jest.fn());
     controller.setProfile({
@@ -169,14 +142,7 @@ describe('PushResponseController', () => {
     });
     controller.handle(event());
 
-    for (let attempt = 1; attempt < 4; attempt += 1) {
-      await Promise.resolve();
-      jest.runOnlyPendingTimers();
-    }
-    await Promise.resolve();
-    expect(api.resolveApproval).toHaveBeenCalledTimes(4);
-    expect(jest.getTimerCount()).toBe(0);
-    jest.useRealTimers();
+    expect(api.resolveApproval).not.toHaveBeenCalled();
   });
 
   it('evicts old handled and pending responses at the configured limit', () => {

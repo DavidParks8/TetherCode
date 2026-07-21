@@ -9,13 +9,13 @@ turn completions remain visible in the live UI but do not send push notification
 The mobile app can only run JavaScript (and therefore keep its bridge WebSocket
 open) while it is foregrounded. The instant it is backgrounded or killed, the
 socket closes, so the **phone can never observe a turn completing**. The bridge,
-on the other hand, owns the `codex app-server` connection and stays alive
-regardless of whether any phone is connected. So the bridge is the sender:
+on the other hand, owns the ACP agent sessions and stays alive regardless of
+whether any phone is connected. So the bridge is the sender:
 
 ```
-codex app-server ──turn/completed──▶ bridge ──HTTPS POST──▶ Expo push service ──▶ APNs/FCM ──▶ phone
-                                       ▲
-                       (phone registered its Expo push token here over the authed WS)
+ACP canonical event ──▶ bridge ──HTTPS POST──▶ Expo push service ──▶ APNs/FCM ──▶ phone
+                         ▲
+         (phone registered its Expo push token over the authenticated WS)
 ```
 
 Waking a backgrounded/killed app is only possible through the OS push transports
@@ -55,15 +55,12 @@ not sent. Approval notifications never include reply content.
   - `bridge/push/list` → device list (tokens are masked to a short suffix)
 - Registrations persist to `.clawdex-push-registry.json` in the bridge working
   directory (gitignored).
-- A `PushService` subscribes to the bridge notification stream and, on
-  `turn/completed` / `bridge/approval.requested`, POSTs to
+- A `PushService` subscribes to the canonical ACP event channel and, on final
+  run completion or a permission request, POSTs to
   `https://exp.host/--/api/v2/push/send`. Tokens that Expo reports as
   `DeviceNotRegistered` are pruned automatically. Re-registering the same
   `registrationId` atomically replaces a rotated token; a registration cannot be
   rebound to another `profileId`.
-- Before sending a completion push, the bridge reads the completed thread and
-  verifies that its source is a top-level agent rather than a subagent. If
-  lineage cannot be verified, the completion push is suppressed.
 - A top-level completion is also suppressed when the bridge queue immediately
   starts the next queued message. The completion push is sent only when that
   top-level thread reaches a final completion with no queued continuation.

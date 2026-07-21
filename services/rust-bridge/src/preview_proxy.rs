@@ -1419,11 +1419,6 @@ pub(super) fn resolve_preview_request_target(
     })
 }
 
-#[cfg(test)]
-pub(super) fn encode_preview_proxy_origin_token(target_origin: &str) -> String {
-    general_purpose::URL_SAFE_NO_PAD.encode(target_origin.as_bytes())
-}
-
 pub(super) fn decode_preview_proxy_origin_token(token: &str) -> Result<Url, String> {
     let decoded = general_purpose::URL_SAFE_NO_PAD
         .decode(token)

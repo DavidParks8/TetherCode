@@ -80,6 +80,17 @@ for (const method of ['bridge/push/register', 'bridge/push/unregister', 'bridge/
 if (/content-free/i.test(push)) fail('push guide incorrectly describes payloads as content-free');
 
 const operations = readFileSync(path.join(root, 'docs/setup-and-operations.md'), 'utf8');
+for (const required of [
+  'clawdex-tree-v1',
+  '`.clawdex-install.json`',
+  '100,000 entries',
+  '2 GiB',
+  '4,096 UTF-8 bytes',
+  '32 MiB',
+  'immediately before constructing the SDK process transport',
+]) {
+  if (!operations.includes(required)) fail(`operations integrity policy is missing: ${required}`);
+}
 const bridgeRoutes = extractBridgeHttpRoutes(readRustBridgeProductionSources(root));
 if (bridgeRoutes.length === 0) fail('Rust bridge HTTP route inventory is empty');
 for (const route of new Set(bridgeRoutes)) {
@@ -87,7 +98,7 @@ for (const route of new Set(bridgeRoutes)) {
 }
 
 const status = readFileSync(path.join(root, 'STATUS.md'), 'utf8');
-for (const staleClaim of ['No push notifications', 'No WebSocket reconnection', 'mac-bridge (Fastify)']) {
+for (const staleClaim of ['No push notifications', 'No WebSocket reconnection']) {
   if (status.includes(staleClaim)) fail(`STATUS.md contains stale claim: ${staleClaim}`);
 }
 

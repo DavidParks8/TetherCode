@@ -1,5 +1,4 @@
 import type { HostBridgeApiClient } from './api/client';
-import type { ApprovalDecision } from './api/types';
 import type { HostBridgeWsClient } from './api/ws';
 import type { PushResponseEvent } from './pushNotifications';
 
@@ -58,14 +57,6 @@ export class PushResponseController {
     }
     this.remember(event.actionId);
     this.onNavigate(event);
-    if ((event.action === 'approve' || event.action === 'deny') && event.target.approvalId) {
-      this.resolveWhenConnected(
-        event.actionId,
-        profile,
-        event.target.approvalId,
-        event.action === 'approve' ? 'accept' : 'decline'
-      );
-    }
     return true;
   }
 
@@ -73,52 +64,6 @@ export class PushResponseController {
     this.cancelDeferred();
     this.pending.clear();
     this.profile = null;
-  }
-
-  private resolveWhenConnected(
-    actionId: string,
-    profile: PushResponseProfileClient,
-    approvalId: string,
-    decision: ApprovalDecision
-  ): void {
-    const attempt = () => {
-      const deferred = this.deferred.get(actionId);
-      if (deferred) {
-        clearTimeout(deferred.timer);
-        deferred.unsubscribe();
-        this.deferred.delete(actionId);
-      }
-      if (this.profile !== profile) return;
-      void this.resolveApproval(profile, actionId, approvalId, decision, 1);
-    };
-    if (profile.ws.isConnected) {
-      attempt();
-      return;
-    }
-    const unsubscribe = profile.ws.onStatus((connected) => {
-      if (connected) attempt();
-    });
-    const timer = setTimeout(attempt, 10_000);
-    this.deferred.set(actionId, { timer, unsubscribe });
-  }
-
-  private async resolveApproval(
-    profile: PushResponseProfileClient,
-    actionId: string,
-    approvalId: string,
-    decision: ApprovalDecision,
-    attempt: number
-  ): Promise<void> {
-    try {
-      await profile.api.resolveApproval(approvalId, decision, actionId);
-    } catch {
-      if (this.profile !== profile || attempt >= 4) return;
-      const timer = setTimeout(() => {
-        this.deferred.delete(actionId);
-        void this.resolveApproval(profile, actionId, approvalId, decision, attempt + 1);
-      }, Math.min(1000 * 2 ** (attempt - 1), 4000));
-      this.deferred.set(actionId, { timer, unsubscribe: () => {} });
-    }
   }
 
   private remember(actionId: string): void {

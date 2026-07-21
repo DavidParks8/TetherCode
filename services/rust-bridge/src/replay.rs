@@ -168,8 +168,19 @@ mod tests {
         assert!(has_more);
         assert_eq!(bytes, 2);
 
+        let count_bounded = NotificationReplay::new(1, 100);
+        count_bounded.push(1, json!({ "id": 1 }), 1).await;
+        count_bounded.push(2, json!({ "id": 2 }), 1).await;
+        assert_eq!(count_bounded.earliest_event_id().await, Some(2));
+        assert_eq!(count_bounded.status(0).await.evicted, 1);
+
         let status = replay.status(0).await;
         assert_eq!(status.latest_event_id, Some(3));
         assert_eq!(status.bytes, 6);
+
+        let (remaining, has_more, bytes) = replay.since(Some(2), 10, 100).await;
+        assert_eq!(remaining, vec![json!({ "id": 3 })]);
+        assert!(!has_more);
+        assert_eq!(bytes, 2);
     }
 }

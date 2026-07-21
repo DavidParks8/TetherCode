@@ -9,7 +9,7 @@ import {
 } from './rust-bridge-source-inventory.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const manifest = JSON.parse(readFileSync(path.join(root, 'contracts/bridge-rpc/v1/manifest.json'), 'utf8'));
+const manifest = JSON.parse(readFileSync(path.join(root, 'contracts/bridge-rpc/v2/manifest.json'), 'utf8'));
 const rustSources = readRustBridgeProductionSources(root);
 const rust = [...rustSources.values()].join('\n');
 const client = readFileSync(path.join(root, 'apps/mobile/src/api/client.ts'), 'utf8');
@@ -40,7 +40,7 @@ const assertUniqueSortedStrings = (name, values) => {
   }
 };
 
-if (manifest.fixtureFormatVersion !== 1 || manifest.protocolVersion !== 1) {
+if (manifest.fixtureFormatVersion !== 1 || manifest.protocolVersion !== 2) {
   fail('unsupported manifest or protocol version');
 }
 assertUniqueSortedStrings('bridgeMethods', manifest.bridgeMethods);
@@ -87,6 +87,7 @@ if (fixtures.operationalStatus.replay.entries > fixtures.operationalStatus.repla
 if (!fixtures.operationalStatus.recentErrors.every((error) => error.method && error.backend && error.kind)) fail('operational error fixture');
 if (fixtures.notification.protocolVersion !== manifest.protocolVersion) fail('notification fixture version');
 if (!manifest.notifications.includes(fixtures.notification.method)) fail('notification fixture method');
+if (fixtures.agUiNotification.method !== 'bridge/agui.event' || fixtures.agUiNotification.params.event.type !== 'TEXT_MESSAGE_CONTENT') fail('AG-UI notification fixture');
 if (!manifest.errors.some((entry) => entry.code === fixtures.overloadError.error.code)) fail('error fixture code');
 if (fixtures.resourceLimitError.error.data.actual <= fixtures.resourceLimitError.error.data.limit) fail('resource limit fixture boundary');
 if (!fixtures.browserPreviewSession.expiresAt || !fixtures.browserPreviewSession.bootstrapPath.includes('sid=') || !fixtures.browserPreviewSession.bootstrapPath.includes('st=')) fail('browser preview session fixture');

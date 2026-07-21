@@ -29,8 +29,6 @@ import Animated, {
 import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 
 import { HostBridgeApiClient } from './src/api/client';
-import { toRecord } from './src/api/chatMapping';
-import { readAccountRateLimitSnapshot } from './src/api/rateLimits';
 import { bindAppWebSocketLifecycle } from './src/appWebSocketLifecycle';
 import {
   createEmptyChatSnapshotCache,
@@ -41,11 +39,9 @@ import {
   type ChatSnapshotCache,
 } from './src/chatSnapshotCache';
 import type {
+  AgentId,
   Chat,
-  ChatEngine,
   CollaborationMode,
-  ReasoningEffort,
-  ServiceTier,
 } from './src/api/types';
 import { HostBridgeWsClient } from './src/api/ws';
 import { createAppStateStore, type AppSettingsState } from './src/appState';
@@ -140,8 +136,8 @@ export default function App() {
   const {
     settings: {
       defaultStartCwd,
-      defaultChatEngine,
-      defaultEngineSettings,
+      preferredAgentId,
+      agentSettings,
       approvalMode,
       showToolCalls,
       workspaceChatLimit,
@@ -426,7 +422,6 @@ export default function App() {
         return;
       }
       void api.primeChats({ limit: APP_PREFETCH_CHAT_LIMIT }).catch(() => {});
-      void api.primeAccountRateLimits().catch(() => {});
     };
 
     const schedulePrefetch = () => {
@@ -456,41 +451,6 @@ export default function App() {
       unsubscribeStatus();
     };
   }, [api, currentScreen, ws]);
-
-  useEffect(() => {
-    if (!api || !ws) {
-      return;
-    }
-
-    return ws.onEvent((event) => {
-      if (event.method === 'bridge/events/snapshotRequired') {
-        void api.readAccountRateLimits({ forceRefresh: true }).catch(() => {});
-        return;
-      }
-
-      if (event.method === 'account/rateLimits/updated') {
-        const params = toRecord(event.params);
-        const snapshot = readAccountRateLimitSnapshot(
-          params?.rateLimits ?? params?.rate_limits ?? event.params
-        );
-        api.rememberAccountRateLimits(snapshot);
-        return;
-      }
-
-      if (!event.method.startsWith('codex/event/')) {
-        return;
-      }
-
-      const params = toRecord(event.params);
-      const msg = toRecord(params?.msg);
-      const snapshot = readAccountRateLimitSnapshot(
-        msg?.rate_limits ?? msg?.rateLimits
-      );
-      if (snapshot && !api.peekAccountRateLimits()) {
-        api.rememberAccountRateLimits(snapshot);
-      }
-    });
-  }, [api, ws]);
 
   useEffect(() => {
     void configureRevenueCatIfNeeded().catch((error) => {
@@ -1179,18 +1139,12 @@ export default function App() {
 
   const handleLastUsedThreadSettingsChange = useCallback(
     (
-      engine: ChatEngine,
-      modelId: string | null,
-      effort: ReasoningEffort | null,
-      serviceTier: ServiceTier | null,
+      agentId: AgentId,
       collaborationMode: CollaborationMode
     ) => {
       appStateStore.dispatch({
         type: 'settings/remember-thread',
-        engine,
-        modelId,
-        effort,
-        serviceTier,
+        agentId,
         collaborationMode,
       });
     },
@@ -1625,8 +1579,8 @@ export default function App() {
             onOpenLocalPreview={openBrowser}
             onOpenBridgeRecoveryGuide={handleOpenBridgeRecoveryGuide}
             defaultStartCwd={defaultStartCwd}
-            defaultChatEngine={defaultChatEngine}
-            defaultEngineSettings={defaultEngineSettings}
+            preferredAgentId={preferredAgentId}
+            agentSettings={agentSettings}
             onLastUsedThreadSettingsChange={handleLastUsedThreadSettingsChange}
             approvalMode={approvalMode}
             showToolCalls={showToolCalls}
@@ -1723,8 +1677,8 @@ export default function App() {
             onOpenLocalPreview={openBrowser}
             onOpenBridgeRecoveryGuide={handleOpenBridgeRecoveryGuide}
             defaultStartCwd={defaultStartCwd}
-            defaultChatEngine={defaultChatEngine}
-            defaultEngineSettings={defaultEngineSettings}
+            preferredAgentId={preferredAgentId}
+            agentSettings={agentSettings}
             onLastUsedThreadSettingsChange={handleLastUsedThreadSettingsChange}
             approvalMode={approvalMode}
             showToolCalls={showToolCalls}

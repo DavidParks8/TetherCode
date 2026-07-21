@@ -11,16 +11,15 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import type { ChatEngine } from '../api/types';
-import { ChatEngineIcon } from './ChatEngineIcon';
+import type { AgentDescriptor } from '../api/types';
+import { AgentIcon } from './AgentIcon';
 import { useAppTheme, type AppTheme } from '../theme';
 import { decorativeAccessibilityProps } from '../accessibility';
 
 interface ChatHeaderProps {
   onOpenDrawer: () => void;
   title: string;
-  engine?: ChatEngine | null;
-  engineLabel?: string;
+  agent?: AgentDescriptor | null;
   onOpenTitleMenu?: () => void;
   rightIconName?: keyof typeof Ionicons.glyphMap;
   onRightActionPress?: () => void;
@@ -29,8 +28,7 @@ interface ChatHeaderProps {
 export function ChatHeader({
   onOpenDrawer,
   title,
-  engine,
-  engineLabel,
+  agent,
   onOpenTitleMenu,
   rightIconName,
   onRightActionPress,
@@ -63,13 +61,13 @@ export function ChatHeader({
               accessibilityHint="Opens actions for this chat"
             >
               <ScrollableTitle title={titleDisplay} />
-              {engineLabel ? <ChatEngineIcon engine={engine} size={18} /> : null}
+              <AgentIcon agent={agent} size={18} />
               <Ionicons {...decorativeAccessibilityProps} name="chevron-down" size={12} color={colors.textMuted} />
             </Pressable>
           ) : (
             <View style={styles.modelNameRow}>
               <ScrollableTitle title={titleDisplay} />
-              {engineLabel ? <ChatEngineIcon engine={engine} size={18} /> : null}
+              <AgentIcon agent={agent} size={18} />
             </View>
           )}
           <View style={{ flex: 1 }} />

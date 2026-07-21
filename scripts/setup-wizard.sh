@@ -32,12 +32,15 @@ NETWORK_MODE=""
 TAILSCALE_IP=""
 BRIDGE_HOST=""
 BRIDGE_PORT=""
-ACTIVE_ENGINE="${BRIDGE_ACTIVE_ENGINE:-codex}"
-declare -a SELECTED_ENGINES=()
-ENGINE_SELECTION_PRESET="false"
+PREFERRED_AGENT=""
+declare -a SELECTED_AGENTS=()
+AGENT_SELECTION_PRESET="false"
+ACP_DISTRIBUTION=""
+ACP_REGISTRY_URL=""
+ACP_TRUST_UNVERIFIED="false"
+ACP_TRUST_INSTALL_SCRIPTS="false"
 AUTO_START="true"
 SECURE_ENV_FILE="$ROOT_DIR/.env.secure"
-CURSOR_CONFIG_NEEDS_WRITE="false"
 MENU_RESULT=""
 MENU_MULTI_RESULT=""
 MENU_MULTI_PRESELECTED=""
@@ -87,40 +90,22 @@ Usage: $(basename "$0") [options]
 
 Options:
   --no-start               Configure everything but do not start bridge
-  --engine <codex|opencode|cursor>
-                           Select a single harness non-interactively
-  --engines <codex,opencode,cursor>
-                           Select one or more harnesses non-interactively
+  --agent <id>             Install one ACP registry agent
+  --agents <id,...>        Install one or more ACP registry agents
+  --preferred-agent <id>   Preferred agent when --agents selects multiple
+  --distribution <kind>    Force binary, npx, or uvx distribution
+  --registry-url <url>     Override registry for controlled administration
+  --trust-unverified       Allow a binary without a registry SHA-256
+  --trust-install-scripts  Allow npm lifecycle scripts for the agent package
   -h, --help               Show this help
 EOF
 }
 
-validate_engine_name() {
-  case "$1" in
-    codex|opencode|cursor)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+validate_agent_id() {
+  [[ "$1" != "." && "$1" != ".." && "$1" =~ ^[A-Za-z0-9._-]{1,128}$ ]]
 }
 
-format_engine_name() {
-  case "$1" in
-    opencode)
-      printf 'OpenCode'
-      ;;
-    cursor)
-      printf 'Cursor'
-      ;;
-    *)
-      printf 'Codex'
-      ;;
-  esac
-}
-
-parse_engine_list_csv() {
+parse_agent_list_csv() {
   local raw="$1"
   local normalized=""
   local seen=","
@@ -130,11 +115,11 @@ parse_engine_list_csv() {
 
   IFS=',' read -r -a parts <<<"$raw"
   for part in "${parts[@]}"; do
-    normalized="$(printf '%s' "$part" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+    normalized="$(printf '%s' "$part" | tr -d '[:space:]')"
     if [[ -z "$normalized" ]]; then
       continue
     fi
-    if ! validate_engine_name "$normalized"; then
+    if ! validate_agent_id "$normalized"; then
       return 1
     fi
     if [[ "$seen" == *",$normalized,"* ]]; then
@@ -148,43 +133,11 @@ parse_engine_list_csv() {
     return 1
   fi
 
-  SELECTED_ENGINES=("${parsed[@]}")
+  SELECTED_AGENTS=("${parsed[@]}")
   return 0
 }
 
-parse_existing_engine_list_csv() {
-  local raw="$1"
-  local normalized=""
-  local seen=","
-  local part=""
-  local -a parts=()
-  local -a parsed=()
-
-  IFS=',' read -r -a parts <<<"$raw"
-  for part in "${parts[@]}"; do
-    normalized="$(printf '%s' "$part" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-    if [[ -z "$normalized" ]]; then
-      continue
-    fi
-    if ! validate_engine_name "$normalized"; then
-      continue
-    fi
-    if [[ "$seen" == *",$normalized,"* ]]; then
-      continue
-    fi
-    parsed+=("$normalized")
-    seen="${seen}${normalized},"
-  done
-
-  if (( ${#parsed[@]} == 0 )); then
-    return 1
-  fi
-
-  SELECTED_ENGINES=("${parsed[@]}")
-  return 0
-}
-
-engine_list_contains() {
+agent_list_contains() {
   local needle="$1"
   shift
   local value=""
@@ -196,101 +149,50 @@ engine_list_contains() {
   return 1
 }
 
-sync_active_engine_from_selection() {
-  if (( ${#SELECTED_ENGINES[@]} == 0 )); then
-    ACTIVE_ENGINE="codex"
+sync_preferred_agent() {
+  if (( ${#SELECTED_AGENTS[@]} == 0 )); then
+    SELECTED_AGENTS=("opencode")
+    PREFERRED_AGENT="opencode"
     return
   fi
-
-  if selected_engines_contains "$ACTIVE_ENGINE"; then
+  if selected_agents_contains "$PREFERRED_AGENT"; then
     return
   fi
-
-  ACTIVE_ENGINE="${SELECTED_ENGINES[0]}"
+  if (( ${#SELECTED_AGENTS[@]} > 1 )); then
+    abort_wizard "--preferred-agent is required when selecting multiple ACP agents."
+  fi
+  PREFERRED_AGENT="${SELECTED_AGENTS[0]}"
 }
 
-format_engine_list() {
-  local engine=""
-  local result=""
-
-  for engine in "$@"; do
-    if [[ -n "$result" ]]; then
-      result+=", "
-    fi
-    result+="$(format_engine_name "$engine")"
-  done
-
-  printf '%s' "$result"
-}
-
-selected_engines_contains() {
+selected_agents_contains() {
   local needle="$1"
 
-  if (( ${#SELECTED_ENGINES[@]} == 0 )); then
+  if (( ${#SELECTED_AGENTS[@]} == 0 )); then
     return 1
   fi
 
-  engine_list_contains "$needle" "${SELECTED_ENGINES[@]}"
+  agent_list_contains "$needle" "${SELECTED_AGENTS[@]}"
 }
 
-format_selected_engines() {
-  if (( ${#SELECTED_ENGINES[@]} == 0 )); then
-    printf ''
-    return 0
-  fi
-
-  format_engine_list "${SELECTED_ENGINES[@]}"
-}
-
-selected_engines_csv() {
+selected_agents_csv() {
   local IFS=','
-  printf '%s' "${SELECTED_ENGINES[*]-}"
+  printf '%s' "${SELECTED_AGENTS[*]-}"
 }
 
-engine_from_menu_label() {
-  case "$1" in
-    "Codex")
-      printf 'codex'
-      ;;
-    "OpenCode")
-      printf 'opencode'
-      ;;
-    "Cursor")
-      printf 'cursor'
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-load_existing_engine_selection() {
-  local raw=""
-  local engine=""
-
-  if [[ "$ENGINE_SELECTION_PRESET" == "true" ]]; then
-    sync_active_engine_from_selection
+load_existing_agent_selection() {
+  if [[ "$AGENT_SELECTION_PRESET" == "true" ]]; then
+    sync_preferred_agent
     return 0
   fi
-
-  raw="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_ENABLED_ENGINES")"
-  if [[ -n "$raw" ]] && parse_existing_engine_list_csv "$raw"; then
-    engine="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_ACTIVE_ENGINE")"
-    if validate_engine_name "$engine"; then
-      ACTIVE_ENGINE="$engine"
-    else
-      ACTIVE_ENGINE="${SELECTED_ENGINES[0]}"
-    fi
-    sync_active_engine_from_selection
+  local manifest="$ROOT_DIR/.clawdex/agents.json"
+  if [[ -f "$manifest" ]]; then
+    mapfile -t SELECTED_AGENTS < <(node -e 'const m=require(process.argv[1]); for (const a of m.agents || []) console.log(a.agentId)' "$manifest")
+    PREFERRED_AGENT="$(node -e 'const m=require(process.argv[1]); process.stdout.write(m.preferredAgentId || "")' "$manifest")"
+    sync_preferred_agent
     return 0
   fi
-
-  engine="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_ACTIVE_ENGINE")"
-  if ! validate_engine_name "$engine"; then
-    engine="codex"
-  fi
-  SELECTED_ENGINES=("$engine")
-  ACTIVE_ENGINE="$engine"
+  SELECTED_AGENTS=("opencode")
+  PREFERRED_AGENT="opencode"
 }
 
 parse_args() {
@@ -300,36 +202,67 @@ parse_args() {
         AUTO_START="false"
         shift
         ;;
-      --engine)
+      --agent)
         if (($# < 2)); then
-          echo "error: --engine requires a value ('codex', 'opencode', or 'cursor')." >&2
+          echo "error: --agent requires a registry ID." >&2
           print_usage >&2
           exit 1
         fi
-        if ! validate_engine_name "$2"; then
-          echo "error: unsupported engine '$2'. Use 'codex', 'opencode', or 'cursor'." >&2
+        if ! validate_agent_id "$2"; then
+          echo "error: invalid ACP registry agent ID '$2'." >&2
           print_usage >&2
           exit 1
         fi
-        ACTIVE_ENGINE="$2"
-        SELECTED_ENGINES=("$2")
-        ENGINE_SELECTION_PRESET="true"
+        SELECTED_AGENTS=("$2")
+        PREFERRED_AGENT="$2"
+        AGENT_SELECTION_PRESET="true"
         shift 2
         ;;
-      --engines)
+      --agents)
         if (($# < 2)); then
-          echo "error: --engines requires a comma-separated value (for example: codex,opencode,cursor)." >&2
+          echo "error: --agents requires comma-separated registry IDs." >&2
           print_usage >&2
           exit 1
         fi
-        if ! parse_engine_list_csv "$2"; then
-          echo "error: unsupported --engines value '$2'. Use one or more of 'codex', 'opencode', and 'cursor'." >&2
+        if ! parse_agent_list_csv "$2"; then
+          echo "error: invalid --agents value '$2'." >&2
           print_usage >&2
           exit 1
         fi
-        ACTIVE_ENGINE="${SELECTED_ENGINES[0]}"
-        ENGINE_SELECTION_PRESET="true"
+        AGENT_SELECTION_PRESET="true"
         shift 2
+        ;;
+      --preferred-agent)
+        if (($# < 2)) || ! validate_agent_id "$2"; then
+          echo "error: --preferred-agent requires a valid registry ID." >&2
+          exit 1
+        fi
+        PREFERRED_AGENT="$2"
+        shift 2
+        ;;
+      --distribution)
+        if (($# < 2)) || [[ ! "$2" =~ ^(binary|npx|uvx)$ ]]; then
+          echo "error: --distribution requires binary, npx, or uvx." >&2
+          exit 1
+        fi
+        ACP_DISTRIBUTION="$2"
+        shift 2
+        ;;
+      --registry-url)
+        if (($# < 2)); then
+          echo "error: --registry-url requires a credential-free HTTPS URL." >&2
+          exit 1
+        fi
+        ACP_REGISTRY_URL="$2"
+        shift 2
+        ;;
+      --trust-unverified)
+        ACP_TRUST_UNVERIFIED="true"
+        shift
+        ;;
+      --trust-install-scripts)
+        ACP_TRUST_INSTALL_SCRIPTS="true"
+        shift
         ;;
       -h|--help)
         print_usage
@@ -1009,14 +942,8 @@ print_existing_setup_summary() {
   local token=""
   local network_mode=""
   local connect_url=""
-  local harnesses=""
+  local agents=""
   local source_path=""
-  local saved_active_engine="$ACTIVE_ENGINE"
-  local -a saved_selected_engines=()
-
-  if (( ${#SELECTED_ENGINES[@]} > 0 )); then
-    saved_selected_engines=("${SELECTED_ENGINES[@]}")
-  fi
 
   if [[ ! -f "$SECURE_ENV_FILE" ]]; then
     return 1
@@ -1027,14 +954,8 @@ print_existing_setup_summary() {
   token="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_AUTH_TOKEN")"
   network_mode="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_NETWORK_MODE")"
   connect_url="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_CONNECT_URL")"
-  harnesses="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_ENABLED_ENGINES")"
-  if [[ -n "$harnesses" ]] && ! parse_existing_engine_list_csv "$harnesses"; then
-    harnesses=""
-  elif [[ -n "$harnesses" ]]; then
-    harnesses="$(selected_engines_csv)"
-  fi
-  if [[ -z "$harnesses" ]]; then
-    harnesses="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_ACTIVE_ENGINE")"
+  if [[ -f "$ROOT_DIR/.clawdex/agents.json" ]]; then
+    agents="$(node -e 'const m=require(process.argv[1]); process.stdout.write((m.agents || []).map((a) => a.agentId).join(","))' "$ROOT_DIR/.clawdex/agents.json")"
   fi
 
   if [[ -z "$host" ]] && [[ -z "$port" ]] && [[ -z "$token" ]]; then
@@ -1054,19 +975,14 @@ print_existing_setup_summary() {
   if [[ -n "$connect_url" ]]; then
     echo "bridge.connectUrl: $connect_url"
   fi
-  if [[ -n "$harnesses" ]]; then
-    echo "bridge.harnesses: $harnesses"
+  if [[ -n "$agents" ]]; then
+    echo "bridge.agents: $agents"
   fi
   if [[ -n "$token" ]]; then
     echo "bridge.token: present"
   fi
   echo "source: $source_path"
 
-  SELECTED_ENGINES=()
-  if (( ${#saved_selected_engines[@]} > 0 )); then
-    SELECTED_ENGINES=("${saved_selected_engines[@]}")
-  fi
-  ACTIVE_ENGINE="$saved_active_engine"
 }
 
 require_security_ack() {
@@ -1145,35 +1061,11 @@ choose_bridge_network_mode() {
   esac
 }
 
-choose_runtime_engine() {
-  local label=""
-  MENU_MULTI_PRESELECTED="Codex"
-  if selected_engines_contains "codex"; then
-    MENU_MULTI_PRESELECTED="Codex"
-  else
-    MENU_MULTI_PRESELECTED=""
-  fi
-  if selected_engines_contains "opencode"; then
-    if [[ -n "$MENU_MULTI_PRESELECTED" ]]; then
-      MENU_MULTI_PRESELECTED+=","
-    fi
-    MENU_MULTI_PRESELECTED+="OpenCode"
-  fi
-  if selected_engines_contains "cursor"; then
-    if [[ -n "$MENU_MULTI_PRESELECTED" ]]; then
-      MENU_MULTI_PRESELECTED+=","
-    fi
-    MENU_MULTI_PRESELECTED+="Cursor"
-  fi
-
-  info "Select the harnesses this phone should control."
-  menu_multiselect "Harnesses to control" "Codex" "OpenCode" "Cursor"
-  SELECTED_ENGINES=()
-  for label in "${MENU_MULTI_RESULT_ITEMS[@]}"; do
-    SELECTED_ENGINES+=("$(engine_from_menu_label "$label")")
-  done
-  sync_active_engine_from_selection
-  info "Selected harnesses: $(format_selected_engines)."
+choose_runtime_agents() {
+  info "Fresh setup defaults to the ACP registry agent ID 'opencode'."
+  info "Use --agent/--agents to select any other registry IDs."
+  sync_preferred_agent
+  info "Selected ACP agents: $(selected_agents_csv); preferred: $PREFERRED_AGENT."
 }
 
 infer_network_mode_from_host() {
@@ -1248,161 +1140,24 @@ ensure_local_rust_build_toolchain() {
   fi
 }
 
-ensure_codex_cli() {
-  while ! command -v codex >/dev/null 2>&1; do
-    warn "Codex CLI not found in PATH."
-    if confirm_prompt "Try installing Codex CLI via npm now?" "Y"; then
-      if npm install -g @openai/codex; then
-        hash -r
-      else
-        warn "Automatic install failed."
-      fi
-    fi
-
-    if ! command -v codex >/dev/null 2>&1; then
-      if confirm_prompt "Open Codex docs in browser now?" "Y"; then
-        open_url "https://developers.openai.com/codex"
-      fi
-    fi
-
-    if ! command -v codex >/dev/null 2>&1 && ! confirm_prompt "Retry Codex CLI check?" "Y"; then
-      abort_wizard "Install Codex CLI and rerun: npm run setup:wizard"
-    fi
-  done
-
-  ok "Found codex: $(command -v codex)"
-  if codex --version >/dev/null 2>&1; then
-    info "codex version: $(codex --version 2>/dev/null | head -n1)"
+install_selected_agents() {
+  local -a installer_args=("--agents" "$(selected_agents_csv)" "--preferred-agent" "$PREFERRED_AGENT")
+  if [[ -n "$ACP_DISTRIBUTION" ]]; then
+    installer_args+=("--distribution" "$ACP_DISTRIBUTION")
   fi
-}
-
-ensure_opencode_cli() {
-  while ! command -v opencode >/dev/null 2>&1; do
-    warn "OpenCode CLI not found in PATH."
-    if confirm_prompt "Try installing OpenCode CLI via npm now?" "Y"; then
-      if npm install -g opencode-ai; then
-        hash -r
-      else
-        warn "Automatic install failed."
-      fi
-    fi
-
-    if ! command -v opencode >/dev/null 2>&1; then
-      if confirm_prompt "Open OpenCode docs in browser now?" "Y"; then
-        open_url "https://opencode.ai/docs/"
-      fi
-    fi
-
-    if ! command -v opencode >/dev/null 2>&1 && ! confirm_prompt "Retry OpenCode CLI check?" "Y"; then
-      abort_wizard "Install OpenCode CLI and rerun: clawdex init --engine opencode"
-    fi
-  done
-
-  ok "Found opencode: $(command -v opencode)"
-  if opencode --version >/dev/null 2>&1; then
-    info "opencode version: $(opencode --version 2>/dev/null | head -n1)"
+  if [[ -n "$ACP_REGISTRY_URL" ]]; then
+    installer_args+=("--registry-url" "$ACP_REGISTRY_URL")
   fi
-}
-
-ensure_cursor_app_server() {
-  local existing_app_server_bin=""
-  local existing_api_key=""
-  local existing_model=""
-  local provided_app_server_bin="${CURSOR_APP_SERVER_BIN:-}"
-  local provided_api_key="${CURSOR_API_KEY:-}"
-  local resolved_cursor_app_server_bin=""
-
-  existing_app_server_bin="$(extract_env_value "$SECURE_ENV_FILE" "CURSOR_APP_SERVER_BIN")"
-
-  if [[ -n "$provided_app_server_bin" ]]; then
-    resolved_cursor_app_server_bin="$CURSOR_APP_SERVER_BIN"
-  elif [[ -n "$existing_app_server_bin" ]]; then
-    resolved_cursor_app_server_bin="$existing_app_server_bin"
-  elif command -v cursor-app-server >/dev/null 2>&1; then
-    resolved_cursor_app_server_bin="$(command -v cursor-app-server)"
+  if [[ "$ACP_TRUST_UNVERIFIED" == "true" ]]; then
+    installer_args+=("--trust-unverified")
   fi
-
-  if [[ -z "$resolved_cursor_app_server_bin" ]]; then
-    abort_wizard "cursor-app-server was not found. Upgrade clawdex-mobile so npm links the bundled command, then rerun: clawdex init --engine cursor"
+  if [[ "$ACP_TRUST_INSTALL_SCRIPTS" == "true" ]]; then
+    installer_args+=("--trust-install-scripts")
   fi
-
-  if [[ "$resolved_cursor_app_server_bin" == */* ]]; then
-    if [[ ! -x "$resolved_cursor_app_server_bin" ]]; then
-      abort_wizard "cursor-app-server was configured as '$resolved_cursor_app_server_bin', but that file is not executable."
-    fi
-  elif ! command -v "$resolved_cursor_app_server_bin" >/dev/null 2>&1; then
-    abort_wizard "cursor-app-server command '$resolved_cursor_app_server_bin' was not found in PATH."
+  if ! run_quiet_command "ACP agent installation" node "$SCRIPT_DIR/acp-agent-install.js" "${installer_args[@]}"; then
+    abort_wizard "ACP agent installation failed. Review the installer output and registry trust requirements, then retry."
   fi
-
-  CURSOR_APP_SERVER_BIN="$resolved_cursor_app_server_bin"
-  ok "Found cursor-app-server: $CURSOR_APP_SERVER_BIN"
-  if [[ "$CURSOR_APP_SERVER_BIN" != "$existing_app_server_bin" ]]; then
-    CURSOR_CONFIG_NEEDS_WRITE="true"
-  fi
-
-  existing_api_key="$(extract_env_value "$SECURE_ENV_FILE" "CURSOR_API_KEY")"
-  existing_model="$(extract_env_value "$SECURE_ENV_FILE" "CURSOR_MODEL")"
-  CURSOR_API_KEY="${CURSOR_API_KEY:-$existing_api_key}"
-  CURSOR_MODEL="${CURSOR_MODEL:-$existing_model}"
-
-  if [[ -n "$CURSOR_API_KEY" ]]; then
-    if [[ -n "$provided_api_key" ]]; then
-      ok "Cursor API key: provided from environment."
-      if [[ "$provided_api_key" != "$existing_api_key" ]]; then
-        CURSOR_CONFIG_NEEDS_WRITE="true"
-      fi
-    else
-      ok "Cursor API key: configured in secure bridge config."
-    fi
-    if [[ "$FLOW" == "manual" ]] && confirm_prompt "Replace saved Cursor API key now?" "N"; then
-      print_note_box "Cursor API key" "Create a Cursor account API key from Cursor Dashboard > Integrations > User API Keys, then paste it here.
-Cursor docs: https://docs.cursor.com/en/cli/reference/authentication
-
-This is the Cursor agent/SDK key used by Clawdex. It is not the OpenAI, Anthropic, or other provider key configured inside the Cursor editor."
-      CURSOR_API_KEY="$(prompt_secret_value "Enter Cursor API key:")"
-      CURSOR_CONFIG_NEEDS_WRITE="true"
-      ok "Cursor API key will be updated in $SECURE_ENV_FILE."
-    fi
-  else
-    warn "Cursor requires a Cursor API key on the bridge host."
-    print_note_box "Cursor API key" "Create a Cursor account API key from Cursor Dashboard > Integrations > User API Keys, then paste it here.
-Cursor docs: https://docs.cursor.com/en/cli/reference/authentication
-
-This is the Cursor agent/SDK key used by Clawdex. It is not the OpenAI, Anthropic, or other provider key configured inside the Cursor editor."
-    if ! confirm_prompt "Add Cursor API key now?" "Y"; then
-      abort_wizard "Cursor was selected but CURSOR_API_KEY is missing. Re-run clawdex init after creating a Cursor API key."
-    fi
-    CURSOR_API_KEY="$(prompt_secret_value "Enter Cursor API key:")"
-    CURSOR_CONFIG_NEEDS_WRITE="true"
-    ok "Cursor API key will be saved in $SECURE_ENV_FILE."
-  fi
-
-  export CURSOR_APP_SERVER_BIN CURSOR_API_KEY CURSOR_MODEL
-}
-
-ensure_selected_engine_clis() {
-  local engine=""
-
-  if (( ${#SELECTED_ENGINES[@]} == 0 )); then
-    abort_wizard "Select at least one harness before continuing."
-  fi
-
-  for engine in "${SELECTED_ENGINES[@]}"; do
-    case "$engine" in
-      codex)
-        ensure_codex_cli
-        ;;
-      opencode)
-        ensure_opencode_cli
-        ;;
-      cursor)
-        ensure_cursor_app_server
-        ;;
-      *)
-        abort_wizard "Unsupported harness '$engine'."
-        ;;
-    esac
-  done
+  ok "Installed ACP agents into $ROOT_DIR/.clawdex/agents."
 }
 
 ensure_tailscale_cli() {
@@ -1791,24 +1546,25 @@ if [[ "$CONFIG_ACTION" == "reset" ]]; then
   ok "Previous secure config removed: $SECURE_ENV_FILE"
 fi
 
-load_existing_engine_selection
+load_existing_agent_selection
 if [[ "$CONFIG_ACTION" == "keep" ]]; then
-  if [[ "$ENGINE_SELECTION_PRESET" == "false" ]]; then
-    info "Keeping existing harnesses: $(format_selected_engines)."
+  if [[ "$AGENT_SELECTION_PRESET" == "false" ]]; then
+    info "Keeping existing ACP agents: $(selected_agents_csv)."
   else
-    info "Harness selection preset via flag: $(format_selected_engines)."
+    info "ACP agent selection preset via flag: $(selected_agents_csv)."
   fi
 else
-  section "Harnesses"
-  if [[ "$ENGINE_SELECTION_PRESET" == "false" ]]; then
-    choose_runtime_engine
+  section "ACP agents"
+  if [[ "$AGENT_SELECTION_PRESET" == "false" ]]; then
+    choose_runtime_agents
   else
-    info "Harness selection preset via flag: $(format_selected_engines)."
+    sync_preferred_agent
+    info "ACP agent selection preset via flag: $(selected_agents_csv)."
   fi
 fi
 
-section "Runtime dependency"
-ensure_selected_engine_clis
+section "ACP agent installation"
+install_selected_agents
 
 if [[ "$CONFIG_ACTION" != "keep" ]]; then
   section "Bridge network mode"
@@ -1833,7 +1589,7 @@ if [[ "$CONFIG_ACTION" != "keep" ]]; then
   esac
 
   section "Write secure config"
-  BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" BRIDGE_ACTIVE_ENGINE="$ACTIVE_ENGINE" BRIDGE_ENABLED_ENGINES="$(selected_engines_csv)" "$SCRIPT_DIR/setup-secure-dev.sh"
+  BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" ACP_AGENT_IDS="$(selected_agents_csv)" ACP_PREFERRED_AGENT="$PREFERRED_AGENT" ACP_DISTRIBUTION="$ACP_DISTRIBUTION" ACP_REGISTRY_URL="$ACP_REGISTRY_URL" ACP_TRUST_UNVERIFIED="$ACP_TRUST_UNVERIFIED" ACP_TRUST_INSTALL_SCRIPTS="$ACP_TRUST_INSTALL_SCRIPTS" "$SCRIPT_DIR/setup-secure-dev.sh"
 else
   ok "Keeping existing secure config."
   NETWORK_MODE="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_NETWORK_MODE")"
@@ -1859,16 +1615,10 @@ else
     fi
 
     section "Write secure config"
-    BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" BRIDGE_ACTIVE_ENGINE="$ACTIVE_ENGINE" BRIDGE_ENABLED_ENGINES="$(selected_engines_csv)" "$SCRIPT_DIR/setup-secure-dev.sh"
-  elif [[ "$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_ENABLED_ENGINES")" != "$(selected_engines_csv)" ]]; then
-    section "Write secure config"
-    BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" BRIDGE_ACTIVE_ENGINE="$ACTIVE_ENGINE" BRIDGE_ENABLED_ENGINES="$(selected_engines_csv)" "$SCRIPT_DIR/setup-secure-dev.sh"
-  elif [[ "$CURSOR_CONFIG_NEEDS_WRITE" == "true" ]]; then
-    section "Write secure config"
-    BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" BRIDGE_ACTIVE_ENGINE="$ACTIVE_ENGINE" BRIDGE_ENABLED_ENGINES="$(selected_engines_csv)" "$SCRIPT_DIR/setup-secure-dev.sh"
+    BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" ACP_AGENT_IDS="$(selected_agents_csv)" ACP_PREFERRED_AGENT="$PREFERRED_AGENT" ACP_DISTRIBUTION="$ACP_DISTRIBUTION" ACP_REGISTRY_URL="$ACP_REGISTRY_URL" ACP_TRUST_UNVERIFIED="$ACP_TRUST_UNVERIFIED" ACP_TRUST_INSTALL_SCRIPTS="$ACP_TRUST_INSTALL_SCRIPTS" "$SCRIPT_DIR/setup-secure-dev.sh"
   elif [[ -n "${CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD:-}" ]] && [[ "$(extract_env_value "$SECURE_ENV_FILE" "CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD")" != "$CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD" ]]; then
     section "Write secure config"
-    BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" BRIDGE_ACTIVE_ENGINE="$ACTIVE_ENGINE" BRIDGE_ENABLED_ENGINES="$(selected_engines_csv)" "$SCRIPT_DIR/setup-secure-dev.sh"
+    BRIDGE_NETWORK_MODE="$NETWORK_MODE" BRIDGE_HOST_OVERRIDE="$BRIDGE_HOST" ACP_AGENT_IDS="$(selected_agents_csv)" ACP_PREFERRED_AGENT="$PREFERRED_AGENT" ACP_DISTRIBUTION="$ACP_DISTRIBUTION" ACP_REGISTRY_URL="$ACP_REGISTRY_URL" ACP_TRUST_UNVERIFIED="$ACP_TRUST_UNVERIFIED" ACP_TRUST_INSTALL_SCRIPTS="$ACP_TRUST_INSTALL_SCRIPTS" "$SCRIPT_DIR/setup-secure-dev.sh"
   fi
 fi
 
@@ -1901,7 +1651,7 @@ DISPLAY_BRIDGE_URL="${BRIDGE_CONNECT_URL:-http://$BRIDGE_HOST:$BRIDGE_PORT}"
 section "Summary"
 rail_echo "Bridge mode: $NETWORK_MODE"
 rail_echo "Bridge endpoint: $DISPLAY_BRIDGE_URL"
-rail_echo "Harnesses: $(format_selected_engines)"
+rail_echo "ACP agents: $(selected_agents_csv) (preferred: $PREFERRED_AGENT)"
 rail_echo "Secure env: $SECURE_ENV_FILE"
 if [[ "$FLOW" == "quickstart" ]]; then
   rail_echo "${DIM}Tip: re-run with Manual mode for full control at each step.${RESET}"

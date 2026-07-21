@@ -1,10 +1,10 @@
 {
   "name": "clawdex-mobile",
   "version": "5.2.3",
-  "description": "Private-network mobile bridge and CLI for Codex, OpenCode, and Cursor",
+  "description": "Private-network mobile bridge and CLI for installed ACP agents",
   "keywords": [
-    "codex",
-    "opencode",
+    "acp",
+    "coding-agent",
     "mobile",
     "bridge",
     "expo",
@@ -23,17 +23,20 @@
     "access": "public"
   },
   "dependencies": {
-    "@cursor/sdk": "1.0.23",
     "qrcode-terminal": "^0.12.0",
+    "tar": "^7.5.20",
+    "unbzip2-stream": "^1.4.3",
+    "yauzl": "^3.4.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "quicktype-core": "^23.2.6",
     "semver": "^7.8.5",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "zod-to-json-schema": "^3.25.1"
   },
   "bin": {
-    "clawdex": "bin/clawdex.js",
-    "cursor-app-server": "services/cursor-app-server/dist/stdio.js"
+    "clawdex": "bin/clawdex.js"
   },
   "files": [
     "CHANGELOG.md",
@@ -46,13 +49,12 @@
     "scripts/bridge-runtime-state.js",
     "scripts/bridge-self-update.js",
     "scripts/bridge-updater-helpers.js",
+    "scripts/acp-agent-install.js",
+    "scripts/acp-agent-registry.js",
     "scripts/setup-secure-dev.sh",
     "scripts/setup-wizard.sh",
     "scripts/start-bridge-secure.js",
     "scripts/stop-services.sh",
-    "services/cursor-app-server/dist",
-    "services/cursor-app-server/README.md",
-    "services/cursor-app-server/package.json",
     "services/rust-bridge/Cargo.lock",
     "services/rust-bridge/Cargo.toml",
     "services/rust-bridge/src",
@@ -66,11 +68,6 @@
     "mobile": "./scripts/start-expo.sh mobile",
     "ios": "./scripts/start-expo.sh ios",
     "android": "./scripts/start-expo.sh android",
-    "desktop:mac": "swift run --package-path apps/macos ClawdexDesktop",
-    "desktop:mac:build": "swift build --package-path apps/macos",
-    "desktop:mac:bundle": "./scripts/build-macos-desktop-app.sh",
-    "desktop:mac:sign": "./scripts/sign-macos-desktop-app.sh",
-    "desktop:mac:notarize": "./scripts/notarize-macos-desktop-app.sh",
     "stack:lan": "./scripts/start-mobile-stack-lan.sh",
     "stack:tailscale": "./scripts/start-mobile-stack-tailscale.sh",
     "bridge": "BRIDGE_WORKDIR=$(pwd) npm run -w @codex/rust-bridge dev",
@@ -81,7 +78,6 @@
     "secure:setup": "./scripts/setup-secure-dev.sh",
     "secure:bridge": "node ./scripts/start-bridge-secure.js",
     "secure:bridge:dev": "node ./scripts/start-bridge-secure.js --dev",
-    "bridge:ts": "BRIDGE_WORKDIR=$(pwd) npm run -w @codex/mac-bridge dev",
     "version:sync": "node scripts/sync-versions.js",
     "version:check": "node scripts/sync-versions.js --check",
     "preversion": "npm run version:check",
@@ -91,13 +87,14 @@
     "docs:check": "node scripts/validate-doc-consistency.mjs",
     "test:scripts": "node --test scripts/__tests__/*.test.mjs",
     "test:release": "node --test scripts/__tests__/npm-release-policy.test.mjs",
-    "test:boundary": "npm run test:boundary -w @codex/rust-bridge",
-    "contract:check": "node scripts/validate-rpc-contract-fixtures.mjs && npm run test:contract -w apps/mobile && npm run test:contract -w @codex/rust-bridge",
-    "prepack": "npm run build -w @clawdex/cursor-app-server",
+    "test:acp": "npm run test:acp -w @codex/rust-bridge",
+    "agui:generate": "node scripts/generate-agui-bindings.mjs",
+    "agui:check": "node scripts/generate-agui-bindings.mjs --check",
+    "contract:check": "npm run agui:check && node scripts/validate-rpc-contract-fixtures.mjs && npm run test:contract -w apps/mobile && npm run test:contract -w @codex/rust-bridge",
     "build": "npm run --workspaces build",
     "typecheck": "npm run --workspaces typecheck",
     "lint": "npm run --workspaces lint",
-    "test": "npm run test:scripts && npm run test -w @codex/mac-bridge && npm run test -w apps/mobile && npm run test -w @codex/rust-bridge && npm run test -w @clawdex/cursor-app-server",
+    "test": "npm run test:scripts && npm run test -w apps/mobile && npm run test -w @codex/rust-bridge",
     "coverage:check": "npm run test:coverage -w apps/mobile",
     "coverage:rust": "./scripts/run-rust-coverage.sh",
     "teardown": "./scripts/teardown.sh"

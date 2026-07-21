@@ -154,16 +154,6 @@ if $auto_yes || confirm_prompt "Stop running bridge and Expo processes for this 
   stop_process_group "Expo" "$ROOT_DIR/.*/expo start|$ROOT_DIR/node_modules/.bin/expo start"
   stop_pid_file_process "Rust bridge" "$BRIDGE_PID_FILE" || true
   stop_process_group "Rust bridge" "$ROOT_DIR/services/rust-bridge|codex-rust-bridge|@codex/rust-bridge"
-  stop_process_group "Legacy TS bridge" "$ROOT_DIR/services/mac-bridge|@codex/mac-bridge"
-  if [[ -f "$SECURE_ENV_FILE" ]]; then
-    BRIDGE_ENABLED_ENGINES="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_ENABLED_ENGINES" || true)"
-    BRIDGE_ACTIVE_ENGINE="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_ACTIVE_ENGINE" || true)"
-    BRIDGE_OPENCODE_PORT="$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_OPENCODE_PORT" || true)"
-    BRIDGE_OPENCODE_PORT="${BRIDGE_OPENCODE_PORT:-4090}"
-    if [[ ",$BRIDGE_ENABLED_ENGINES,$BRIDGE_ACTIVE_ENGINE," == *",opencode,"* ]]; then
-      stop_process_group "OpenCode server" "opencode serve --hostname .* --port $BRIDGE_OPENCODE_PORT|\\.opencode serve --hostname .* --port $BRIDGE_OPENCODE_PORT"
-    fi
-  fi
 else
   echo "Skipped process shutdown."
 fi

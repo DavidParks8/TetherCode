@@ -1,9 +1,9 @@
-use std::{collections::HashSet, env, net::IpAddr, path::PathBuf};
+use std::{collections::HashSet, env, net::IpAddr, path::PathBuf, time::Duration};
 
 use axum::http::{header::ORIGIN, HeaderMap};
 use reqwest::Url;
 
-use crate::{path_policy::PathPolicy, services::TerminalExecPolicy, BridgeRuntimeEngine};
+use crate::{path_policy::PathPolicy, services::TerminalExecPolicy};
 
 pub(crate) const DEFAULT_WS_MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const DEFAULT_WS_MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
@@ -19,15 +19,9 @@ pub(crate) struct BridgeConfig {
     pub(crate) connect_url: Option<String>,
     pub(crate) preview_connect_url: Option<String>,
     pub(crate) workdir: PathBuf,
-    pub(crate) cli_bin: String,
-    pub(crate) opencode_cli_bin: String,
-    pub(crate) cursor_app_server_bin: String,
-    pub(crate) active_engine: BridgeRuntimeEngine,
-    pub(crate) enabled_engines: Vec<BridgeRuntimeEngine>,
-    pub(crate) opencode_host: String,
-    pub(crate) opencode_port: u16,
-    pub(crate) opencode_server_username: String,
-    pub(crate) opencode_server_password: Option<String>,
+    pub(crate) acp_manifest_path: PathBuf,
+    pub(crate) acp_approved_executable_roots: Vec<PathBuf>,
+    pub(crate) acp_initialize_timeout: Duration,
     pub(crate) auth_token: Option<String>,
     pub(crate) auth_enabled: bool,
     pub(crate) allow_insecure_no_auth: bool,
@@ -71,45 +65,17 @@ impl BridgeConfig {
             .unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let workdir = resolve_bridge_workdir(configured_workdir)?;
 
-        let cli_bin = env::var("CODEX_CLI_BIN").unwrap_or_else(|_| "codex".to_string());
-        let opencode_cli_bin =
-            env::var("OPENCODE_CLI_BIN").unwrap_or_else(|_| "opencode".to_string());
-        let cursor_app_server_bin =
-            env::var("CURSOR_APP_SERVER_BIN").unwrap_or_else(|_| "cursor-app-server".to_string());
-        let requested_active_engine = match env::var("BRIDGE_ACTIVE_ENGINE") {
-            Ok(raw) => parse_bridge_runtime_engine(raw.trim())
-                .ok_or_else(|| format!("unsupported BRIDGE_ACTIVE_ENGINE value: {raw}"))?,
-            Err(_) => BridgeRuntimeEngine::Codex,
-        };
-        let enabled_engines = parse_enabled_bridge_engines_env()?
-            .unwrap_or_else(|| legacy_default_enabled_engines(requested_active_engine));
-        let active_engine = if enabled_engines.contains(&requested_active_engine) {
-            requested_active_engine
-        } else {
-            enabled_engines[0]
-        };
-        let opencode_host =
-            env::var("BRIDGE_OPENCODE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let opencode_port = env::var("BRIDGE_OPENCODE_PORT")
-            .ok()
-            .and_then(|v| v.parse::<u16>().ok())
-            .unwrap_or(4090);
+        let acp_manifest_path = env::var("ACP_AGENT_MANIFEST")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| workdir.join(".clawdex/agents.json"));
+        let acp_approved_executable_roots =
+            parse_path_list_env("ACP_AGENT_ROOTS", &[workdir.join(".clawdex/agents")])?;
+        let acp_initialize_timeout =
+            Duration::from_millis(parse_positive_u64_env("ACP_INITIALIZE_TIMEOUT_MS", 15_000)?);
         let auth_token = env::var("BRIDGE_AUTH_TOKEN")
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty());
-        let opencode_server_username = env::var("BRIDGE_OPENCODE_SERVER_USERNAME")
-            .or_else(|_| env::var("OPENCODE_SERVER_USERNAME"))
-            .unwrap_or_else(|_| "opencode".to_string())
-            .trim()
-            .to_string();
-        let opencode_server_password = env::var("BRIDGE_OPENCODE_SERVER_PASSWORD")
-            .or_else(|_| env::var("OPENCODE_SERVER_PASSWORD"))
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .or_else(|| auth_token.clone());
-
         let allow_insecure_no_auth = parse_bool_env("BRIDGE_ALLOW_INSECURE_NO_AUTH");
         if auth_token.is_none() && !allow_insecure_no_auth {
             return Err(
@@ -139,15 +105,9 @@ impl BridgeConfig {
             connect_url,
             preview_connect_url,
             workdir,
-            cli_bin,
-            opencode_cli_bin,
-            cursor_app_server_bin,
-            active_engine,
-            enabled_engines,
-            opencode_host,
-            opencode_port,
-            opencode_server_username,
-            opencode_server_password,
+            acp_manifest_path,
+            acp_approved_executable_roots,
+            acp_initialize_timeout,
             auth_token,
             auth_enabled,
             allow_insecure_no_auth,
@@ -328,6 +288,32 @@ pub(crate) fn parse_positive_usize_env(name: &str, default: usize) -> Result<usi
     Ok(value)
 }
 
+fn parse_positive_u64_env(name: &str, default: u64) -> Result<u64, String> {
+    let Some(raw) = env::var(name).ok() else {
+        return Ok(default);
+    };
+    raw.trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{name} must be a positive integer"))
+}
+
+fn parse_path_list_env(name: &str, defaults: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let paths = env::var(name)
+        .ok()
+        .map(|raw| {
+            env::split_paths(&raw)
+                .filter(|entry| !entry.as_os_str().is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| defaults.to_vec());
+    if paths.is_empty() || paths.iter().any(|path| !path.is_absolute()) {
+        return Err(format!("{name} must contain absolute paths"));
+    }
+    Ok(paths)
+}
+
 pub(crate) fn normalize_connect_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -459,58 +445,6 @@ fn validate_no_auth_listener(host: &str) -> Result<(), String> {
     }
 }
 
-pub(crate) fn parse_enabled_bridge_engines_csv(
-    raw: &str,
-) -> Result<Vec<BridgeRuntimeEngine>, String> {
-    let mut parsed = Vec::new();
-    let mut seen = HashSet::new();
-    for entry in raw.split(',') {
-        let normalized = entry.trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            continue;
-        }
-        let Some(engine) = parse_bridge_runtime_engine(&normalized) else {
-            continue;
-        };
-        if seen.insert(engine) {
-            parsed.push(engine);
-        }
-    }
-
-    if parsed.is_empty() {
-        return Err(
-            "BRIDGE_ENABLED_ENGINES must include one or more of: codex, opencode, cursor"
-                .to_string(),
-        );
-    }
-
-    Ok(parsed)
-}
-
-fn parse_enabled_bridge_engines_env() -> Result<Option<Vec<BridgeRuntimeEngine>>, String> {
-    let raw = match env::var("BRIDGE_ENABLED_ENGINES") {
-        Ok(raw) => raw,
-        Err(_) => return Ok(None),
-    };
-
-    Ok(Some(parse_enabled_bridge_engines_csv(&raw)?))
-}
-
-pub(crate) fn legacy_default_enabled_engines(
-    requested_active_engine: BridgeRuntimeEngine,
-) -> Vec<BridgeRuntimeEngine> {
-    vec![requested_active_engine]
-}
-
-pub(crate) fn parse_bridge_runtime_engine(value: &str) -> Option<BridgeRuntimeEngine> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "codex" => Some(BridgeRuntimeEngine::Codex),
-        "opencode" => Some(BridgeRuntimeEngine::Opencode),
-        "cursor" => Some(BridgeRuntimeEngine::Cursor),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -525,15 +459,9 @@ mod tests {
             connect_url: None,
             preview_connect_url: None,
             workdir: PathBuf::from("/tmp/workdir"),
-            cli_bin: "codex".to_string(),
-            opencode_cli_bin: "opencode".to_string(),
-            cursor_app_server_bin: "cursor-app-server".to_string(),
-            active_engine: BridgeRuntimeEngine::Codex,
-            enabled_engines: vec![BridgeRuntimeEngine::Codex],
-            opencode_host: "127.0.0.1".to_string(),
-            opencode_port: 4090,
-            opencode_server_username: "opencode".to_string(),
-            opencode_server_password: None,
+            acp_manifest_path: PathBuf::from("/tmp/workdir/.clawdex/agents.json"),
+            acp_approved_executable_roots: vec![PathBuf::from("/bin")],
+            acp_initialize_timeout: Duration::from_secs(15),
             auth_token: None,
             auth_enabled: false,
             allow_insecure_no_auth: true,
@@ -729,20 +657,6 @@ mod tests {
     }
 
     #[test]
-    fn engine_csv_parser_handles_empty_unknown_and_duplicate_entries() {
-        assert!(parse_enabled_bridge_engines_csv(" ,unknown, ").is_err());
-        assert_eq!(
-            parse_enabled_bridge_engines_csv(" codex,unknown,CODEX,cursor ").unwrap(),
-            vec![BridgeRuntimeEngine::Codex, BridgeRuntimeEngine::Cursor]
-        );
-        assert_eq!(
-            parse_bridge_runtime_engine(" OPENCODE "),
-            Some(BridgeRuntimeEngine::Opencode)
-        );
-        assert_eq!(parse_bridge_runtime_engine("unknown"), None);
-    }
-
-    #[test]
     fn environment_parsers_cover_missing_valid_and_invalid_values() {
         let suffix = uuid::Uuid::new_v4();
         let bool_name = format!("CLAWDEX_TEST_BOOL_{suffix}");
@@ -811,16 +725,10 @@ mod tests {
             "BRIDGE_CONNECT_URL",
             "BRIDGE_PREVIEW_CONNECT_URL",
             "BRIDGE_WORKDIR",
-            "CODEX_CLI_BIN",
-            "OPENCODE_CLI_BIN",
-            "CURSOR_APP_SERVER_BIN",
-            "BRIDGE_ACTIVE_ENGINE",
-            "BRIDGE_ENABLED_ENGINES",
-            "BRIDGE_OPENCODE_HOST",
-            "BRIDGE_OPENCODE_PORT",
+            "ACP_AGENT_MANIFEST",
+            "ACP_AGENT_ROOTS",
+            "ACP_INITIALIZE_TIMEOUT_MS",
             "BRIDGE_AUTH_TOKEN",
-            "BRIDGE_OPENCODE_SERVER_USERNAME",
-            "BRIDGE_OPENCODE_SERVER_PASSWORD",
             "BRIDGE_ALLOW_INSECURE_NO_AUTH",
             "BRIDGE_NO_AUTH_ALLOWED_ORIGINS",
             "BRIDGE_ALLOW_QUERY_TOKEN_AUTH",
@@ -862,16 +770,10 @@ mod tests {
             ("BRIDGE_CONNECT_URL", "https://bridge.example/base/"),
             ("BRIDGE_PREVIEW_CONNECT_URL", "https://preview.example/"),
             ("BRIDGE_WORKDIR", root.to_str().unwrap()),
-            ("CODEX_CLI_BIN", "configured-codex"),
-            ("OPENCODE_CLI_BIN", "configured-opencode"),
-            ("CURSOR_APP_SERVER_BIN", "configured-cursor"),
-            ("BRIDGE_ACTIVE_ENGINE", "opencode"),
-            ("BRIDGE_ENABLED_ENGINES", "codex,cursor"),
-            ("BRIDGE_OPENCODE_HOST", "127.0.0.2"),
-            ("BRIDGE_OPENCODE_PORT", "4091"),
+            ("ACP_AGENT_MANIFEST", "/tmp/agents.json"),
+            ("ACP_AGENT_ROOTS", "/bin:/usr/bin"),
+            ("ACP_INITIALIZE_TIMEOUT_MS", "2500"),
             ("BRIDGE_AUTH_TOKEN", "secret"),
-            ("BRIDGE_OPENCODE_SERVER_USERNAME", "user"),
-            ("BRIDGE_OPENCODE_SERVER_PASSWORD", "password"),
             ("BRIDGE_ALLOW_INSECURE_NO_AUTH", "false"),
             ("BRIDGE_NO_AUTH_ALLOWED_ORIGINS", "https://trusted.example"),
             ("BRIDGE_ALLOW_QUERY_TOKEN_AUTH", "true"),
@@ -894,8 +796,9 @@ mod tests {
             config.connect_url.as_deref(),
             Some("https://bridge.example/base")
         );
-        assert_eq!(config.active_engine, BridgeRuntimeEngine::Codex);
-        assert_eq!(config.enabled_engines.len(), 2);
+        assert_eq!(config.acp_manifest_path, PathBuf::from("/tmp/agents.json"));
+        assert_eq!(config.acp_approved_executable_roots.len(), 2);
+        assert_eq!(config.acp_initialize_timeout, Duration::from_millis(2500));
         assert!(config.auth_enabled);
         assert!(config.allow_query_token_auth);
         assert!(!config.allow_outside_root_cwd);
@@ -906,12 +809,8 @@ mod tests {
         assert!(BridgeConfig::from_env().is_err());
         unsafe {
             env::set_var("BRIDGE_PREVIEW_PORT", "9001");
-            env::set_var("BRIDGE_ACTIVE_ENGINE", "codex");
         }
-        assert_eq!(
-            BridgeConfig::from_env().unwrap().active_engine,
-            BridgeRuntimeEngine::Codex
-        );
+        assert!(BridgeConfig::from_env().is_ok());
 
         unsafe {
             env::remove_var("BRIDGE_AUTH_TOKEN");

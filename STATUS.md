@@ -7,18 +7,17 @@ Last reviewed: July 18, 2026
 The maintained product path is:
 
 ```text
-Expo mobile app -> authenticated private-network WebSocket/HTTP -> Rust bridge -> coding-agent backends
+Expo mobile app -> authenticated private-network WebSocket/HTTP -> Rust bridge -> installed ACP agents
 ```
 
 - Mobile: `apps/mobile`
 - Bridge: `services/rust-bridge`
 - Operator CLI and launch automation: `bin/clawdex.js` and `scripts/`
-- Legacy reference implementation: `services/mac-bridge`
 
-The Rust bridge supports Codex, OpenCode, and Cursor harnesses. The mobile app includes reconnect and
+The Rust bridge starts installed ACP agents from a validated local manifest and exposes their negotiated capabilities. The mobile app includes reconnect and
 replay recovery, approvals and user input, push notifications, Git and constrained terminal
-surfaces, attachments, browser preview, and bridge maintenance. CI validates JavaScript workspaces,
-the Rust bridge, release policy, and cross-language RPC fixtures.
+surfaces, attachments, browser preview, and bridge maintenance. CI validates the mobile workspace,
+the Rust bridge, focused ACP integration behavior, release policy, and cross-language RPC fixtures.
 
 ## Security Boundary
 
@@ -30,7 +29,6 @@ configured.
 ## Current Trackers
 
 - Active engineering work: `docs/engineering-improvement-checklist.md`
-- Codex app-server parity: `docs/codex-app-server-cli-gap-tracker.md`
 - Realtime constraints: `docs/realtime-streaming-limitations.md`
 - Setup and verification: `docs/setup-and-operations.md`
 - Troubleshooting: `docs/troubleshooting.md`

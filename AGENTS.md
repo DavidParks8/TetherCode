@@ -2,14 +2,12 @@
 
 ## Purpose
 
-This repo is a monorepo for controlling Codex from a phone.
+This repo is a monorepo for controlling ACP-compatible coding agents from a phone.
 
 - Primary product path:
   - `apps/mobile`: Expo React Native client
-  - `services/rust-bridge`: current backend bridge (`codex app-server` adapter + terminal/git/attachment helpers)
+  - `services/rust-bridge`: ACP agent manager plus terminal/git/attachment helpers
   - `bin/clawdex.js` + `scripts/*`: operator CLI and setup/runtime automation
-- Legacy/reference path:
-  - `services/mac-bridge`: older TypeScript bridge with useful tests/reference code, but not the primary runtime
 
 The bridge is intended for trusted/private networks only. Do not treat this repo as internet-safe by default.
 
@@ -20,14 +18,15 @@ Use the existing docs as the source of truth instead of duplicating them in code
 - Quick start and command map: `README.md`
 - Setup, secure env flow, verification, smoke tests, API summary: `docs/setup-and-operations.md`
 - Troubleshooting and recovery commands: `docs/troubleshooting.md`
-- Realtime/live-sync constraints: `docs/realtime-streaming-limitations.md`
+- Realtime/replay constraints: `docs/realtime-streaming-limitations.md`
 - Push notifications (bridge-sent turn/approval alerts): `docs/push-notifications.md`
 - EAS and native build/release notes: `docs/eas-builds.md`
 - Open-source and notice obligations: `docs/open-source-license-requirements.md`
 - App review template: `docs/app-review-notes.md`
-- App-server/CLI parity tracker: `docs/codex-app-server-cli-gap-tracker.md`
 
-`docs/plans/*` are historical design/implementation plans, not current operating policy.
+`docs/plans/*` are historical design/implementation plans, not current operating policy. In
+particular, `docs/plans/2026-07-19-acp-agui-migration-handoff-historical.md` records a completed
+migration and must not be used as a kickoff prompt or architecture source of truth.
 
 ## Repo Map
 
@@ -41,7 +40,9 @@ Use the existing docs as the source of truth instead of duplicating them in code
   - `ios/*`: active Expo native iOS project
   - `plugins/withAndroidCleartextTraffic.js`: Android manifest patch for local/insecure bridge access
 - `services/rust-bridge`
-  - `src/main.rs`: main Axum server, JSON-RPC router, app-server bridge, replay/live-sync logic
+  - `src/main.rs`: Axum server and bridge composition root
+  - `src/acp/manager.rs`: installed ACP agent and session lifecycle manager
+  - `src/acp/runtime.rs`: typed ACP transport, interactions, and canonical events
   - `src/services/git.rs`: git helpers
   - `src/services/terminal.rs`: terminal execution helpers
 - `scripts/*`
@@ -53,7 +54,6 @@ Use the existing docs as the source of truth instead of duplicating them in code
 
 ### Legacy or easy-to-confuse paths
 
-- `services/mac-bridge/*`: legacy TypeScript bridge; useful for reference and tests, not the default runtime
 - `ios/*` at repo root: older native iOS tree (`codexmobilecontrol`), not the active Expo app path
 - `apps/mobile/ios/*`: this is the active iOS native project for the shipped mobile app
 - `apps/telegram-miniapp/*`: currently not a primary maintained source tree; it mostly contains built output/environment leftovers
@@ -90,16 +90,15 @@ Use the existing docs as the source of truth instead of duplicating them in code
   - `GET /health`
   - `GET /rpc` for WebSocket JSON-RPC
   - `GET /local-image` for mobile image rendering of local/absolute paths
-- The Rust bridge spawns `codex app-server --listen stdio://` and forwards an allowlist of `thread/*`, `turn/*`, `review/start`, `model/list`, `skills/list`, `app/list`, and related methods.
+- The Rust bridge reads the validated local ACP manifest, starts installed agents, negotiates capabilities, and maps ACP sessions/events into the bridge contract.
 - Bridge-native RPC methods include attachments upload, terminal exec, git operations, approvals, user-input resolution, and event replay.
 
 ### Realtime model
 
 - Mobile realtime is hybrid:
-  - live WS notifications when the bridge owns the stream
+  - canonical ACP events projected to AG-UI WebSocket notifications
   - replay buffer recovery via `bridge/events/replay`
-  - snapshot/poll convergence for persisted history
-  - rollout/session tailing in Rust for best-effort CLI-origin live sync
+  - ACP session snapshots for convergence after gaps or bridge restarts
 - If work touches missing live updates, read `docs/realtime-streaming-limitations.md` before changing the bridge or mobile sync loop.
 
 ## Primary Workflows
@@ -121,7 +120,6 @@ From repo root:
 - `npm run ios`
 - `npm run android`
 - `npm run bridge`
-- `npm run bridge:ts`
 - `npm run secure:setup`
 - `npm run secure:bridge`
 - `npm run secure:bridge:dev`
@@ -147,7 +145,6 @@ From repo root:
 Canonical examples:
 
 - `services/rust-bridge/.env.example`
-- `services/mac-bridge/.env.example`
 
 Important Rust bridge env knobs:
 
@@ -159,8 +156,9 @@ Important Rust bridge env knobs:
 - `BRIDGE_ALLOW_QUERY_TOKEN_AUTH`
 - `BRIDGE_ALLOW_OUTSIDE_ROOT_CWD`
 - `BRIDGE_TERMINAL_EXEC_POLICIES`
-- `CODEX_CLI_BIN`
-- `CODEX_CLI_TIMEOUT_MS`
+- `ACP_AGENT_MANIFEST`
+- `ACP_AGENT_ROOTS`
+- `ACP_INITIALIZE_TIMEOUT_MS`
 
 ### Mobile
 
@@ -221,8 +219,8 @@ Workspace-specific:
 ### Existing test coverage
 
 - `apps/mobile` has Jest unit tests for API mapping, websocket logic, notification helpers, and small UI helpers
-- `services/mac-bridge` has the densest unit-test coverage among service layers
-- `services/rust-bridge` relies on `cargo test` plus inline/unit coverage in `main.rs`; there is not a separate large test harness
+- `services/rust-bridge` has focused ACP transport/manager tests plus inline tests for bridge services
+- `npm run test:acp` runs the ACP-focused Rust test target used by CI
 
 ### Manual smoke tests
 
@@ -261,7 +259,7 @@ Update the relevant docs when changing these areas:
   - `docs/setup-and-operations.md`
 - Runtime recovery steps:
   - `docs/troubleshooting.md`
-- Realtime/live-sync behavior:
+- Realtime/replay behavior:
   - `docs/realtime-streaming-limitations.md`
 - EAS/native build or store release flow:
   - `docs/eas-builds.md`

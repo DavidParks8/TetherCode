@@ -1,6 +1,5 @@
 import type {
   Chat,
-  ChatEngine,
   ChatMessage,
   ChatSummary,
   ChatStatus,
@@ -173,15 +172,6 @@ describe('mainScreenHelpers branch behavior', () => {
       turnId: 't',
       explanation: null,
       plan: [{ step: 'ok', status: 'completed' }],
-    });
-    expect(helpers.resolveCodexPlanTurnId({ turnId: 'camel' }, 'fallback')).toBe('camel');
-    expect(helpers.resolveCodexPlanTurnId({ turn_id: 'snake' }, 'fallback')).toBe('snake');
-    expect(helpers.resolveCodexPlanTurnId({}, 'fallback')).toBe('fallback');
-    expect(helpers.resolveCodexPlanTurnId(null)).toBe('unknown-turn');
-    expect(helpers.toCodexTurnPlanUpdate(null, 'thread')).toBeNull();
-    expect(helpers.toCodexTurnPlanUpdate({ plan: [] }, 'thread', 'fallback')).toMatchObject({
-      threadId: 'thread',
-      turnId: 'fallback',
     });
   });
 
@@ -402,8 +392,7 @@ describe('mainScreenHelpers branch behavior', () => {
     expect(helpers.draftContainsMentionLabel('use @ab now', 'a+b')).toBe(false);
   });
 
-  it('normalizes engines, models, reasoning, service tier, and selection', () => {
-    expect(helpers.mergeChatEngines(['codex', 'bad' as ChatEngine], 'cursor', undefined, 'codex')).toEqual(['codex', 'cursor']);
+  it('normalizes models, reasoning, service tier, and selection', () => {
     expect(helpers.normalizeModelId(undefined)).toBeNull();
     expect(helpers.normalizeModelId(' ')).toBeNull();
     expect(helpers.normalizeModelId(' model ')).toBe('model');
@@ -439,19 +428,62 @@ describe('mainScreenHelpers branch behavior', () => {
   it('parses bridge queue state and errors', () => {
     expect(helpers.parseBridgeThreadQueueState(null)).toBeNull();
     expect(helpers.parseBridgeThreadQueueState({ threadId: ' ' })).toBeNull();
-    expect(helpers.parseBridgeThreadQueueState({ threadId: 'thread', items: 'bad' })).toEqual({ threadId: 'thread', items: [], lastError: null });
+    expect(helpers.parseBridgeThreadQueueState({ threadId: 'thread', items: 'bad' })).toEqual({
+      threadId: 'thread', items: [], pendingSteers: [], pendingSteerCount: 0,
+      waitingForToolCalls: false, steeringInFlight: false, lastError: null,
+    });
     expect(helpers.parseBridgeThreadQueueState({
       threadId: ' thread ',
       items: [null, {}, { id: ' i ', createdAt: ' now ', content: 'a\r\nb' }],
+      pendingSteers: [{ id: ' s ', createdAt: ' later ', content: 'steer' }],
+      pendingSteerCount: 1,
+      waitingForToolCalls: true,
       lastError: { message: ' failed ', operation: ' send ', at: ' then ', itemId: ' item ' },
     })).toEqual({
       threadId: 'thread',
       items: [{ id: 'i', createdAt: 'now', content: 'a\nb' }],
+      pendingSteers: [{ id: 's', createdAt: 'later', content: 'steer' }],
+      pendingSteerCount: 1,
+      waitingForToolCalls: true,
+      steeringInFlight: false,
       lastError: { message: 'failed', operation: 'send', at: 'then', itemId: 'item' },
     });
     expect(helpers.getDraftScopeKey(' thread ')).toBe('thread');
     expect(helpers.getDraftScopeKey(' ')).toBe(helpers.CHAT_NEW_DRAFT_KEY);
     expect(helpers.getDraftScopeKey(undefined)).toBe(helpers.CHAT_NEW_DRAFT_KEY);
+  });
+
+  it('gates queue steering only on bridge capability and queue ownership state', () => {
+    const base = {
+      hasQueuedMessage: true,
+      hasSelectedThread: true,
+      supportsSteer: true,
+      isPendingSteer: false,
+      isOptimistic: false,
+      actionInFlight: false,
+    };
+    expect(helpers.canOfferQueuedMessageSteer(base)).toBe(true);
+    expect(helpers.canOfferQueuedMessageSteer({ ...base, supportsSteer: false })).toBe(false);
+    expect(helpers.canOfferQueuedMessageSteer({ ...base, isPendingSteer: true })).toBe(false);
+    expect(helpers.canOfferQueuedMessageSteer({ ...base, isOptimistic: true })).toBe(false);
+    expect(helpers.canOfferQueuedMessageSteer({ ...base, actionInFlight: true })).toBe(false);
+  });
+
+  it('uses exact pending-tool and in-flight steering labels', () => {
+    const base = {
+      pendingSubmission: false,
+      steeringActive: false,
+      steeringInFlight: false,
+      steerPending: true,
+      waitingForToolCalls: false,
+    };
+    expect(helpers.queuedMessageStatusLabel(base)).toBe('Waiting to steer');
+    expect(helpers.queuedMessageStatusLabel({ ...base, waitingForToolCalls: true })).toBe(
+      'Will steer after the current tool finishes'
+    );
+    expect(helpers.queuedMessageStatusLabel({ ...base, steeringInFlight: true })).toBe(
+      'Steering turn'
+    );
   });
 
   it('hydrates model preferences and plan snapshots', () => {
@@ -490,23 +522,12 @@ describe('mainScreenHelpers branch behavior', () => {
     expect(helpers.parseChatBridgeUiSurfaces(JSON.stringify({ version: 1, entries: { ' ': [], thread: 'bad', empty: [null] } }))).toEqual({});
   });
 
-  it('formats collaboration, rate limit, and bridge recovery states', () => {
+  it('formats collaboration and bridge recovery states', () => {
     expect(helpers.formatCollaborationModeLabel('plan')).toBe('Plan mode');
-    expect(helpers.formatCollaborationModeLabel('ask')).toBe('Ask mode');
     expect(helpers.formatCollaborationModeLabel('default')).toBe('Default mode');
     expect(helpers.isBridgeConnectionErrorMessage(null)).toBe(false);
     expect(helpers.isBridgeConnectionErrorMessage('Bridge WebSocket closed')).toBe(true);
     expect(helpers.isBridgeConnectionErrorMessage('other')).toBe(false);
-    expect(helpers.isRateLimitReachedMessage(null)).toBe(false);
-    expect(helpers.isRateLimitReachedMessage(' ')).toBe(false);
-    for (const text of ['rate limit', 'usage limit', 'quota exceeded', 'too many requests', 'HTTP 429']) {
-      expect(helpers.isRateLimitReachedMessage(text)).toBe(true);
-    }
-    expect(helpers.isRateLimitReachedMessage('network error')).toBe(false);
-    expect(helpers.findRateLimitReachedMessage([null, 'other', ' quota exceeded '])).toBe('quota exceeded');
-    expect(helpers.findRateLimitReachedMessage(['other'])).toBeNull();
-    expect(helpers.buildRateLimitAlertFromMessages(['other'])).toBeNull();
-    expect(helpers.buildRateLimitAlertFromMessages(['429'])).toMatchObject({ title: 'Rate limit reached' });
     expect(helpers.isBridgeRecoveryActivity(null)).toBe(false);
     expect(helpers.isBridgeRecoveryActivity({ tone: 'idle', title: 'Disconnected' })).toBe(true);
     expect(helpers.isBridgeRecoveryActivity({ tone: 'idle', title: 'Other', detail: 'Unable to connect to bridge websocket' })).toBe(true);
@@ -589,11 +610,11 @@ describe('mainScreenHelpers branch behavior', () => {
     expect(helpers.filterSlashCommands('first', commands).map((item) => item.name)).toEqual(['One']);
     expect(helpers.filterSlashCommands('uno', commands).map((item) => item.name)).toEqual(['One']);
     expect(helpers.filterSlashCommands('two', commands).map((item) => item.name)).toEqual(['Two']);
-    const all = { hasOpenChat: true, supportsCompact: true, supportsGoal: true, supportsPlanMode: true, supportsReview: true };
+    const all = { hasOpenChat: true, supportsGoal: true, supportsPlanMode: true, supportsReview: true };
     expect(helpers.isSlashCommandAvailable({ name: 'x', summary: '', mobileSupported: false }, all)).toBe(false);
     expect(helpers.isSlashCommandAvailable({ name: 'x', summary: '', mobileSupported: true, requiresOpenChat: true }, { ...all, hasOpenChat: false })).toBe(false);
-    for (const name of ['compact', 'goal', 'plan', 'review']) {
-      const key = `supports${name === 'compact' ? 'Compact' : name === 'goal' ? 'Goal' : name === 'plan' ? 'PlanMode' : 'Review'}` as keyof typeof all;
+    for (const name of ['goal', 'plan', 'review']) {
+      const key = `supports${name === 'goal' ? 'Goal' : name === 'plan' ? 'PlanMode' : 'Review'}` as keyof typeof all;
       expect(helpers.isSlashCommandAvailable({ name, summary: '', mobileSupported: true }, { ...all, [key]: false })).toBe(false);
     }
     expect(helpers.isSlashCommandAvailable({ name: 'status', summary: '', mobileSupported: true }, all)).toBe(true);
@@ -632,42 +653,12 @@ describe('mainScreenHelpers branch behavior', () => {
     expect(helpers.formatLiveReasoningMessage('First\n\nSecond')).toBe('• Reasoning\n  └ First\n    Second');
   });
 
-  it('formats Cursor tool activity and resilient previews', () => {
-    expect(helpers.normalizeCursorToolStatus('failed')).toBe('error');
-    expect(helpers.normalizeCursorToolStatus('completed')).toBe('complete');
-    expect(helpers.normalizeCursorToolStatus(null)).toBe('running');
-    expect(helpers.toLiveCursorToolArgsPreview({ args: 'raw' })).toBe('raw');
-    expect(helpers.toLiveCursorToolArgsPreview({ args: { path: '/a', command: 'ignored' } })).toBe('/a');
-    expect(helpers.toLiveCursorToolArgsPreview({ args: { filePath: '/b' } })).toBe('/b');
-    expect(helpers.toLiveCursorToolArgsPreview({ args: { file_path: '/c' } })).toBe('/c');
-    expect(helpers.toLiveCursorToolArgsPreview({ args: { globPattern: '*.ts' } })).toBe('*.ts');
-    expect(helpers.toLiveCursorToolArgsPreview({ args: { glob_pattern: '*.js' } })).toBe('*.js');
-    expect(helpers.toLiveCursorToolArgsPreview({ args: { command: 'npm test' } })).toBe('npm test');
-    expect(helpers.toLiveCursorToolArgsPreview({ args: { other: true } })).toBe('{"other":true}');
-    expect(helpers.toLiveCursorToolResultPreview({ branches: [] })).toBe('{"branches":[]}');
-    expect(helpers.toLiveCursorToolResultPreview({ status: 'error', error: 'bad' })).toBe('Error: bad');
-    expect(helpers.toLiveCursorToolResultPreview({ status: 'failed', error: { message: 'nested' } })).toBe('Error: nested');
-    expect(helpers.toLiveCursorToolResultPreview({ value: 'ok' })).toBe('ok');
-    expect(helpers.toLiveCursorToolResultPreview({ result: 'fallback' })).toBe('fallback');
-    expect(helpers.toLiveCursorGitBranchPreview(null)).toBeNull();
-    expect(helpers.toLiveCursorGitBranchPreview({ branches: [null, {}, { branch: 'main', pr_url: 'pr', repoUrl: 'repo' }] })).toBe('Branch: main\nPR: pr\nRepo: repo');
-    expect(helpers.stringifyLiveCursorPreview(null, 10)).toBeNull();
-    expect(helpers.stringifyLiveCursorPreview(' text ', 10)).toBe('text');
-    const circular: Record<string, unknown> = {};
-    circular.self = circular;
-    expect(helpers.stringifyLiveCursorPreview(circular, 10)).toBeNull();
-    expect(helpers.formatLiveCursorToolMessage({ tool: 'read', status: 'error', args: { path: '/a' }, result: { status: 'error', error: 'bad' } })).toContain('• Tool failed `read`');
-    expect(helpers.formatLiveCursorToolMessage({ name: 'write', status: 'complete' })).toBe('• Called tool `write`');
-    expect(helpers.formatLiveCursorToolMessage(null)).toBe('• Calling tool `unknown`');
-  });
-
-  it('formats timeline messages and filters Codex reasoning', () => {
+  it('formats timeline messages without agent-name filtering', () => {
     expect(helpers.formatTimelineSystemMessage('Title', [])).toBe('Title');
     expect(helpers.formatTimelineSystemMessage('Title', ['one\n', '', 'two'])).toBe('Title\n  └ one\n    two');
     const messages = [message('r', 'system', 'reason'), message('a', 'assistant', 'answer')];
     messages[0].systemKind = 'reasoning';
-    expect(helpers.filterReasoningMessagesForEngine(messages, 'codex')).toEqual([messages[1]]);
-    expect(helpers.filterReasoningMessagesForEngine(messages, 'cursor')).toBe(messages);
+    expect(helpers.filterReasoningMessages(messages)).toBe(messages);
   });
 
   it('describes started and completed tool events', () => {
@@ -697,20 +688,6 @@ describe('mainScreenHelpers branch behavior', () => {
     expect(helpers.appendRunEventHistory(existing, 't', 'x', 'same')).toBe(existing);
     const many = Array.from({ length: helpers.MAX_ACTIVE_COMMANDS }, (_, index) => ({ id: String(index), threadId: 't', eventType: 'x', at: 'now', detail: String(index) }));
     expect(helpers.appendRunEventHistory(many, 't', 'y', 'new')).toHaveLength(helpers.MAX_ACTIVE_COMMANDS);
-    expect(helpers.normalizeCodexEventType(null)).toBeNull();
-    expect(helpers.normalizeCodexEventType(' -- ')).toBeNull();
-    expect(helpers.normalizeCodexEventType('Task/Started')).toBe('taskstarted');
-    expect(helpers.isCodexRunHeartbeatEvent('taskstarted')).toBe(true);
-    expect(helpers.isCodexRunHeartbeatEvent('other')).toBe(false);
-  });
-
-  it('extracts failure messages through precedence and recursion limits', () => {
-    expect(helpers.extractCodexFailureMessage(null)).toBeNull();
-    expect(helpers.extractCodexFailureMessage({ error: 'direct' })).toBe('direct');
-    expect(helpers.extractCodexFailureMessage({ turn: { error: { reason: 'turn' } } })).toBe('turn');
-    expect(helpers.extractCodexFailureMessage({ status: { message: 'status' } })).toBe('status');
-    expect(helpers.extractCodexFailureMessage({}, { details: { error_message: 'arg' } })).toBe('arg');
-    expect(helpers.extractCodexFailureMessage({ error: { error: { error: { error: { error: 'too deep' } } } } })).toBeNull();
   });
 
   it('extracts thread and parent ids from common notification shapes', () => {
@@ -796,7 +773,7 @@ describe('mainScreenHelpers branch behavior', () => {
       id: 'i', kind: 'commandExecution', threadId: 't', turnId: 'turn', itemId: 'item', requestedAt: 'now',
       reason: 'why', command: 'npm test', cwd: '/repo', grantRoot: '/repo', proposedExecpolicyAmendment: ['a', 2],
     })).toMatchObject({
-      id: 'i', kind: 'commandExecution', reason: 'why', command: 'npm test', proposedExecpolicyAmendment: ['a'],
+      requestId: 'i', kind: 'commandExecution', reason: 'why', command: 'npm test', proposedExecpolicyAmendment: ['a'],
     });
     expect(helpers.toPendingApproval({ id: 'i', kind: 'fileChange', threadId: 't', turnId: 'turn', itemId: 'item', requestedAt: 'now' })?.kind).toBe('fileChange');
   });

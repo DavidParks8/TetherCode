@@ -31,26 +31,22 @@ import Markdown from 'react-native-markdown-display';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { HostBridgeApiClient } from '../api/client';
-import { readAccountRateLimitSnapshot } from '../api/rateLimits';
-import { getChatEngineLabel, resolveChatEngine } from '../chatEngines';
+import { findAgentDescriptor, getAgentLabel, selectAgentId } from '../agents';
 import type {
-  AccountRateLimitSnapshot,
+  AgentDefaultSettingsMap,
+  AgentId,
   ApprovalMode,
-  ApprovalDecision,
   BridgeCapabilities,
   BridgeUiAction,
   BridgeUiSurface,
   BridgeQueuedMessage,
   BridgeThreadQueueState,
-  ChatEngine,
   CollaborationMode,
-  EngineDefaultSettingsMap,
   PendingApproval,
   PendingUserInputRequest,
   RpcNotification,
   RunEvent,
   Chat,
-  ChatStatus,
   ChatSummary,
   ModelOption,
   MentionInput,
@@ -60,10 +56,14 @@ import type {
   ChatMessage as ChatTranscriptMessage,
   FileSystemEntry,
   FileSystemListResponse,
-  HarnessAgentOption,
   WorkspaceSummary,
 } from '../api/types';
 import type { HostBridgeWsClient } from '../api/ws';
+import {
+  parseAgUiEventNotification,
+  updateAgUiLiveAssistantMessages,
+  type AgUiLiveAssistantMessages,
+} from '../api/agUi';
 import { ActivityBar } from '../components/ActivityBar';
 import { ApprovalBanner } from '../components/ApprovalBanner';
 import {
@@ -73,14 +73,9 @@ import {
 } from '../components/BridgeUiSurface';
 import { ChatHeader } from '../components/ChatHeader';
 import { ChatInput } from '../components/ChatInput';
-import { ComposerUsageLimits } from '../components/ComposerUsageLimits';
 import { BrandMark } from '../components/BrandMark';
 import { SelectionSheet, type SelectionSheetOption } from '../components/SelectionSheet';
 import { WorkspacePickerModal } from '../components/WorkspacePickerModal';
-import {
-  buildComposerUsageLimitAlert,
-  buildComposerUsageLimitBadges,
-} from '../components/usageLimitBadges';
 import { env } from '../config';
 import {
   controlAccessibilityState,
@@ -139,9 +134,6 @@ import {
   PLAN_IMPLEMENTATION_YES,
   PLAN_IMPLEMENTATION_NO,
   PLAN_IMPLEMENTATION_CODING_MESSAGE,
-  CODEX_RUN_COMPLETION_EVENT_TYPES,
-  CODEX_RUN_ABORT_EVENT_TYPES,
-  CODEX_RUN_FAILURE_EVENT_TYPES,
   EXTERNAL_RUNNING_STATUS_HINTS,
   EXTERNAL_ERROR_STATUS_HINTS,
   EXTERNAL_COMPLETE_STATUS_HINTS,
@@ -157,8 +149,6 @@ import {
   buildNextPlanStateFromUpdate,
   renderPlanStatusGlyph,
   toTurnPlanUpdate,
-  resolveCodexPlanTurnId,
-  toCodexTurnPlanUpdate,
   toPendingUserInputRequest,
   buildUserInputDrafts,
   normalizeWorkspacePath,
@@ -174,7 +164,6 @@ import {
   reconcileChatWithPendingOptimisticMessages,
   toPathBasename,
   parseMentionQuery,
-  mergeChatEngines,
   normalizeModelId,
   normalizeReasoningEffort,
   normalizeServiceTier,
@@ -183,10 +172,10 @@ import {
   shouldSurfaceChatLoadError,
   toApprovalPolicyForMode,
   parseBridgeThreadQueueState,
+  canOfferQueuedMessageSteer,
+  queuedMessageStatusLabel,
   formatCollaborationModeLabel,
   isBridgeConnectionErrorMessage,
-  buildRateLimitAlertFromMessages,
-  isRateLimitReachedMessage,
   isBridgeRecoveryActivity,
   resolveSnapshotCollaborationMode,
   resolveDisplayedThreadPlan,
@@ -203,17 +192,11 @@ import {
   formatAgentThreadOptionTitle,
   iconForAgentThread,
   stripMarkdownInline,
-  toTickerSnippet,
   mergeStreamingDelta,
   formatLiveReasoningMessage,
-  formatLiveCursorToolMessage,
   describeStartedToolEvent,
   describeCompletedToolEvent,
-  describeWebSearchToolEvent,
   appendRunEventHistory,
-  normalizeCodexEventType,
-  extractCodexFailureMessage,
-  isCodexRunHeartbeatEvent,
   extractNotificationThreadId,
   extractNotificationParentThreadId,
   extractExternalStatusHint,
@@ -247,6 +230,16 @@ import {
 } from './controllers/submissionController';
 import { TurnExecutionController } from './controllers/turnExecutionController';
 import { MainScreenPersistenceController } from './controllers/mainScreenPersistenceController';
+import {
+  fetchReplayRecoverySnapshot,
+  ReplayRecoveryProtocolError,
+  type ReplayRecoverySnapshot,
+} from './controllers/replayRecoveryController';
+import {
+  TranscriptContinuationController,
+  getTranscriptContinuationState,
+  type TranscriptContinuationState,
+} from './controllers/transcriptContinuationController';
 
 export interface MainScreenHandle {
   openChat: (id: string, optimisticChat?: Chat | null) => void;
@@ -264,16 +257,13 @@ interface MainScreenProps {
   onOpenLocalPreview?: (targetUrl: string) => void;
   onOpenBridgeRecoveryGuide?: () => void;
   defaultStartCwd?: string | null;
-  defaultChatEngine?: ChatEngine | null;
-  defaultEngineSettings?: EngineDefaultSettingsMap | null;
+  preferredAgentId?: AgentId | null;
+  agentSettings?: AgentDefaultSettingsMap | null;
   approvalMode?: ApprovalMode;
   showToolCalls?: boolean;
   onDefaultStartCwdChange?: (cwd: string | null) => void;
   onLastUsedThreadSettingsChange?: (
-    engine: ChatEngine,
-    modelId: string | null,
-    effort: ReasoningEffort | null,
-    serviceTier: ServiceTier | null,
+    agentId: AgentId,
     collaborationMode: CollaborationMode
   ) => void;
   onChatContextChange?: (chat: Chat | null) => void;
@@ -303,8 +293,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       onOpenLocalPreview: onOpenLocalPreviewHandler,
       onOpenBridgeRecoveryGuide,
       defaultStartCwd,
-      defaultChatEngine,
-      defaultEngineSettings,
+      preferredAgentId,
+      agentSettings,
       approvalMode,
       showToolCalls = true,
       onDefaultStartCwdChange,
@@ -326,6 +316,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const agentThreadsController = useMemo(() => new AgentThreadsController(api), [api]);
     const persistenceController = useMemo(() => new MainScreenPersistenceController(), []);
     const submissionController = useMemo(() => new SubmissionController(), []);
+    const transcriptContinuationController = useMemo(
+      () => new TranscriptContinuationController(api),
+      [api]
+    );
     const initialPendingSnapshot =
       pendingOpenChatId &&
       pendingOpenChatSnapshot?.id === pendingOpenChatId &&
@@ -335,6 +329,12 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [selectedChat, setSelectedChat] = useState<Chat | null>(
       initialPendingSnapshot
     );
+    const [transcriptContinuationState, setTranscriptContinuationState] =
+      useState<TranscriptContinuationState>(() =>
+        initialPendingSnapshot
+          ? getTranscriptContinuationState(initialPendingSnapshot)
+          : { loading: false, error: null, exhausted: true, unavailableCount: 0 }
+      );
     const [selectedParentChat, setSelectedParentChat] = useState<Chat | null>(null);
     const [selectedChatId, setSelectedChatId] = useState<string | null>(
       initialPendingSnapshot?.id ?? pendingOpenChatId ?? null
@@ -359,6 +359,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [resolvingUserInput, setResolvingUserInput] = useState(false);
     const [activePlan, setActivePlan] = useState<ActivePlanState | null>(null);
     const [activeBridgeUiSurfaces, setActiveBridgeUiSurfaces] = useState<BridgeUiSurface[]>([]);
+    const [liveAssistantByThread, setLiveAssistantByThread] =
+      useState<AgUiLiveAssistantMessages>({});
     const streamingTextRef = useRef<string | null>(null);
     const setStreamingText = useCallback(
       (
@@ -367,18 +369,16 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           | null
           | ((previous: string | null) => string | null)
       ) => {
-        streamingTextRef.current =
+        const resolved =
           typeof next === 'function'
             ? (
                 next as (previous: string | null) => string | null
               )(streamingTextRef.current)
             : next;
+        streamingTextRef.current = resolved;
       },
       []
     );
-    const [renameModalVisible, setRenameModalVisible] = useState(false);
-    const [renameDraft, setRenameDraft] = useState('');
-    const [renaming, setRenaming] = useState(false);
     const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
     const [stoppingTurn, setStoppingTurn] = useState(false);
     const [workspaceModalVisible, setWorkspaceModalVisible] = useState(false);
@@ -408,20 +408,19 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       useState(false);
     const [gitCheckoutError, setGitCheckoutError] = useState<string | null>(null);
     const [gitCheckoutCloning, setGitCheckoutCloning] = useState(false);
-    const [chatTitleMenuVisible, setChatTitleMenuVisible] = useState(false);
     const [agentThreadMenuVisible, setAgentThreadMenuVisible] = useState(false);
     const [modelModalVisible, setModelModalVisible] = useState(false);
     const [modelSettingsMenuVisible, setModelSettingsMenuVisible] = useState(false);
-    const [engineModalVisible, setEngineModalVisible] = useState(false);
+    const [agentModalVisible, setAgentModalVisible] = useState(false);
     const [bridgeCapabilities, setBridgeCapabilities] = useState<BridgeCapabilities | null>(
       null
     );
-    const [modelOptionsByEngine, setModelOptionsByEngine] = useState<
-      Partial<Record<ChatEngine, ModelOption[]>>
+    const [modelOptionsByAgent, setModelOptionsByAgent] = useState<
+      Record<AgentId, ModelOption[]>
     >({});
     const [loadingModels, setLoadingModels] = useState(false);
-    const [pendingChatEngine, setPendingChatEngine] = useState<ChatEngine>(
-      () => defaultChatEngine ?? 'codex'
+    const [pendingAgentId, setPendingAgentId] = useState<AgentId | null>(
+      () => preferredAgentId ?? null
     );
     const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
     const [selectedEffort, setSelectedEffort] = useState<ReasoningEffort | null>(null);
@@ -429,9 +428,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [defaultServiceTier, setDefaultServiceTier] = useState<ServiceTier | null>(null);
     const [selectedCollaborationMode, setSelectedCollaborationMode] =
       useState<CollaborationMode>('default');
-    const [harnessAgentOptions, setHarnessAgentOptions] = useState<HarnessAgentOption[]>([]);
-    const [selectedHarnessAgent, setSelectedHarnessAgent] = useState<string | null>(null);
-    const [loadingHarnessAgents, setLoadingHarnessAgents] = useState(false);
     const [keyboardVisible, setKeyboardVisible] = useState(false);
     const [androidKeyboardInset, setAndroidKeyboardInset] = useState(0);
     const [composerHeight, setComposerHeight] = useState(0);
@@ -458,11 +454,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [heldActivity, setHeldActivity] = useState<ActivityState | null>(null);
     const [showDelayedGenericRunningActivity, setShowDelayedGenericRunningActivity] =
       useState(false);
-    const [accountRateLimits, setAccountRateLimits] = useState<AccountRateLimitSnapshot | null>(
-      () => api.peekAccountRateLimits()
-    );
-    const accountRateLimitsRef = useRef<AccountRateLimitSnapshot | null>(null);
-    accountRateLimitsRef.current = accountRateLimits;
     const sendingRef = useRef(sending);
     sendingRef.current = sending;
     const creatingRef = useRef(creating);
@@ -492,6 +483,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const agentThreadsRequestRef = useRef(0);
     const agentDetailRequestRef = useRef(0);
     const agentThreadsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const replayRecoveryGenerationRef = useRef(0);
+    const replayRecoveryRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const replayRecoveryAbortControllerRef = useRef<AbortController | null>(null);
+    const replayRecoveryEpochResetPendingRef = useRef(false);
     const openAgentThreadSelectorRef = useRef<(query?: string | null) => Promise<boolean>>(
       async () => false
     );
@@ -655,6 +650,18 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     }, []);
 
     useEffect(() => {
+      return () => {
+        replayRecoveryGenerationRef.current += 1;
+        replayRecoveryAbortControllerRef.current?.abort();
+        replayRecoveryAbortControllerRef.current = null;
+        if (replayRecoveryRetryTimerRef.current) {
+          clearTimeout(replayRecoveryRetryTimerRef.current);
+          replayRecoveryRetryTimerRef.current = null;
+        }
+      };
+    }, []);
+
+    useEffect(() => {
       const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
       const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
       const showSub = Keyboard.addListener(showEvent, (event: KeyboardEvent) => {
@@ -714,7 +721,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     // know when a new thinking segment starts so we can replace the old one.
     const hadCommandRef = useRef(false);
     const reasoningSummaryRef = useRef<Record<string, string>>({});
-    const codexReasoningBufferRef = useRef('');
+    const reasoningBufferRef = useRef('');
     const liveReasoningBuffersRef = useRef<Record<string, string>>({});
     const liveReasoningMessageIdsRef = useRef<Record<string, string>>({});
     const runWatchdogUntilRef = useRef(0);
@@ -743,36 +750,22 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       null
     );
     const preferredStartCwd = normalizeWorkspacePath(defaultStartCwd);
-    const persistedDefaultChatEngine = resolveChatEngine(defaultChatEngine ?? 'codex');
-    const availableNewChatEngines = mergeChatEngines(
-      bridgeCapabilities?.availableEngines ?? [],
-      bridgeCapabilities ? bridgeCapabilities.activeEngine : null
-    );
-    const preferredNewChatEngine = availableNewChatEngines.includes(pendingChatEngine)
-      ? pendingChatEngine
-      : availableNewChatEngines.includes(persistedDefaultChatEngine)
-        ? persistedDefaultChatEngine
-        : availableNewChatEngines[0] ?? persistedDefaultChatEngine;
-    const activeChatEngine = selectedChat?.engine
-      ? resolveChatEngine(selectedChat.engine)
-      : preferredNewChatEngine;
-    const activeChatEngineLabel = getChatEngineLabel(activeChatEngine);
-    const activeEngineSupports =
-      bridgeCapabilities?.supportsByEngine?.[activeChatEngine] ??
-      (bridgeCapabilities?.activeEngine === activeChatEngine
-        ? bridgeCapabilities.supports
-        : null);
-    const supportsFastMode = activeEngineSupports?.fastMode === true;
-    const supportsReview =
-      activeEngineSupports?.reviewStart ?? activeChatEngine === 'codex';
-    const supportsCompact =
-      activeEngineSupports?.compactStart ?? activeChatEngine === 'codex';
-    const supportsGoal = activeEngineSupports?.goalSlash ?? activeChatEngine === 'codex';
-    const supportsPlanMode =
-      activeEngineSupports?.planMode ?? activeChatEngine !== 'opencode';
+    const readyAgents = bridgeCapabilities?.agents.filter((agent) => agent.lifecycle === 'ready') ?? [];
+    const selectedNewAgentId = bridgeCapabilities
+      ? selectAgentId(pendingAgentId ?? preferredAgentId, bridgeCapabilities)
+      : pendingAgentId ?? preferredAgentId ?? null;
+    const activeAgentId = selectedChat?.agentId ?? selectedNewAgentId;
+    const activeAgent = findAgentDescriptor(bridgeCapabilities?.agents ?? [], activeAgentId);
+    const activeAgentLabel = getAgentLabel(bridgeCapabilities?.agents ?? [], activeAgentId);
+    const activeAgentSupports = activeAgentId
+      ? bridgeCapabilities?.supportsByAgent[activeAgentId] ?? null
+      : null;
+    const supportsFastMode = activeAgentSupports?.fastMode === true;
+    const supportsReview = activeAgentSupports?.reviewStart === true;
+    const supportsGoal = activeAgentSupports?.goalSlash === true;
+    const supportsPlanMode = activeAgentSupports?.planMode === true;
     const slashCommandAvailability = {
       hasOpenChat: Boolean(selectedChatId),
-      supportsCompact,
       supportsGoal,
       supportsPlanMode,
       supportsReview,
@@ -780,19 +773,18 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const activeSlashCommands = SLASH_COMMANDS.filter((command) =>
       isSlashCommandAvailable(command, slashCommandAvailability)
     );
-    const modelOptions = modelOptionsByEngine[activeChatEngine] ?? EMPTY_MODEL_OPTIONS;
-    const pendingEngineDefaults = defaultEngineSettings?.[preferredNewChatEngine] ?? null;
-    const preferredDefaultModelId = normalizeModelId(pendingEngineDefaults?.modelId);
-    const preferredDefaultEffort = normalizeReasoningEffort(pendingEngineDefaults?.effort);
-    const preferredServiceTier =
-      pendingEngineDefaults &&
-      Object.prototype.hasOwnProperty.call(pendingEngineDefaults, 'serviceTier')
-        ? toSelectedServiceTier(pendingEngineDefaults.serviceTier)
-        : undefined;
+    const modelOptions = activeAgentId
+      ? modelOptionsByAgent[activeAgentId] ?? EMPTY_MODEL_OPTIONS
+      : EMPTY_MODEL_OPTIONS;
+    const pendingAgentDefaults = selectedNewAgentId
+      ? agentSettings?.[selectedNewAgentId] ?? null
+      : null;
+    const preferredDefaultModelId = null;
+    const preferredDefaultEffort = null;
+    const preferredServiceTier = undefined;
     const preferredCollaborationMode =
-      pendingEngineDefaults?.collaborationMode === 'plan' ||
-      (pendingEngineDefaults?.collaborationMode === 'ask' && preferredNewChatEngine === 'cursor')
-        ? pendingEngineDefaults.collaborationMode
+      pendingAgentDefaults?.collaborationMode === 'plan'
+        ? pendingAgentDefaults.collaborationMode
         : 'default';
     const activeApprovalPolicy = toApprovalPolicyForMode(approvalMode);
     const attachmentWorkspace = selectedChat?.cwd ?? preferredStartCwd ?? null;
@@ -841,18 +833,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       148,
       Math.min(300, Math.floor(windowHeight * 0.34))
     );
-
-    useEffect(() => {
-      if (activeChatEngine !== 'cursor' && selectedCollaborationMode === 'ask') {
-        setSelectedCollaborationMode('default');
-      }
-      if (activeChatEngine !== 'opencode' && selectedHarnessAgent) {
-        setSelectedHarnessAgent(null);
-      }
-      if (selectedCollaborationMode !== 'default' && selectedHarnessAgent) {
-        setSelectedHarnessAgent(null);
-      }
-    }, [activeChatEngine, selectedCollaborationMode, selectedHarnessAgent]);
 
     const queueOptimisticUserMessage = useCallback(
       (
@@ -1334,58 +1314,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     }, [persistenceController]);
 
     useEffect(() => {
-      if (bridgeCapabilities?.supportsByEngine?.codex?.fastMode !== true) {
-        setDefaultServiceTier(null);
-        return;
-      }
-
-      let cancelled = false;
-
-      const load = async () => {
-        try {
-          const serviceTier = await api.readServiceTierPreference('codex');
-          if (!cancelled) {
-            setDefaultServiceTier(toSelectedServiceTier(serviceTier));
-          }
-        } catch {
-          if (!cancelled) {
-            setDefaultServiceTier(null);
-          }
-        }
-      };
-
-      void load();
-      return () => {
-        cancelled = true;
-      };
-    }, [api, bridgeCapabilities?.supportsByEngine]);
-
-    useEffect(() => {
-      let cancelled = false;
-
-      const load = async () => {
-        const cachedSnapshot = api.peekAccountRateLimits();
-        if (cachedSnapshot && !cancelled) {
-          accountRateLimitsRef.current = cachedSnapshot;
-          setAccountRateLimits(cachedSnapshot);
-        }
-
-        try {
-          const snapshot = await api.readAccountRateLimits({ forceRefresh: true });
-          if (!cancelled) {
-            accountRateLimitsRef.current = snapshot;
-            setAccountRateLimits(snapshot);
-          }
-        } catch {
-          // Best effort hydration. The footer stays hidden when unavailable.
-        }
-      };
-
-      void load();
-      return () => {
-        cancelled = true;
-      };
-    }, [api]);
+      setDefaultServiceTier(null);
+    }, [activeAgentId]);
 
     const clearExternalStatusFullSync = useCallback(() => {
       const timer = externalStatusFullSyncTimerRef.current;
@@ -1630,7 +1560,12 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const cacheThreadQueueState = useCallback(
       (threadId: string, queueState: BridgeThreadQueueState | null) => {
         upsertThreadRuntimeSnapshot(threadId, () => ({
-          queuedMessages: queueState?.items ?? [],
+          queuedMessages: queueState
+            ? [...queueState.pendingSteers, ...queueState.items]
+            : [],
+          pendingSteerMessageIds: queueState?.pendingSteers.map((item) => item.id) ?? [],
+          waitingForToolCalls: queueState?.waitingForToolCalls ?? false,
+          steeringInFlight: queueState?.steeringInFlight ?? false,
           queuedMessageError: queueState?.lastError ?? null,
         }));
         bumpAgentRuntimeRevision();
@@ -1713,32 +1648,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         return next;
       });
     }, []);
-
-    const clearThreadRuntimeSnapshot = useCallback(
-      (threadId: string, preserveApprovals = false) => {
-        if (!threadId) {
-          return;
-        }
-
-        delete threadReasoningBuffersRef.current[threadId];
-        upsertThreadRuntimeSnapshot(threadId, (previous) => ({
-          activity: {
-            tone: 'complete',
-            title: 'Turn completed',
-          },
-          activeCommands: [],
-          streamingText: null,
-          activeTurnId: null,
-          runWatchdogUntil: 0,
-          pendingApproval: preserveApprovals ? previous.pendingApproval : null,
-          pendingUserInputRequest: preserveApprovals
-            ? previous.pendingUserInputRequest
-            : null,
-        }));
-        bumpAgentRuntimeRevision();
-      },
-      [bumpAgentRuntimeRevision, upsertThreadRuntimeSnapshot]
-    );
 
     const applyThreadRuntimeSnapshot = useCallback(
       (threadId: string) => {
@@ -1875,266 +1784,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       [approvalController, cacheThreadPendingApproval]
     );
 
-    const cacheCodexRuntimeForThread = useCallback(
-      (
-        threadId: string,
-        codexEventType: string,
-        msg: Record<string, unknown> | null
-      ) => {
-        if (!threadId) {
-          return;
-        }
-
-        if (codexEventType === 'tokencount') {
-          const contextUsage = readThreadContextUsage(msg);
-          if (contextUsage) {
-            cacheThreadContextUsage(threadId, contextUsage);
-          }
-          return;
-        }
-
-        if (isCodexRunHeartbeatEvent(codexEventType)) {
-          cacheThreadTurnState(threadId, {
-            runWatchdogUntil: Date.now() + RUN_WATCHDOG_MS,
-          });
-          cacheThreadActivity(threadId, {
-            tone: 'running',
-            title: 'Working',
-          });
-        }
-
-        if (codexEventType === 'taskstarted') {
-          delete planItemTurnIdByThreadRef.current[threadId];
-          clearPendingPlanImplementationPrompt(threadId);
-          cacheThreadActivity(threadId, {
-            tone: 'running',
-            title: 'Working',
-          });
-          return;
-        }
-
-        if (
-          codexEventType === 'agentreasoningdelta' ||
-          codexEventType === 'reasoningcontentdelta' ||
-          codexEventType === 'reasoningrawcontentdelta' ||
-          codexEventType === 'agentreasoningrawcontentdelta'
-        ) {
-          const delta = readString(msg?.delta);
-          if (!delta) {
-            return;
-          }
-
-          const nextBuffer = `${threadReasoningBuffersRef.current[threadId] ?? ''}${delta}`;
-          threadReasoningBuffersRef.current[threadId] = nextBuffer;
-          const heading =
-            extractFirstBoldSnippet(nextBuffer, 56) ??
-            extractFirstBoldSnippet(delta, 56);
-          const detail = toReasoningActivityDetail(nextBuffer, heading, 64);
-          const title = heading ?? 'Working';
-          cacheThreadActivity(threadId, {
-            tone: 'running',
-            title,
-            detail,
-          });
-          return;
-        }
-
-        if (codexEventType === 'agentreasoningsectionbreak') {
-          delete threadReasoningBuffersRef.current[threadId];
-          return;
-        }
-
-        if (
-          codexEventType === 'agentmessagedelta' ||
-          codexEventType === 'agentmessagecontentdelta'
-        ) {
-          const delta = readString(msg?.delta);
-          if (!delta) {
-            return;
-          }
-
-          cacheThreadStreamingDelta(threadId, delta);
-          cacheThreadActivity(threadId, {
-            tone: 'running',
-            title: 'Working',
-          });
-          return;
-        }
-
-        if (codexEventType === 'plandelta') {
-          const rawDelta = readString(msg?.delta) ?? '';
-          if (!rawDelta) {
-            return;
-          }
-
-          const turnId = resolveCodexPlanTurnId(
-            msg,
-            planItemTurnIdByThreadRef.current[threadId] ??
-              threadRuntimeSnapshotsRef.current[threadId]?.activeTurnId ??
-              null
-          );
-          planItemTurnIdByThreadRef.current[threadId] = turnId;
-          cacheThreadTurnState(threadId, {
-            runWatchdogUntil: Date.now() + RUN_WATCHDOG_MS,
-          });
-          cacheThreadPlan(threadId, (previous) =>
-            buildNextPlanStateFromDelta(previous, threadId, turnId, rawDelta)
-          );
-          cacheThreadActivity(threadId, {
-            tone: 'running',
-            title: 'Planning',
-          });
-          return;
-        }
-
-        if (codexEventType === 'planupdate') {
-          const turnId = resolveCodexPlanTurnId(
-            msg,
-            planItemTurnIdByThreadRef.current[threadId] ??
-              threadRuntimeSnapshotsRef.current[threadId]?.activeTurnId ??
-              null
-          );
-          const planUpdate = toCodexTurnPlanUpdate(msg, threadId, turnId);
-          planItemTurnIdByThreadRef.current[threadId] = turnId;
-          if (planUpdate) {
-            cacheThreadPlan(threadId, (previous) =>
-              buildNextPlanStateFromUpdate(previous, planUpdate)
-            );
-          }
-          cacheThreadActivity(threadId, {
-            tone: 'running',
-            title: 'Planning',
-          });
-          return;
-        }
-
-        if (codexEventType === 'execcommandbegin') {
-          cacheThreadActivity(threadId, {
-            tone: 'running',
-            title: 'Working',
-          });
-          return;
-        }
-
-        if (codexEventType === 'execcommandend') {
-          const status = readString(msg?.status);
-          const failed = status === 'failed' || status === 'error';
-          cacheThreadActivity(threadId, {
-            tone: failed ? 'error' : 'running',
-            title: failed ? 'Turn failed' : 'Working',
-          });
-          return;
-        }
-
-        if (codexEventType === 'mcpstartupupdate') {
-          cacheThreadActivity(threadId, {
-            tone: 'running',
-            title: 'Working',
-          });
-          return;
-        }
-
-        if (codexEventType === 'mcptoolcallbegin') {
-          cacheThreadActivity(threadId, {
-            tone: 'running',
-            title: 'Working',
-          });
-          return;
-        }
-
-        if (codexEventType === 'websearchbegin') {
-          const searchEvent = describeWebSearchToolEvent(msg);
-          if (searchEvent) {
-            cacheThreadActiveCommand(threadId, searchEvent.eventType, searchEvent.detail);
-          }
-          cacheThreadActivity(threadId, {
-            tone: 'running',
-            title: 'Working',
-          });
-          return;
-        }
-
-        if (codexEventType === 'backgroundevent') {
-          const message =
-            toTickerSnippet(readString(msg?.message), 72) ??
-            toTickerSnippet(readString(msg?.text), 72);
-          cacheThreadActivity(threadId, {
-            tone: 'running',
-            title: message ?? 'Working',
-          });
-          return;
-        }
-
-        if (CODEX_RUN_ABORT_EVENT_TYPES.has(codexEventType)) {
-          const failureMessage = extractCodexFailureMessage(null, msg);
-          delete planItemTurnIdByThreadRef.current[threadId];
-          clearPendingPlanImplementationPrompt(threadId);
-          cacheThreadTurnState(threadId, {
-            activeTurnId: null,
-            runWatchdogUntil: 0,
-          });
-          upsertThreadRuntimeSnapshot(threadId, () => ({
-            activity: {
-              tone: 'error',
-              title: 'Turn interrupted',
-              detail: failureMessage ?? undefined,
-            },
-            activeCommands: [],
-            streamingText: null,
-          }));
-          return;
-        }
-
-        if (CODEX_RUN_FAILURE_EVENT_TYPES.has(codexEventType)) {
-          const failureMessage = extractCodexFailureMessage(null, msg);
-          delete planItemTurnIdByThreadRef.current[threadId];
-          clearPendingPlanImplementationPrompt(threadId);
-          cacheThreadTurnState(threadId, {
-            activeTurnId: null,
-            runWatchdogUntil: 0,
-          });
-          upsertThreadRuntimeSnapshot(threadId, () => ({
-            activity: {
-              tone: 'error',
-              title: 'Turn failed',
-              detail: failureMessage ?? undefined,
-            },
-            activeCommands: [],
-            streamingText: null,
-          }));
-          return;
-        }
-
-        if (CODEX_RUN_COMPLETION_EVENT_TYPES.has(codexEventType)) {
-          const planTurnId = planItemTurnIdByThreadRef.current[threadId] ?? null;
-          delete planItemTurnIdByThreadRef.current[threadId];
-          if (planTurnId) {
-            setPendingPlanImplementationPrompts((prev) => ({
-              ...prev,
-              [threadId]: {
-                threadId,
-                turnId: planTurnId,
-              },
-            }));
-          } else {
-            clearPendingPlanImplementationPrompt(threadId);
-          }
-          clearThreadRuntimeSnapshot(threadId, true);
-        }
-      },
-      [
-        cacheThreadActiveCommand,
-        cacheThreadActivity,
-        cacheThreadContextUsage,
-        cacheThreadStreamingDelta,
-        cacheThreadTurnState,
-        clearPendingPlanImplementationPrompt,
-        clearThreadRuntimeSnapshot,
-        readThreadContextUsage,
-        upsertThreadRuntimeSnapshot,
-      ]
-    );
-
     const pushActiveCommand = useCallback(
       (threadId: string, eventType: string, detail: string) => {
         setActiveCommands((prev) =>
@@ -2179,19 +1828,13 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         return;
       }
 
-      if (availableNewChatEngines.includes(pendingChatEngine)) {
-        return;
-      }
-
-      const fallbackEngine = bridgeCapabilities?.activeEngine ?? defaultChatEngine;
-      if (fallbackEngine) {
-        setPendingChatEngine(fallbackEngine);
+      if (bridgeCapabilities) {
+        setPendingAgentId(selectAgentId(pendingAgentId ?? preferredAgentId, bridgeCapabilities));
       }
     }, [
-      availableNewChatEngines,
-      bridgeCapabilities?.activeEngine,
-      defaultChatEngine,
-      pendingChatEngine,
+      bridgeCapabilities,
+      pendingAgentId,
+      preferredAgentId,
       selectedChatId,
     ]);
 
@@ -2222,7 +1865,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       setSelectedCollaborationMode(preferredCollaborationMode);
     }, [
       defaultServiceTier,
-      pendingChatEngine,
+      pendingAgentId,
       preferredDefaultEffort,
       preferredDefaultModelId,
       preferredCollaborationMode,
@@ -2295,8 +1938,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             ? formatReasoningEffort(activeEffort)
             : 'Model default';
     const modelReasoningLabel = `${activeModelLabel} · ${activeEffortLabel}`;
-    const collaborationModeLabel =
-      selectedHarnessAgent ?? formatCollaborationModeLabel(selectedCollaborationMode);
+    const collaborationModeLabel = formatCollaborationModeLabel(selectedCollaborationMode);
     const hasPendingServiceTierChange =
       Boolean(selectedChatId) && appliedServiceTierForSelectedChat !== activeServiceTier;
     const fastModeLabel = hasPendingServiceTierChange
@@ -2341,28 +1983,23 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       }
     }, [activeModel, selectedEffort, selectedModelId]);
 
-    const resetComposerState = useCallback((requestedEngine?: ChatEngine) => {
-      const nextEngine = resolveChatEngine(requestedEngine ?? persistedDefaultChatEngine);
+    const resetComposerState = useCallback((requestedAgentId?: AgentId) => {
+      const nextAgentId = requestedAgentId ?? selectedNewAgentId;
       clearExternalStatusFullSync();
       loadChatRequestRef.current += 1;
       setSelectedChat(null);
       setSelectedChatId(null);
-      setPendingChatEngine(nextEngine);
-      const rememberedSettings = defaultEngineSettings?.[nextEngine];
+      setPendingAgentId(nextAgentId);
+      const rememberedSettings = nextAgentId ? agentSettings?.[nextAgentId] : null;
       setSelectedCollaborationMode(
-        rememberedSettings?.collaborationMode === 'plan' ||
-          (rememberedSettings?.collaborationMode === 'ask' && nextEngine === 'cursor')
+        rememberedSettings?.collaborationMode === 'plan'
           ? rememberedSettings.collaborationMode
           : 'default'
       );
       openingChatStartedAtRef.current = 0;
       setOpeningChatId(null);
       setError(null);
-      setSelectedServiceTier(
-        rememberedSettings && Object.prototype.hasOwnProperty.call(rememberedSettings, 'serviceTier')
-          ? toSelectedServiceTier(rememberedSettings.serviceTier)
-          : undefined
-      );
+      setSelectedServiceTier(undefined);
       setActiveCommands([]);
       setPendingApproval(null);
       setPendingUserInputRequest(null);
@@ -2371,14 +2008,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       setResolvingUserInput(false);
       setActivePlan(null);
       setStreamingText(null);
-      setRenameModalVisible(false);
-      setRenameDraft('');
-      setRenaming(false);
       attachmentController.clear();
       setActiveTurnId(null);
       setStoppingTurn(false);
       setWorkspaceModalVisible(false);
-      setChatTitleMenuVisible(false);
       setAgentThreadMenuVisible(false);
       setModelModalVisible(false);
       setModelSettingsMenuVisible(false);
@@ -2393,20 +2026,19 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       stopRequestedRef.current = false;
       stopSystemMessageLoggedRef.current = false;
       reasoningSummaryRef.current = {};
-      codexReasoningBufferRef.current = '';
       hadCommandRef.current = false;
       clearRunWatchdog();
     }, [
       clearExternalStatusFullSync,
       clearRunWatchdog,
       defaultServiceTier,
-      defaultEngineSettings,
-      persistedDefaultChatEngine,
+      agentSettings,
+      selectedNewAgentId,
     ]);
 
-    const startNewChat = useCallback((requestedEngine?: ChatEngine) => {
+    const startNewChat = useCallback((requestedAgentId?: AgentId) => {
       // New chat should land on compose/home so user can pick workspace first.
-      resetComposerState(requestedEngine);
+      resetComposerState(requestedAgentId);
     }, [resetComposerState]);
 
     const refreshWorkspaceRoots = useCallback(async () => {
@@ -2918,38 +2550,19 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       workspaceBridgeRoot,
     ]);
 
-    const refreshModelOptions = useCallback(async (reportError = false) => {
+    const refreshModelOptions = useCallback(async () => {
       const requestId = modelOptionsRequestRef.current + 1;
       modelOptionsRequestRef.current = requestId;
-      const requestedEngine = activeChatEngine;
-      const requestedThreadId = selectedChatId;
       setLoadingModels(true);
-      try {
-        const models = await api.listModels(false, {
-          threadId: requestedThreadId,
-          engine: requestedEngine,
-        });
-        if (modelOptionsRequestRef.current !== requestId) {
-          return;
-        }
-        setModelOptionsByEngine((previous) => ({
-          ...previous,
-          [requestedEngine]: models,
-        }));
-      } catch (err) {
-        if (reportError && modelOptionsRequestRef.current === requestId) {
-          setError((err as Error).message);
-        }
-      } finally {
-        if (modelOptionsRequestRef.current === requestId) {
-          setLoadingModels(false);
-        }
+      if (modelOptionsRequestRef.current === requestId) {
+        setModelOptionsByAgent({});
+        setLoadingModels(false);
       }
-    }, [activeChatEngine, api, selectedChatId]);
+    }, []);
 
     const openModelModal = useCallback(() => {
       setModelModalVisible(true);
-      void refreshModelOptions(true);
+      void refreshModelOptions();
     }, [refreshModelOptions]);
 
     const closeModelModal = useCallback(() => {
@@ -2959,16 +2572,16 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       setModelModalVisible(false);
     }, [loadingModels]);
 
-    const openEngineModal = useCallback(() => {
+    const openAgentModal = useCallback(() => {
       if (selectedChatId) {
         return;
       }
-      setEngineModalVisible(true);
+      setAgentModalVisible(true);
       setError(null);
     }, [selectedChatId]);
 
-    const closeEngineModal = useCallback(() => {
-      setEngineModalVisible(false);
+    const closeAgentModal = useCallback(() => {
+      setAgentModalVisible(false);
     }, []);
 
     const openEffortModal = useCallback(
@@ -3034,30 +2647,24 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       [activeServiceTier, modelOptions, rememberChatModelPreference, selectedChatId]
     );
 
-    const selectPendingChatEngine = useCallback((engine: ChatEngine) => {
+    const selectPendingAgent = useCallback((agentId: AgentId) => {
       if (selectedChatId) {
         return;
       }
 
-      const normalizedEngine = resolveChatEngine(engine);
-      const rememberedSettings = defaultEngineSettings?.[normalizedEngine];
-      setPendingChatEngine(normalizedEngine);
-      setSelectedModelId(normalizeModelId(rememberedSettings?.modelId));
-      setSelectedEffort(normalizeReasoningEffort(rememberedSettings?.effort));
-      setSelectedServiceTier(
-        rememberedSettings && Object.prototype.hasOwnProperty.call(rememberedSettings, 'serviceTier')
-          ? toSelectedServiceTier(rememberedSettings.serviceTier)
-          : undefined
-      );
+      const rememberedSettings = agentSettings?.[agentId];
+      setPendingAgentId(agentId);
+      setSelectedModelId(null);
+      setSelectedEffort(null);
+      setSelectedServiceTier(undefined);
       setSelectedCollaborationMode(
-        rememberedSettings?.collaborationMode === 'plan' ||
-          (rememberedSettings?.collaborationMode === 'ask' && normalizedEngine === 'cursor')
+        rememberedSettings?.collaborationMode === 'plan'
           ? rememberedSettings.collaborationMode
           : 'default'
       );
-      setEngineModalVisible(false);
+      setAgentModalVisible(false);
       setError(null);
-    }, [defaultEngineSettings, selectedChatId]);
+    }, [agentSettings, selectedChatId]);
 
     useEffect(() => {
       if (ws.isConnected) {
@@ -3070,46 +2677,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       });
     }, [refreshModelOptions, ws]);
 
-    const openRenameModal = useCallback(() => {
-      if (!selectedChat) {
-        return;
-      }
-
-      setRenameDraft(selectedChat.title || '');
-      setRenameModalVisible(true);
-    }, [selectedChat]);
-
-    const openChatTitleMenu = useCallback(() => {
-      if (!selectedChat) {
-        return;
-      }
-
-      setChatTitleMenuVisible(true);
-    }, [selectedChat]);
-
     const openCollaborationModeMenu = useCallback(() => {
       setCollaborationModeMenuVisible(true);
-      if (activeEngineSupports?.agentList === true) {
-        setLoadingHarnessAgents(true);
-        void api
-          .listHarnessAgents({
-            engine: activeChatEngine,
-            threadId: selectedChatId,
-            cwd: selectedChat?.cwd ?? preferredStartCwd,
-          })
-          .then((agents) => {
-            setHarnessAgentOptions(agents);
-            setSelectedHarnessAgent((current) =>
-              current && !agents.some((agent) => agent.name === current) ? null : current
-            );
-          })
-          .catch((err) => setError((err as Error).message))
-          .finally(() => setLoadingHarnessAgents(false));
-      } else {
-        setHarnessAgentOptions([]);
-        setSelectedHarnessAgent(null);
-      }
-    }, [activeChatEngine, activeEngineSupports?.agentList, api, preferredStartCwd, selectedChat?.cwd, selectedChatId]);
+    }, []);
 
     const toggleFastMode = useCallback(() => {
       if (!supportsFastMode) {
@@ -3195,59 +2765,13 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       [attachmentController, attachmentControlsDisabled, hasFailedAttachmentUploads, retryFailedUploads]
     );
 
-    const chatTitleMenuOptions = useMemo<SelectionSheetOption[]>(
-      () => [
-        {
-          key: 'rename-chat',
-          title: 'Rename chat',
-          description: 'Update the title shown in the transcript and sidebar.',
-          icon: 'pencil-outline',
-          onPress: () => {
-            setChatTitleMenuVisible(false);
-            openRenameModal();
-          },
-        },
-      ],
-      [openRenameModal]
-    );
-
     const collaborationModeOptions = useMemo<SelectionSheetOption[]>(
       () => {
         const setMode = (mode: CollaborationMode) => {
           setSelectedCollaborationMode(mode);
-          setSelectedHarnessAgent(null);
           setCollaborationModeMenuVisible(false);
           setError(null);
         };
-
-        if (activeChatEngine === 'cursor') {
-          return [
-            {
-              key: 'default',
-              title: 'Agent mode',
-              description: 'Use Cursor as an implementation agent.',
-              icon: 'code-slash-outline' as const,
-              selected: selectedCollaborationMode === 'default',
-              onPress: () => setMode('default'),
-            },
-            {
-              key: 'ask',
-              title: 'Ask mode',
-              description: 'Answer questions and explain without changing files.',
-              icon: 'chatbubble-ellipses-outline' as const,
-              selected: selectedCollaborationMode === 'ask',
-              onPress: () => setMode('ask'),
-            },
-            {
-              key: 'plan',
-              title: 'Plan mode',
-              description: 'Inspect and propose a plan before implementation.',
-              icon: 'git-branch-outline' as const,
-              selected: selectedCollaborationMode === 'plan',
-              onPress: () => setMode('plan'),
-            },
-          ];
-        }
 
         return [
           {
@@ -3266,88 +2790,23 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             selected: selectedCollaborationMode === 'plan',
             onPress: () => setMode('plan'),
           },
-          ...harnessAgentOptions.map((agent) => ({
-            key: `agent:${agent.id}`,
-            title: agent.name,
-            description:
-              agent.description ||
-              (agent.custom ? 'Custom agent exposed by OpenCode.' : 'Agent exposed by OpenCode.'),
-            icon: 'person-circle-outline' as const,
-            badge: agent.custom ? 'Custom' : undefined,
-            meta: agent.mode === 'subagent' ? 'Sub-agent' : agent.model,
-            selected: selectedHarnessAgent === agent.name,
-            onPress: () => {
-              setSelectedHarnessAgent(agent.name);
-              setSelectedCollaborationMode('default');
-              setCollaborationModeMenuVisible(false);
-              setError(null);
-            },
-          })),
         ];
       },
-      [activeChatEngine, harnessAgentOptions, selectedCollaborationMode, selectedHarnessAgent]
+      [selectedCollaborationMode]
     );
 
     const modelSettingsMenuOptions = useMemo<SelectionSheetOption[]>(
       () => [
-        ...(!selectedChatId && availableNewChatEngines.length > 1
+        ...(!selectedChatId && readyAgents.length > 1
           ? [
               {
-                key: 'engine',
-                title: 'Change engine',
-                description: activeChatEngineLabel,
+                key: 'agent',
+                title: 'Change agent',
+                description: activeAgentLabel,
                 icon: 'layers-outline' as const,
                 onPress: () => {
                   setModelSettingsMenuVisible(false);
-                  openEngineModal();
-                },
-              },
-            ]
-          : []),
-        {
-          key: 'model',
-          title: 'Change model',
-          description: activeModelLabel,
-          icon: 'hardware-chip-outline',
-          onPress: () => {
-            setModelSettingsMenuVisible(false);
-            openModelModal();
-          },
-        },
-        {
-          key: 'reasoning',
-          title: 'Change reasoning level',
-          description: activeEffortLabel,
-          icon: 'pulse-outline',
-          onPress: () => {
-            setModelSettingsMenuVisible(false);
-            openEffortModal();
-          },
-        },
-        {
-          key: 'mode',
-          title: 'Change collaboration mode',
-          description: collaborationModeLabel,
-          icon: 'git-network-outline',
-          onPress: () => {
-            setModelSettingsMenuVisible(false);
-            setCollaborationModeMenuVisible(true);
-          },
-        },
-        ...(supportsFastMode
-          ? [
-              {
-                key: 'fast-mode',
-                title: fastModeEnabled ? 'Disable fast mode' : 'Enable fast mode',
-                description:
-                  selectedChatId !== null
-                    ? 'Applies to the next message in this chat.'
-                    : 'Applies to the next new chat.',
-                icon: 'flash-outline' as const,
-                meta: fastModeEnabled ? 'On' : 'Off',
-                onPress: () => {
-                  setModelSettingsMenuVisible(false);
-                  void toggleFastMode();
+                  setAgentModalVisible(true);
                 },
               },
             ]
@@ -3363,33 +2822,23 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         selectedChatId,
         supportsFastMode,
         toggleFastMode,
-        activeChatEngineLabel,
-        availableNewChatEngines.length,
-        openEngineModal,
+        activeAgentLabel,
+        readyAgents.length,
+        openAgentModal,
       ]
     );
 
-    const enginePickerOptions = useMemo<SelectionSheetOption[]>(
+    const agentPickerOptions = useMemo<SelectionSheetOption[]>(
       () =>
-        availableNewChatEngines.map((engine) => ({
-          key: engine,
-          title: getChatEngineLabel(engine),
-          description:
-            engine === 'opencode'
-              ? 'Use the OpenCode backend and its connected provider models.'
-              : engine === 'cursor'
-                ? 'Use the Cursor SDK harness and Cursor model catalog.'
-                : 'Use the Codex backend and its model catalog.',
-          icon:
-            engine === 'opencode'
-              ? ('layers-outline' as const)
-              : engine === 'cursor'
-                ? ('code-slash-outline' as const)
-              : ('sparkles-outline' as const),
-          selected: activeChatEngine === engine,
-          onPress: () => selectPendingChatEngine(engine),
+        readyAgents.map((agent) => ({
+          key: agent.agentId,
+          title: agent.displayName,
+          description: [agent.version, agent.provenance].filter(Boolean).join(' · '),
+          icon: 'hardware-chip-outline' as const,
+          selected: activeAgentId === agent.agentId,
+          onPress: () => selectPendingAgent(agent.agentId),
         })),
-      [activeChatEngine, availableNewChatEngines, selectPendingChatEngine]
+      [activeAgentId, readyAgents, selectPendingAgent]
     );
 
     const modelPickerOptions = useMemo<SelectionSheetOption[]>(
@@ -3455,56 +2904,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         selectedEffort,
       ]
     );
-
-
-    const closeRenameModal = useCallback(() => {
-      if (renaming) {
-        return;
-      }
-      setRenameModalVisible(false);
-    }, [renaming]);
-
-    const submitRenameChat = useCallback(async () => {
-      const activeChatId = selectedChatId ?? selectedChat?.id ?? null;
-      if (!activeChatId || renaming) {
-        return;
-      }
-
-      const nextName = renameDraft.trim();
-      if (!nextName) {
-        setRenameModalVisible(false);
-        return;
-      }
-
-      try {
-        setRenaming(true);
-        const updated = await api.renameChat(activeChatId, nextName);
-        const renamedChat = mergeChatWithPendingOptimisticMessages({
-          ...updated,
-          title: nextName,
-        });
-        if (selectedChatIdRef.current === activeChatId) {
-          setSelectedChat((prev) =>
-            prev?.id === activeChatId ? resolveEquivalentChat(prev, renamedChat) : prev
-          );
-          setError(null);
-          setRenameModalVisible(false);
-        }
-      } catch (err) {
-        if (selectedChatIdRef.current === activeChatId) {
-          setError((err as Error).message);
-        }
-      } finally {
-        setRenaming(false);
-      }
-    }, [
-      api,
-      mergeChatWithPendingOptimisticMessages,
-      renameDraft,
-      renaming,
-      selectedChat?.id,
-      selectedChatId,
-    ]);
 
     const appendLocalAssistantMessage = useCallback(
       (content: string, title = 'Command result') => {
@@ -3635,77 +3034,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                     id: messageId,
                     role: 'system',
                     systemKind: 'reasoning',
-                    content,
-                    createdAt,
-                  },
-                ],
-          };
-        });
-
-        schedulePinnedScrollToBottom(true);
-      },
-      [schedulePinnedScrollToBottom]
-    );
-
-    const upsertLiveCursorToolMessage = useCallback(
-      (threadId: string, item: Record<string, unknown> | null) => {
-        if (
-          !threadId ||
-          chatIdRef.current !== threadId ||
-          selectedChatRef.current?.engine !== 'cursor'
-        ) {
-          return;
-        }
-
-        const itemId =
-          readString(item?.id) ??
-          readString(item?.callId) ??
-          readString(item?.call_id) ??
-          null;
-        if (!itemId) {
-          return;
-        }
-
-        const content = formatLiveCursorToolMessage(item);
-        if (!content) {
-          return;
-        }
-
-        const createdAt = new Date().toISOString();
-        const messageId = `cursor-tool-${itemId}`;
-        setSelectedChat((prev) => {
-          if (!prev || prev.id !== threadId) {
-            return prev;
-          }
-
-          let found = false;
-          const messages = prev.messages.map((message) => {
-            if (message.id !== messageId) {
-              return message;
-            }
-
-            found = true;
-            return {
-              ...message,
-              role: 'system' as const,
-              systemKind: 'tool' as const,
-              content,
-              createdAt: message.createdAt,
-            };
-          });
-
-          return {
-            ...prev,
-            updatedAt: createdAt,
-            statusUpdatedAt: createdAt,
-            messages: found
-              ? messages
-              : [
-                  ...messages,
-                  {
-                    id: messageId,
-                    role: 'system',
-                    systemKind: 'tool',
                     content,
                     createdAt,
                   },
@@ -3920,13 +3248,12 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         if (
           !isSlashCommandAvailable(commandDef, {
             hasOpenChat: Boolean(selectedChatId),
-            supportsCompact,
             supportsGoal,
             supportsPlanMode,
             supportsReview,
           })
         ) {
-          setError(`/${name} is not supported for ${activeChatEngineLabel} chats.`);
+          setError(`/${name} is not supported for ${activeAgentLabel} chats.`);
           return true;
         }
 
@@ -3949,61 +3276,12 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
 
         if (name === 'new') {
-          startNewChat(activeChatEngine);
+          if (activeAgentId) startNewChat(activeAgentId);
           return true;
         }
 
         if (name === 'model') {
-          if (!argText) {
-            openModelModal();
-            return true;
-          }
-
-          const models =
-            modelOptions.length > 0
-              ? modelOptions
-              : await api.listModels(false, {
-                  threadId: selectedChatId,
-                  engine: activeChatEngine,
-                });
-          if (modelOptions.length === 0) {
-            setModelOptionsByEngine((previous) => ({
-              ...previous,
-              [activeChatEngine]: models,
-            }));
-          }
-          const lowered = argText.toLowerCase();
-          const match = models.find(
-            (model) =>
-              model.id.toLowerCase() === lowered ||
-              model.displayName.toLowerCase() === lowered
-          );
-
-          if (!match) {
-            setError(`Unknown model: ${argText}`);
-            return true;
-          }
-
-          setSelectedModelId(match.id);
-          setSelectedEffort(null);
-          if (selectedChatId) {
-            rememberChatModelPreference(
-              selectedChatId,
-              match.id,
-              null,
-              activeServiceTier
-            );
-          }
-          if ((match.reasoningEffort?.length ?? 0) > 0) {
-            setEffortPickerModelId(match.id);
-            setEffortModalVisible(true);
-          }
-          setActivity({
-            tone: 'complete',
-            title: 'Model updated',
-            detail: match.displayName,
-          });
-          setError(null);
+          setError('This ACP agent does not advertise configurable models.');
           return true;
         }
 
@@ -4072,7 +3350,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 title: 'Creating chat',
               });
               const created = await turnExecutionController.create({
-                engine: activeChatEngine,
+                agentId: activeAgentId ?? undefined,
                 cwd: preferredStartCwd ?? undefined,
                 model: activeModelId ?? undefined,
                 effort: activeEffort ?? undefined,
@@ -4080,11 +3358,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 approvalPolicy: activeApprovalPolicy,
               }, planSubmission.id);
               createdChatId = created.id;
-              onLastUsedThreadSettingsChange?.(
-                activeChatEngine,
-                activeModelId,
-                activeEffort,
-                activeServiceTier,
+              if (activeAgentId) onLastUsedThreadSettingsChange?.(
+                activeAgentId,
                 'plan'
               );
 
@@ -4285,79 +3560,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           return true;
         }
 
-        if (name === 'rename') {
-          const activeChatId = selectedChatId ?? selectedChat?.id ?? null;
-          if (!activeChatId) {
-            setError('/rename requires an open chat');
-            return true;
-          }
-
-          if (!argText) {
-            openRenameModal();
-            return true;
-          }
-
-          try {
-            setRenaming(true);
-            const updated = await api.renameChat(activeChatId, argText);
-            const renamedChat = mergeChatWithPendingOptimisticMessages(updated);
-            if (selectedChatIdRef.current === activeChatId) {
-              setSelectedChat((prev) =>
-                prev?.id === activeChatId ? resolveEquivalentChat(prev, renamedChat) : prev
-              );
-              setActivity({
-                tone: 'complete',
-                title: 'Chat renamed',
-                detail: updated.title,
-              });
-              setError(null);
-            }
-          } catch (err) {
-            if (selectedChatIdRef.current === activeChatId) {
-              setError((err as Error).message);
-            }
-          } finally {
-            setRenaming(false);
-          }
-          return true;
-        }
-
-        if (name === 'compact') {
-          if (!selectedChatId) {
-            setError('/compact requires an open chat');
-            return true;
-          }
-
-          if (!supportsCompact) {
-            const detail = `Compaction is not supported for ${activeChatEngineLabel} chats.`;
-            setError(detail);
-            setActivity({
-              tone: 'error',
-              title: 'Compact unavailable',
-              detail,
-            });
-            return true;
-          }
-
-          try {
-            setActivity({
-              tone: 'running',
-              title: 'Compacting thread',
-            });
-            await api.compactChat(selectedChatId);
-            bumpRunWatchdog();
-            setError(null);
-          } catch (err) {
-            setError((err as Error).message);
-            setActivity({
-              tone: 'error',
-              title: 'Compact failed',
-              detail: (err as Error).message,
-            });
-          }
-          return true;
-        }
-
         if (name === 'review') {
           if (!selectedChatId) {
             setError('/review requires an open chat');
@@ -4365,7 +3567,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           }
 
           if (!supportsReview) {
-            const detail = `Review is not supported for ${activeChatEngineLabel} chats.`;
+            const detail = `Review is not supported for ${activeAgentLabel} chats.`;
             setError(detail);
             setActivity({
               tone: 'error',
@@ -4380,9 +3582,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               tone: 'running',
               title: 'Starting review',
             });
-            await api.reviewChat(selectedChatId, activeApprovalPolicy);
-            bumpRunWatchdog();
-            setError(null);
+            throw new Error('Review is not advertised by this ACP agent.');
           } catch (err) {
             setError((err as Error).message);
             setActivity({
@@ -4390,58 +3590,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               title: 'Review failed',
               detail: (err as Error).message,
             });
-          }
-          return true;
-        }
-
-        if (name === 'fork') {
-          if (!selectedChatId) {
-            setError('/fork requires an open chat');
-            return true;
-          }
-          const sourceChatId = selectedChatId;
-
-          try {
-            setCreating(true);
-            setActivity({
-              tone: 'running',
-              title: 'Forking chat',
-            });
-            const forked = await api.forkChat(selectedChatId, {
-              cwd: selectedChat?.cwd,
-              model: activeModelId ?? undefined,
-              serviceTier: activeServiceTier ?? undefined,
-              approvalPolicy: activeApprovalPolicy,
-            });
-            if (selectedChatIdRef.current !== sourceChatId) {
-              return true;
-            }
-            setSelectedChatId(forked.id);
-            rememberChatModelPreference(
-              forked.id,
-              activeModelId,
-              selectedEffort ?? activeEffort,
-              activeServiceTier
-            );
-            setSelectedChat(mergeChatWithPendingOptimisticMessages(forked));
-            setError(null);
-            setActivity({
-              tone: 'complete',
-              title: 'Chat forked',
-            });
-          } catch (err) {
-            if (selectedChatIdRef.current === sourceChatId) {
-              setError((err as Error).message);
-              setActivity({
-                tone: 'error',
-                title: 'Fork failed',
-                detail: (err as Error).message,
-              });
-            }
-          } finally {
-            if (selectedChatIdRef.current === sourceChatId) {
-              setCreating(false);
-            }
           }
           return true;
         }
@@ -4459,7 +3607,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         return false;
       },
       [
-        activeChatEngine,
+        activeAgentId,
         activeSlashCommands,
         activeEffort,
         activeModelId,
@@ -4474,17 +3622,15 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         discardOptimisticUserMessage,
         fastModeEnabled,
         supportsFastMode,
-        supportsCompact,
         supportsGoal,
         supportsPlanMode,
         supportsReview,
-        activeChatEngineLabel,
+        activeAgentLabel,
         mergeChatWithPendingOptimisticMessages,
         modelOptions,
         onLastUsedThreadSettingsChange,
         onOpenGit,
         openModelModal,
-        openRenameModal,
         preferredStartCwd,
         queueOptimisticUserMessage,
         registerTurnStarted,
@@ -4506,7 +3652,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           preserveRuntimeState?: boolean;
           revalidate?: boolean;
         }
-      ) => {
+      ): Promise<boolean> => {
         const requestId = loadChatRequestRef.current + 1;
         loadChatRequestRef.current = requestId;
         let loadedSuccessfully = false;
@@ -4522,7 +3668,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           const loadedChat = await chatSyncController.load(chatId);
           const chat = mergeChatWithPendingOptimisticMessages(loadedChat);
           if (requestId !== loadChatRequestRef.current) {
-            return;
+            return false;
           }
           loadedSuccessfully = true;
           const shouldPreserveRuntimeState = Boolean(
@@ -4535,6 +3681,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           setSelectedChat((prev) =>
             prev && prev.id === chat.id ? resolveEquivalentChat(prev, chat) : chat
           );
+          setTranscriptContinuationState(getTranscriptContinuationState(chat));
           setError(null);
           if (!shouldPreserveRuntimeState) {
             setActiveCommands([]);
@@ -4582,14 +3729,14 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               );
             }
             reasoningSummaryRef.current = {};
-            codexReasoningBufferRef.current = '';
+            reasoningBufferRef.current = '';
             hadCommandRef.current = false;
             applyThreadRuntimeSnapshot(chatId);
           }
           void refreshPendingApprovalsForThread(chatId);
         } catch (err) {
           if (requestId !== loadChatRequestRef.current) {
-            return;
+            return false;
           }
           const cachedChat = selectedChatRef.current;
           if (
@@ -4600,7 +3747,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               cachedChat?.messages.length ?? 0
             )
           ) {
-            return;
+            return false;
           }
           setError((err as Error).message);
           setActivity({
@@ -4610,7 +3757,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           });
         } finally {
           if (requestId !== loadChatRequestRef.current) {
-            return;
+            return false;
           }
 
           if (loadedSuccessfully) {
@@ -4627,7 +3774,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               }
             }
             if (requestId !== loadChatRequestRef.current) {
-              return;
+              return false;
             }
             setOpeningChatId((current) => {
               if (current === chatId) {
@@ -4640,6 +3787,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             openingChatStartedAtRef.current = 0;
             setOpeningChatId(null);
           }
+          return loadedSuccessfully;
         }
       },
       [
@@ -4654,6 +3802,22 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         scrollToBottomReliable,
       ]
     );
+
+    const handleLoadEarlier = useCallback(async () => {
+      const chat = selectedChatRef.current;
+      if (!chat || transcriptContinuationState.loading) return;
+      setTranscriptContinuationState((previous) => ({ ...previous, loading: true, error: null }));
+      const result = await transcriptContinuationController.loadEarlier(chat);
+      if (selectedChatIdRef.current !== chat.id) return;
+      if (result.kind === 'stale') {
+        setTranscriptContinuationState(result.state);
+        void loadChat(chat.id, { preserveRuntimeState: true });
+        return;
+      }
+      setSelectedChat((previous) => previous?.id === chat.id ? result.chat : previous);
+      api.rememberChat(result.chat);
+      setTranscriptContinuationState(result.state);
+    }, [api, loadChat, transcriptContinuationController, transcriptContinuationState.loading]);
 
     const openChatThread = useCallback(
       (id: string, optimisticChat?: Chat | null) => {
@@ -4978,11 +4142,16 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
     useEffect(() => {
       return ws.onEvent((event: RpcNotification) => {
+        const agUi = parseAgUiEventNotification(event);
+        const agUiLifecycle = agUi &&
+          (agUi.event.type === 'RUN_STARTED' ||
+            agUi.event.type === 'RUN_FINISHED' ||
+            agUi.event.type === 'RUN_ERROR');
         if (
           event.method !== 'thread/started' &&
           event.method !== 'thread/name/updated' &&
           event.method !== 'thread/status/changed' &&
-          event.method !== 'turn/completed'
+          !agUiLifecycle
         ) {
           return;
         }
@@ -4994,7 +4163,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
 
         const params = toRecord(event.params);
-        const eventThreadId = extractNotificationThreadId(params);
+        const eventThreadId = agUi?.threadId ?? extractNotificationThreadId(params);
         const eventParentThreadId = extractNotificationParentThreadId(params);
         if (
           eventThreadId &&
@@ -5065,7 +4234,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         const updated = await turnExecutionController.createAndStart({
           submissionId: submission.id,
           create: {
-            engine: activeChatEngine,
+            agentId: activeAgentId ?? undefined,
             cwd: preferredStartCwd ?? undefined,
             model: activeModelId ?? undefined,
             effort: activeEffort ?? undefined,
@@ -5082,15 +4251,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             serviceTier: activeServiceTier ?? undefined,
             approvalPolicy: activeApprovalPolicy,
             collaborationMode: selectedCollaborationMode,
-            agent: selectedHarnessAgent ?? undefined,
           }),
           onCreated: (created) => {
             createdChatId = created.id;
-            onLastUsedThreadSettingsChange?.(
-              activeChatEngine,
-              activeModelId,
-              activeEffort,
-              activeServiceTier,
+            if (activeAgentId) onLastUsedThreadSettingsChange?.(
+              activeAgentId,
               selectedCollaborationMode
             );
             queueOptimisticUserMessage(created.id, optimisticMessage, { baseChat: created });
@@ -5161,9 +4326,15 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           }
         }
       } catch (err) {
+        const currentDraft = draftController.snapshot();
         const shouldRestoreDraft = submissionController.fail(
           submission,
-          draftController.snapshot()
+          currentDraft
+        ) || Boolean(
+          createdChatId &&
+          adoptedCreatedChat &&
+          selectedChatIdRef.current === createdChatId &&
+          currentDraft.value === ''
         );
         attachmentController.finishSubmission(false, shouldRestoreDraft);
         if (shouldRestoreDraft) {
@@ -5186,7 +4357,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       draft,
       draftController,
       activeEffort,
-      activeChatEngine,
+      activeAgentId,
       activeModelId,
       activeApprovalPolicy,
       activeServiceTier,
@@ -5195,7 +4366,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       pendingLocalImagePaths,
       preferredStartCwd,
       selectedCollaborationMode,
-      selectedHarnessAgent,
       registerTurnStarted,
       handleTurnFailure,
       discardOptimisticUserMessage,
@@ -5254,8 +4424,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             }
           );
         const selectedThreadSnapshot = threadRuntimeSnapshotsRef.current[targetChatId] ?? null;
-        const goalObjective =
-          activeChatEngine === 'codex' ? parseGoalSlashObjective(content) : null;
+        const goalObjective = supportsGoal ? parseGoalSlashObjective(content) : null;
         const optimisticGoalSurface = goalObjective
           ? buildOptimisticGoalBridgeUiSurface(
               targetChatId,
@@ -5296,10 +4465,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           (Boolean(activeTurnIdRef.current) ||
             Boolean(selectedThreadSnapshot?.activeTurnId) ||
             Boolean(selectedChatRef.current && isChatLikelyRunning(selectedChatRef.current)) ||
-            Boolean(selectedThreadSnapshot?.pendingApproval?.id) ||
-            Boolean(selectedThreadSnapshot?.pendingUserInputRequest?.id) ||
-            Boolean(pendingApproval?.id) ||
-            Boolean(pendingUserInputRequest?.id));
+            Boolean(selectedThreadSnapshot?.pendingApproval?.requestId) ||
+            Boolean(selectedThreadSnapshot?.pendingUserInputRequest?.requestId) ||
+            Boolean(pendingApproval?.requestId) ||
+            Boolean(pendingUserInputRequest?.requestId));
         const shouldShowOptimisticQueuedMessage =
           knownQueuedMessages.length === 0 && likelyQueuesLocally;
         const optimisticSentContent = !shouldShowOptimisticQueuedMessage
@@ -5408,7 +4577,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               serviceTier: activeServiceTier ?? undefined,
               approvalPolicy: activeApprovalPolicy,
               collaborationMode: resolvedCollaborationMode,
-              agent: selectedHarnessAgent ?? undefined,
             },
             likelyQueuesLocally,
             submission.id
@@ -5529,7 +4697,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         return true;
       },
       [
-        activeChatEngine,
+        activeAgentId,
         activeEffort,
         activeModelId,
         activeApprovalPolicy,
@@ -5543,10 +4711,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         handleSlashCommand,
         pendingMentionPaths,
         pendingLocalImagePaths,
-        pendingApproval?.id,
-        pendingUserInputRequest?.id,
+        pendingApproval?.requestId,
+        pendingUserInputRequest?.requestId,
         selectedCollaborationMode,
-        selectedHarnessAgent,
         selectedChat,
         selectedChatId,
         handleTurnFailure,
@@ -5618,8 +4785,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       const canSteer =
         Boolean(threadId) &&
         Boolean(nextQueuedMessage) &&
-        !pendingApproval?.id &&
-        !pendingUserInputRequest?.id;
+        !pendingApproval?.requestId &&
+        !pendingUserInputRequest?.requestId;
 
       if (!threadId || !nextQueuedMessage || !canSteer) {
         return;
@@ -5633,11 +4800,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         const response = await turnExecutionController.steer(threadId, nextQueuedMessage.id);
         cacheThreadQueueState(threadId, response.queue);
         scrollToBottomReliable(true);
-        setActivity({
-          tone: 'running',
-          title: 'Steering turn',
-          detail: 'Message sent to the current run',
-        });
       } catch (err) {
         setError((err as Error).message);
       } finally {
@@ -5650,8 +4812,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       turnExecutionController,
       bumpRunWatchdog,
       cacheThreadQueueState,
-      pendingApproval?.id,
-      pendingUserInputRequest?.id,
+      pendingApproval?.requestId,
+      pendingUserInputRequest?.requestId,
       scrollToBottomReliable,
       selectedChatId,
     ]);
@@ -5710,17 +4872,291 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       []
     );
 
+    const installReplayRecoverySnapshot = useCallback(
+      (snapshot: ReplayRecoverySnapshot) => {
+        const approvalsByThread = new Map(
+          snapshot.approvals.map((approval) => [approval.threadId, approval] as const)
+        );
+        const userInputsByThread = new Map(
+          snapshot.userInputs.map((request) => [request.threadId, request] as const)
+        );
+        setBridgeCapabilities(snapshot.capabilities);
+        setLiveAssistantByThread({});
+
+        for (const { chat, queue } of snapshot.threads) {
+          api.rememberChat(chat);
+          const pendingThreadApproval = approvalsByThread.get(chat.id) ?? null;
+          const pendingThreadUserInput = userInputsByThread.get(chat.id) ?? null;
+          const running = isChatLikelyRunning(chat);
+          const plan = chat.latestPlan
+            ? toPersistedActivePlanState(chat.latestPlan, chat.updatedAt)
+            : null;
+          threadRuntimeSnapshotsRef.current[chat.id] = {
+            activity: pendingThreadApproval
+              ? { tone: 'idle', title: 'Waiting for approval' }
+              : pendingThreadUserInput
+                ? { tone: 'idle', title: 'Waiting for input' }
+                : running
+                  ? { tone: 'running', title: 'Working' }
+                  : chat.status === 'error'
+                    ? { tone: 'error', title: 'Turn failed', detail: chat.lastError }
+                    : chat.status === 'complete'
+                      ? { tone: 'complete', title: 'Turn completed' }
+                      : { tone: 'idle', title: 'Ready' },
+            activeCommands: [],
+            latestCommand: null,
+            streamingText: null,
+            pendingApproval: pendingThreadApproval,
+            pendingUserInputRequest: pendingThreadUserInput,
+            bridgeUiSurfaces: [],
+            queuedMessages: [...queue.pendingSteers, ...queue.items],
+            pendingSteerMessageIds: queue.pendingSteers.map((item) => item.id),
+            waitingForToolCalls: queue.waitingForToolCalls,
+            steeringInFlight: queue.steeringInFlight,
+            queuedMessageError: queue.lastError,
+            contextUsage: readThreadContextUsage(chat.acpUsage),
+            plan,
+            activeTurnId: chat.activeTurnId ?? chat.acpActive?.sourceTurnId ?? null,
+            runWatchdogUntil: running ? Date.now() + RUN_WATCHDOG_MS : 0,
+            updatedAtMs: Date.now(),
+          };
+          if (plan) {
+            chatPlanSnapshotsRef.current[chat.id] = plan;
+          } else {
+            delete chatPlanSnapshotsRef.current[chat.id];
+          }
+          bridgeUiSurfaceSnapshotsRef.current[chat.id] = [];
+        }
+
+        const selectedId = chatIdRef.current;
+        const selectedSnapshot = snapshot.threads.find(({ chat }) => chat.id === selectedId);
+        if (selectedSnapshot) {
+          const selected = mergeChatWithPendingOptimisticMessages(selectedSnapshot.chat);
+          setSelectedChat((previous) =>
+            previous?.id === selected.id ? resolveEquivalentChat(previous, selected) : selected
+          );
+          setTranscriptContinuationState(getTranscriptContinuationState(selected));
+          setStoppingTurn(false);
+          setError(null);
+          applyThreadRuntimeSnapshot(selected.id);
+        } else {
+          setActiveCommands([]);
+          setStreamingText(null);
+          setPendingApproval(null);
+          setPendingUserInputRequest(null);
+          setUserInputDrafts({});
+          setActivePlan(null);
+          setActiveBridgeUiSurfaces([]);
+          setActiveTurnId(null);
+        }
+        bumpAgentRuntimeRevision();
+      },
+      [
+        api,
+        applyThreadRuntimeSnapshot,
+        bumpAgentRuntimeRevision,
+        mergeChatWithPendingOptimisticMessages,
+        readThreadContextUsage,
+      ]
+    );
+
+    const recoverReplayGap = useCallback(
+      (resumeAfterEventId: number | null, acknowledge: boolean) => {
+        const generation = replayRecoveryGenerationRef.current + 1;
+        replayRecoveryGenerationRef.current = generation;
+        replayRecoveryAbortControllerRef.current?.abort();
+        const abortController = new AbortController();
+        replayRecoveryAbortControllerRef.current = abortController;
+        if (replayRecoveryRetryTimerRef.current) {
+          clearTimeout(replayRecoveryRetryTimerRef.current);
+          replayRecoveryRetryTimerRef.current = null;
+        }
+
+        const trackedThreadIds = () => [
+          chatIdRef.current,
+          agentDetailThreadId,
+          agentRootThreadIdRef.current,
+          ...relatedAgentThreads.map((thread) => thread.id),
+          ...(api.peekChats()?.map((thread) => thread.id) ?? []),
+          ...(api.peekAllChats()?.map((thread) => thread.id) ?? []),
+          ...Object.keys(threadRuntimeSnapshotsRef.current),
+          ...Object.keys(pendingOptimisticUserMessagesRef.current),
+          ...Object.keys(pendingOptimisticQueuedMessagesRef.current),
+        ];
+
+        const attempt = async () => {
+          try {
+            const snapshot = await fetchReplayRecoverySnapshot(
+              api,
+              trackedThreadIds(),
+              abortController.signal
+            );
+            if (generation !== replayRecoveryGenerationRef.current) return;
+            installReplayRecoverySnapshot(snapshot);
+            replayRecoveryEpochResetPendingRef.current = false;
+            if (acknowledge && resumeAfterEventId !== null) {
+              ws.acknowledgeSnapshotRecovery(resumeAfterEventId);
+            }
+          } catch (recoveryError) {
+            if (generation !== replayRecoveryGenerationRef.current) return;
+            if (recoveryError instanceof ReplayRecoveryProtocolError) {
+              replayRecoveryGenerationRef.current += 1;
+              replayRecoveryAbortControllerRef.current = null;
+              if (replayRecoveryEpochResetPendingRef.current) {
+                setError(
+                  'Replay recovery exceeded the bridge protocol limit after reconnect. Reopen the connection after reducing loaded thread history.'
+                );
+                return;
+              }
+              replayRecoveryEpochResetPendingRef.current = true;
+              ws.resetRecoveryEpoch();
+              return;
+            }
+            replayRecoveryRetryTimerRef.current = setTimeout(() => {
+              replayRecoveryRetryTimerRef.current = null;
+              void attempt();
+            }, 1_000);
+          }
+        };
+        void attempt();
+      },
+      [
+        agentDetailThreadId,
+        api,
+        installReplayRecoverySnapshot,
+        relatedAgentThreads,
+        ws,
+      ]
+    );
+
     useEffect(() => {
-      const pendingApprovalId = pendingApproval?.id;
-      const pendingUserInputRequestId = pendingUserInputRequest?.id;
+      const pendingApprovalId = pendingApproval?.requestId;
+      const pendingUserInputRequestId = pendingUserInputRequest?.requestId;
 
       return ws.onEvent((event: RpcNotification) => {
         const currentId = chatIdRef.current;
 
+        const agUiEnvelope = parseAgUiEventNotification(event);
+        if (agUiEnvelope) {
+          const agUiEvent = agUiEnvelope.event;
+          setLiveAssistantByThread((previous) =>
+            updateAgUiLiveAssistantMessages(previous, agUiEnvelope)
+          );
+          if (agUiEvent.type === 'TEXT_MESSAGE_CONTENT') {
+            if (agUiEnvelope.threadId === currentId) {
+              schedulePinnedScrollToBottom(true);
+            }
+            return;
+          }
+          if (agUiEvent.type === 'RUN_STARTED') {
+            const sourceTurnId = agUiEnvelope.sourceTurnId ?? agUiEnvelope.runId;
+            clearLiveReasoningMessage(agUiEnvelope.threadId);
+            delete planItemTurnIdByThreadRef.current[agUiEnvelope.threadId];
+            upsertThreadRuntimeSnapshot(agUiEnvelope.threadId, () => ({
+              activeCommands: [],
+              streamingText: null,
+            }));
+            if (agUiEnvelope.threadId === currentId) {
+              registerTurnStarted(agUiEnvelope.threadId, sourceTurnId);
+              setError(null);
+              setActiveTurnId(sourceTurnId);
+              setActiveCommands([]);
+              setActivity({ tone: 'running', title: 'Working' });
+              bumpRunWatchdog();
+            } else {
+              cacheThreadTurnState(agUiEnvelope.threadId, {
+                activeTurnId: sourceTurnId,
+                runWatchdogUntil: Date.now() + RUN_WATCHDOG_MS,
+              });
+              cacheThreadActivity(agUiEnvelope.threadId, {
+                tone: 'running',
+                title: 'Working',
+              });
+            }
+            return;
+          }
+          if (agUiEvent.type === 'RUN_FINISHED' || agUiEvent.type === 'RUN_ERROR') {
+            const failed = agUiEvent.type === 'RUN_ERROR';
+            const interruptedByUser = failed &&
+              ['interrupted', 'cancelled', 'canceled', 'aborted'].includes(agUiEvent.code ?? '') &&
+              stopRequestedRef.current;
+            const planTurnId = planItemTurnIdByThreadRef.current[agUiEnvelope.threadId] ?? null;
+            delete planItemTurnIdByThreadRef.current[agUiEnvelope.threadId];
+            clearLiveReasoningMessage(agUiEnvelope.threadId);
+            delete threadReasoningBuffersRef.current[agUiEnvelope.threadId];
+            const terminalActivity: ActivityState = failed
+              ? interruptedByUser
+                ? { tone: 'complete', title: 'Turn stopped' }
+                : { tone: 'error', title: 'Turn failed', detail: agUiEvent.message }
+              : { tone: 'complete', title: 'Turn completed' };
+            upsertThreadRuntimeSnapshot(agUiEnvelope.threadId, () => ({
+              activity: terminalActivity,
+              activeCommands: [],
+              streamingText: null,
+              pendingUserInputRequest: null,
+              activeTurnId: null,
+              runWatchdogUntil: 0,
+            }));
+            bumpAgentRuntimeRevision();
+            if (agUiEnvelope.threadId === currentId) {
+              clearRunWatchdog();
+              setActiveCommands([]);
+              setStreamingText(null);
+              setPendingUserInputRequest(null);
+              setUserInputDrafts({});
+              setUserInputError(null);
+              setResolvingUserInput(false);
+              setActiveTurnId(null);
+              setStoppingTurn(false);
+              stopRequestedRef.current = false;
+              hadCommandRef.current = false;
+              reasoningSummaryRef.current = {};
+              reasoningBufferRef.current = '';
+              setError(failed && !interruptedByUser ? agUiEvent.message : null);
+              if (interruptedByUser) {
+                appendStopSystemMessageIfNeeded();
+              }
+              setActivity(terminalActivity);
+              const terminalStatusAt = new Date().toISOString();
+              setSelectedChat((previous) =>
+                previous?.id === agUiEnvelope.threadId
+                  ? {
+                      ...previous,
+                      status: failed && !interruptedByUser ? 'error' : 'complete',
+                      updatedAt: terminalStatusAt,
+                      statusUpdatedAt: terminalStatusAt,
+                      lastError: failed && !interruptedByUser ? agUiEvent.message : undefined,
+                    }
+                  : previous
+              );
+              if (!failed && planTurnId) {
+                setPendingPlanImplementationPrompts((previous) => ({
+                  ...previous,
+                  [agUiEnvelope.threadId]: {
+                    threadId: agUiEnvelope.threadId,
+                    turnId: planTurnId,
+                  },
+                }));
+              } else {
+                clearPendingPlanImplementationPrompt(agUiEnvelope.threadId);
+              }
+              loadChat(agUiEnvelope.threadId).catch(() => {});
+            } else if (agentDetailThreadId === agUiEnvelope.threadId) {
+              void loadAgentDetail(agUiEnvelope.threadId);
+            }
+            return;
+          }
+          return;
+        }
+
         if (event.method === 'bridge/events/snapshotRequired') {
+          const params = toRecord(event.params);
+          const resumeAfterEventId = readNumber(params?.resumeAfterEventId);
+          const reason = readString(params?.reason);
           clearRunWatchdog();
           setActiveCommands([]);
           setStreamingText(null);
+          setLiveAssistantByThread({});
           setActiveTurnId(null);
           setPendingApproval(null);
           setPendingUserInputRequest(null);
@@ -5730,27 +5166,14 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             replaceThreadBridgeUiSurfaces(currentId, []);
           }
           reasoningSummaryRef.current = {};
-          codexReasoningBufferRef.current = '';
-          if (currentId) {
-            void loadChat(currentId);
-            scheduleAgentThreadsRefresh(currentId);
-          }
+          reasoningBufferRef.current = '';
+          recoverReplayGap(resumeAfterEventId, reason !== 'recoveryOverflow');
           if (agentDetailThreadId) {
-            void loadAgentDetail(agentDetailThreadId, true);
+            scheduleAgentThreadsRefresh(agentDetailThreadId);
           }
           return;
         }
 
-        if (event.method === 'account/rateLimits/updated') {
-          const params = toRecord(event.params);
-          const snapshot = readAccountRateLimitSnapshot(
-            params?.rateLimits ?? params?.rate_limits ?? event.params
-          );
-          api.rememberAccountRateLimits(snapshot);
-          accountRateLimitsRef.current = snapshot;
-          setAccountRateLimits(snapshot);
-          return;
-        }
 
         if (event.method === 'thread/name/updated') {
           const params = toRecord(event.params);
@@ -5776,398 +5199,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           return;
         }
 
-        if (event.method.startsWith('codex/event/')) {
-          const params = toRecord(event.params);
-          const msg = toRecord(params?.msg);
-          const codexEventType = normalizeCodexEventType(
-            readString(msg?.type) ?? event.method.replace('codex/event/', '')
-          );
-          if (!codexEventType) {
-            return;
-          }
-          const threadId = extractNotificationThreadId(params, msg);
-
-          if (codexEventType === 'tokencount') {
-            const rateLimitSnapshot = readAccountRateLimitSnapshot(
-              msg?.rate_limits ?? msg?.rateLimits
-            );
-            if (rateLimitSnapshot && !accountRateLimitsRef.current) {
-              // Token-count events can lag behind account-level rate-limit reads.
-              // Only use them as a bootstrap source when we have no account snapshot yet.
-              api.rememberAccountRateLimits(rateLimitSnapshot);
-              accountRateLimitsRef.current = rateLimitSnapshot;
-              setAccountRateLimits(rateLimitSnapshot);
-            }
-
-            const contextUsage = readThreadContextUsage(msg);
-            if (threadId && contextUsage) {
-              cacheThreadContextUsage(threadId, contextUsage);
-              if (threadId === currentId) {
-              }
-            }
-            return;
-          }
-
-          if (!currentId) {
-            if (threadId) {
-              cacheCodexRuntimeForThread(threadId, codexEventType, msg);
-            }
-            return;
-          }
-
-          const isMatchingThread = Boolean(threadId) && threadId === currentId;
-          const isUnscopedRunEvent =
-            !threadId &&
-            Boolean(currentId) &&
-            (isCodexRunHeartbeatEvent(codexEventType) ||
-              CODEX_RUN_COMPLETION_EVENT_TYPES.has(codexEventType) ||
-              CODEX_RUN_ABORT_EVENT_TYPES.has(codexEventType) ||
-              CODEX_RUN_FAILURE_EVENT_TYPES.has(codexEventType));
-
-          if (!isMatchingThread && !isUnscopedRunEvent) {
-            if (threadId) {
-              cacheCodexRuntimeForThread(threadId, codexEventType, msg);
-            }
-            return;
-          }
-
-          const activeThreadId = threadId ?? currentId;
-
-          if (isCodexRunHeartbeatEvent(codexEventType)) {
-            bumpRunWatchdog();
-            scheduleExternalStatusFullSync(activeThreadId);
-          }
-
-          if (codexEventType === 'taskstarted') {
-            clearLiveReasoningMessage(activeThreadId);
-            delete planItemTurnIdByThreadRef.current[activeThreadId];
-            clearPendingPlanImplementationPrompt(activeThreadId);
-            setActivity({
-              tone: 'running',
-              title: 'Working',
-            });
-            return;
-          }
-
-          if (
-            codexEventType === 'agentreasoningdelta' ||
-            codexEventType === 'reasoningcontentdelta' ||
-            codexEventType === 'reasoningrawcontentdelta' ||
-            codexEventType === 'agentreasoningrawcontentdelta'
-          ) {
-            const delta = readString(msg?.delta);
-            if (!delta) {
-              return;
-            }
-
-            codexReasoningBufferRef.current += delta;
-            const heading =
-              extractFirstBoldSnippet(codexReasoningBufferRef.current, 56) ??
-              extractFirstBoldSnippet(delta, 56);
-            const detail = heading
-              ? undefined
-              : toReasoningActivityDetail(codexReasoningBufferRef.current, heading, 64);
-
-            setActivity((prev) => {
-              const title =
-                heading ??
-                (prev.tone === 'running' && prev.title.trim() ? prev.title : 'Working');
-              if (prev.tone === 'running' && prev.title === title && prev.detail === detail) {
-                return prev;
-              }
-              return {
-                tone: 'running',
-                title,
-                detail,
-              };
-            });
-
-            return;
-          }
-
-          if (codexEventType === 'agentreasoningsectionbreak') {
-            codexReasoningBufferRef.current = '';
-            return;
-          }
-
-          if (
-            codexEventType === 'agentmessagedelta' ||
-            codexEventType === 'agentmessagecontentdelta'
-          ) {
-            const delta = readString(msg?.delta);
-            if (!delta) {
-              return;
-            }
-
-            if (hadCommandRef.current) {
-              setStreamingText(delta);
-              hadCommandRef.current = false;
-            } else {
-              setStreamingText((prev) => mergeStreamingDelta(prev, delta));
-            }
-
-            setActivity((prev) =>
-              prev.tone === 'running' && prev.title === 'Working'
-                ? prev
-                : {
-                    tone: 'running',
-                    title: 'Working',
-                  }
-            );
-            schedulePinnedScrollToBottom(true);
-            return;
-          }
-
-          if (codexEventType === 'plandelta') {
-            const rawDelta = readString(msg?.delta) ?? '';
-            if (!rawDelta) {
-              return;
-            }
-
-            const turnId = resolveCodexPlanTurnId(
-              msg,
-              planItemTurnIdByThreadRef.current[activeThreadId] ??
-                activeTurnIdRef.current ??
-                threadRuntimeSnapshotsRef.current[activeThreadId]?.activeTurnId ??
-                null
-            );
-            planItemTurnIdByThreadRef.current[activeThreadId] = turnId;
-            setSelectedCollaborationMode('plan');
-            bumpRunWatchdog();
-            setActivePlan((prev) =>
-              buildNextPlanStateFromDelta(prev, activeThreadId, turnId, rawDelta)
-            );
-            cacheThreadPlan(activeThreadId, (previous) =>
-              buildNextPlanStateFromDelta(previous, activeThreadId, turnId, rawDelta)
-            );
-            setActivity({
-              tone: 'running',
-              title: 'Planning',
-            });
-            return;
-          }
-
-          if (codexEventType === 'planupdate') {
-            const turnId = resolveCodexPlanTurnId(
-              msg,
-              planItemTurnIdByThreadRef.current[activeThreadId] ??
-                activeTurnIdRef.current ??
-                threadRuntimeSnapshotsRef.current[activeThreadId]?.activeTurnId ??
-                null
-            );
-            const planUpdate = toCodexTurnPlanUpdate(msg, activeThreadId, turnId);
-            planItemTurnIdByThreadRef.current[activeThreadId] = turnId;
-            setSelectedCollaborationMode('plan');
-            bumpRunWatchdog();
-            if (planUpdate) {
-              setActivePlan((prev) => buildNextPlanStateFromUpdate(prev, planUpdate));
-              cacheThreadPlan(activeThreadId, (previous) =>
-                buildNextPlanStateFromUpdate(previous, planUpdate)
-              );
-            }
-            setActivity({
-              tone: 'running',
-              title: 'Planning',
-            });
-            return;
-          }
-
-          if (codexEventType === 'execcommandbegin') {
-            setActivity({
-              tone: 'running',
-              title: 'Working',
-            });
-            return;
-          }
-
-          if (codexEventType === 'execcommandend') {
-            const status = readString(msg?.status);
-            const failed = status === 'failed' || status === 'error';
-
-            setActivity({
-              tone: failed ? 'error' : 'running',
-              title: failed ? 'Turn failed' : 'Working',
-            });
-            return;
-          }
-
-          if (codexEventType === 'mcpstartupupdate') {
-            setActivity({
-              tone: 'running',
-              title: 'Working',
-            });
-            return;
-          }
-
-          if (codexEventType === 'mcptoolcallbegin') {
-            setActivity({
-              tone: 'running',
-              title: 'Working',
-            });
-            return;
-          }
-
-          if (codexEventType === 'websearchbegin') {
-            const searchEvent = describeWebSearchToolEvent(msg);
-            if (searchEvent) {
-              cacheThreadActiveCommand(
-                activeThreadId,
-                searchEvent.eventType,
-                searchEvent.detail
-              );
-              pushActiveCommand(activeThreadId, searchEvent.eventType, searchEvent.detail);
-            }
-            setActivity({
-              tone: 'running',
-              title: 'Working',
-            });
-            return;
-          }
-
-          if (codexEventType === 'backgroundevent') {
-            const message =
-              toTickerSnippet(readString(msg?.message), 72) ??
-              toTickerSnippet(readString(msg?.text), 72);
-            setActivity({
-              tone: 'running',
-              title: message ?? 'Working',
-            });
-            return;
-          }
-
-          if (CODEX_RUN_ABORT_EVENT_TYPES.has(codexEventType)) {
-            const failureMessage = extractCodexFailureMessage(params, msg);
-            const interruptedByUser = stopRequestedRef.current;
-            delete planItemTurnIdByThreadRef.current[activeThreadId];
-            clearPendingPlanImplementationPrompt(activeThreadId);
-            clearRunWatchdog();
-            setActiveCommands([]);
-            setStreamingText(null);
-            setActiveTurnId(null);
-            setStoppingTurn(false);
-            stopRequestedRef.current = interruptedByUser;
-            reasoningSummaryRef.current = {};
-            codexReasoningBufferRef.current = '';
-            hadCommandRef.current = false;
-            if (interruptedByUser) {
-              setError(null);
-              appendStopSystemMessageIfNeeded();
-            } else if (failureMessage) {
-              setError(failureMessage);
-            }
-            setActivity({
-              tone: interruptedByUser ? 'complete' : 'error',
-              title: interruptedByUser ? 'Turn stopped' : 'Turn interrupted',
-              detail: interruptedByUser ? undefined : failureMessage ?? undefined,
-            });
-            loadChat(activeThreadId).catch(() => {});
-            return;
-          }
-
-          if (CODEX_RUN_FAILURE_EVENT_TYPES.has(codexEventType)) {
-            const failureMessage = extractCodexFailureMessage(params, msg);
-            delete planItemTurnIdByThreadRef.current[activeThreadId];
-            clearPendingPlanImplementationPrompt(activeThreadId);
-            clearRunWatchdog();
-            setActiveCommands([]);
-            setStreamingText(null);
-            setActiveTurnId(null);
-            setStoppingTurn(false);
-            stopRequestedRef.current = false;
-            reasoningSummaryRef.current = {};
-            codexReasoningBufferRef.current = '';
-            hadCommandRef.current = false;
-            if (failureMessage) {
-              setError(failureMessage);
-            }
-            setActivity({
-              tone: 'error',
-              title: 'Turn failed',
-              detail: failureMessage ?? undefined,
-            });
-            loadChat(activeThreadId).catch(() => {});
-            return;
-          }
-
-          if (CODEX_RUN_COMPLETION_EVENT_TYPES.has(codexEventType)) {
-            const planTurnId = planItemTurnIdByThreadRef.current[activeThreadId] ?? null;
-            delete planItemTurnIdByThreadRef.current[activeThreadId];
-            clearRunWatchdog();
-            setActiveTurnId(null);
-            setStoppingTurn(false);
-            stopRequestedRef.current = false;
-            if (planTurnId) {
-              setPendingPlanImplementationPrompts((prev) => ({
-                ...prev,
-                [activeThreadId]: {
-                  threadId: activeThreadId,
-                  turnId: planTurnId,
-                },
-              }));
-            } else {
-              clearPendingPlanImplementationPrompt(activeThreadId);
-            }
-            setActivity({
-              tone: 'complete',
-              title: 'Turn completed',
-            });
-            setStreamingText(null);
-            reasoningSummaryRef.current = {};
-            codexReasoningBufferRef.current = '';
-            hadCommandRef.current = false;
-            loadChat(activeThreadId).catch(() => {});
-            return;
-          }
-
-          if (isCodexRunHeartbeatEvent(codexEventType)) {
-            setActivity((prev) =>
-              prev.tone === 'running'
-                ? prev
-                : {
-                    tone: 'running',
-                    title: 'Working',
-                  }
-            );
-          }
-          return;
-        }
-
-        // Streaming delta -> transient thinking text
-        if (event.method === 'item/agentMessage/delta') {
-          const params = toRecord(event.params);
-          const threadId = readString(params?.threadId) ?? readString(params?.thread_id);
-          const delta = readString(params?.delta);
-          if (!threadId || !delta) return;
-          if (currentId !== threadId) {
-            cacheThreadStreamingDelta(threadId, delta);
-            cacheThreadTurnState(threadId, {
-              runWatchdogUntil: Date.now() + RUN_WATCHDOG_MS,
-            });
-            cacheThreadActivity(threadId, {
-              tone: 'running',
-              title: 'Working',
-            });
-            return;
-          }
-
-          bumpRunWatchdog();
-          if (hadCommandRef.current) {
-            setStreamingText(delta);
-            hadCommandRef.current = false;
-          } else {
-            setStreamingText((prev) => mergeStreamingDelta(prev, delta));
-          }
-          setActivity((prev) =>
-            prev.tone === 'running' && prev.title === 'Working'
-              ? prev
-              : {
-                  tone: 'running',
-                  title: 'Working',
-                }
-          );
-          schedulePinnedScrollToBottom(true);
-          return;
-        }
 
         if (event.method === 'thread/tokenUsage/updated') {
           const params = toRecord(event.params);
@@ -6179,64 +5210,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           cacheThreadContextUsage(threadId, contextUsage);
           if (threadId === currentId) {
           }
-          return;
-        }
-
-        if (event.method === 'turn/started') {
-          const params = toRecord(event.params);
-          const threadId =
-            readString(params?.threadId) ??
-            readString(params?.thread_id) ??
-            readString(toRecord(params?.turn)?.threadId) ??
-            readString(toRecord(params?.turn)?.thread_id);
-          if (!threadId) {
-            return;
-          }
-          clearLiveReasoningMessage(threadId);
-          delete planItemTurnIdByThreadRef.current[threadId];
-          const startedContextUsage = readThreadContextUsage(params);
-          const turn = toRecord(params?.turn);
-          const startedTurnId =
-            readString(params?.turnId) ??
-            readString(params?.turn_id) ??
-            readString(turn?.id) ??
-            readString(turn?.turnId) ??
-            null;
-          if (threadId !== currentId) {
-            if (startedContextUsage) {
-              cacheThreadContextUsage(threadId, startedContextUsage);
-            }
-            upsertThreadRuntimeSnapshot(threadId, () => ({
-              activeCommands: [],
-              streamingText: null,
-            }));
-            cacheThreadTurnState(threadId, {
-              activeTurnId: startedTurnId,
-              runWatchdogUntil: Date.now() + RUN_WATCHDOG_MS,
-            });
-            cacheThreadActivity(threadId, {
-              tone: 'running',
-              title: 'Working',
-            });
-            return;
-          }
-          if (startedTurnId) {
-            registerTurnStarted(threadId, startedTurnId);
-          }
-          if (startedContextUsage) {
-            cacheThreadContextUsage(threadId, startedContextUsage);
-          }
-          upsertThreadRuntimeSnapshot(threadId, () => ({
-            activeCommands: [],
-            streamingText: null,
-          }));
-          setActiveCommands([]);
-          setStreamingText(null);
-          bumpRunWatchdog();
-          setActivity({
-            tone: 'running',
-            title: 'Working',
-          });
           return;
         }
 
@@ -6347,7 +5320,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           }
 
           if (itemType === 'toolCall') {
-            upsertLiveCursorToolMessage(threadId, item);
             setActivity({
               tone: 'running',
               title: 'Working',
@@ -6365,9 +5337,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           }
 
           if (itemType === 'reasoning') {
-            if (selectedChatRef.current?.engine === 'opencode') {
-              upsertLiveReasoningMessage(threadId);
-            }
+            upsertLiveReasoningMessage(threadId);
             setActivity({
               tone: 'running',
               title: 'Working',
@@ -6521,7 +5491,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
           bumpRunWatchdog();
           const delta = readString(params?.delta);
-          if (delta && selectedChatRef.current?.engine === 'opencode') {
+          if (delta) {
             upsertLiveReasoningMessage(threadId, delta);
           }
           setActivity((prev) =>
@@ -6736,158 +5706,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             });
           }
           if (itemType === 'toolCall') {
-            upsertLiveCursorToolMessage(threadId, item);
           }
-          return;
-        }
-
-        // Turn completion/failure
-        if (event.method === 'turn/completed') {
-          const params = toRecord(event.params);
-          const turn = toRecord(params?.turn);
-          const threadId =
-            readString(params?.threadId) ??
-            readString(params?.thread_id) ??
-            readString(turn?.threadId) ??
-            readString(turn?.thread_id);
-          if (!threadId) {
-            return;
-          }
-          const status = readString(turn?.status) ?? readString(params?.status);
-          const completedTurnId =
-            readString(turn?.id) ??
-            readString(turn?.turnId) ??
-            readString(params?.turnId) ??
-            readString(params?.turn_id) ??
-            null;
-          const knownActiveTurnId =
-            threadId === currentId
-              ? activeTurnIdRef.current
-              : threadRuntimeSnapshotsRef.current[threadId]?.activeTurnId ?? null;
-          if (!completedTurnId || (knownActiveTurnId && completedTurnId !== knownActiveTurnId)) {
-            return;
-          }
-          const planTurnId = planItemTurnIdByThreadRef.current[threadId] ?? null;
-          const promptTurnId = completedTurnId ?? planTurnId;
-          const shouldPromptPlanImplementation =
-            status === 'completed' &&
-            Boolean(planTurnId) &&
-            (!completedTurnId || completedTurnId === planTurnId);
-          clearLiveReasoningMessage(threadId);
-          delete planItemTurnIdByThreadRef.current[threadId];
-          if (currentId !== threadId) {
-            delete threadReasoningBuffersRef.current[threadId];
-            cacheThreadTurnState(threadId, {
-              activeTurnId: null,
-              runWatchdogUntil: 0,
-            });
-            upsertThreadRuntimeSnapshot(threadId, () => ({
-              activeCommands: [],
-              streamingText: null,
-              pendingUserInputRequest: null,
-              activity:
-                status === 'failed' || status === 'interrupted'
-                  ? {
-                      tone: 'error',
-                      title: 'Turn failed',
-                      detail: status ?? undefined,
-                    }
-                  : {
-                      tone: 'complete',
-                      title: 'Turn completed',
-                    },
-            }));
-            bumpAgentRuntimeRevision();
-            if (agentDetailThreadId === threadId) {
-              void loadAgentDetail(threadId);
-            }
-            if (shouldPromptPlanImplementation && promptTurnId) {
-              setPendingPlanImplementationPrompts((prev) => ({
-                ...prev,
-                [threadId]: {
-                  threadId,
-                  turnId: promptTurnId,
-                },
-              }));
-            } else {
-              clearPendingPlanImplementationPrompt(threadId);
-            }
-            return;
-          }
-
-          clearRunWatchdog();
-
-          const interruptedByUser = status === 'interrupted' && stopRequestedRef.current;
-          const turnError = toRecord(turn?.error) ?? toRecord(params?.error);
-          const turnErrorMessage = readString(turnError?.message);
-          const terminalStatus: ChatStatus =
-            status === 'failed' || (status === 'interrupted' && !interruptedByUser)
-              ? 'error'
-              : 'complete';
-          const terminalStatusAt = new Date().toISOString();
-
-          setActiveCommands([]);
-          setStreamingText(null);
-          setPendingUserInputRequest(null);
-          setUserInputDrafts({});
-          setUserInputError(null);
-          setResolvingUserInput(false);
-          setActiveTurnId(null);
-          setSelectedChat((prev) => {
-            if (!prev || prev.id !== threadId) {
-              return prev;
-            }
-
-            return {
-              ...prev,
-              status: terminalStatus,
-              updatedAt: terminalStatusAt,
-              statusUpdatedAt: terminalStatusAt,
-              lastError:
-                terminalStatus === 'error' ? turnErrorMessage ?? status ?? undefined : undefined,
-            };
-          });
-          setStoppingTurn(false);
-          stopRequestedRef.current = false;
-          hadCommandRef.current = false;
-          reasoningSummaryRef.current = {};
-          codexReasoningBufferRef.current = '';
-
-          if (status === 'failed' || status === 'interrupted') {
-            if (interruptedByUser) {
-              setError(null);
-              appendStopSystemMessageIfNeeded();
-              setActivity({
-                tone: 'complete',
-                title: 'Turn stopped',
-              });
-            } else {
-              setError(turnErrorMessage ?? `turn ${status ?? 'failed'}`);
-              setActivity({
-                tone: 'error',
-                title: 'Turn failed',
-                detail: turnErrorMessage ?? status ?? undefined,
-              });
-            }
-            clearPendingPlanImplementationPrompt(threadId);
-          } else {
-            setActivity({
-              tone: 'complete',
-              title: 'Turn completed',
-            });
-            if (shouldPromptPlanImplementation && promptTurnId) {
-              setPendingPlanImplementationPrompts((prev) => ({
-                ...prev,
-                [threadId]: {
-                  threadId,
-                  turnId: promptTurnId,
-                },
-              }));
-            } else {
-              clearPendingPlanImplementationPrompt(threadId);
-            }
-          }
-          loadChat(threadId).catch(() => {});
           return;
         }
 
@@ -6954,11 +5773,15 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         if (event.method === 'bridge/userInput.resolved') {
           const params = toRecord(event.params);
           const resolvedId = readString(params?.id);
+          const selectedPendingUserInputId = currentId
+            ? threadRuntimeSnapshotsRef.current[currentId]?.pendingUserInputRequest?.requestId ??
+              pendingUserInputRequestId
+            : pendingUserInputRequestId;
           if (resolvedId) {
             for (const [threadId, snapshot] of Object.entries(
               threadRuntimeSnapshotsRef.current
             )) {
-              if (snapshot.pendingUserInputRequest?.id !== resolvedId) {
+              if (snapshot.pendingUserInputRequest?.requestId !== resolvedId) {
                 continue;
               }
               cacheThreadPendingUserInputRequest(threadId, null);
@@ -6968,7 +5791,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               });
             }
           }
-          if (pendingUserInputRequestId && resolvedId === pendingUserInputRequestId) {
+          if (selectedPendingUserInputId && resolvedId === selectedPendingUserInputId) {
             bumpRunWatchdog();
             setPendingUserInputRequest(null);
             setUserInputDrafts({});
@@ -7015,11 +5838,15 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         if (event.method === 'bridge/approval.resolved') {
           const params = toRecord(event.params);
           const resolvedId = readString(params?.id);
+          const selectedPendingApprovalId = currentId
+            ? threadRuntimeSnapshotsRef.current[currentId]?.pendingApproval?.requestId ??
+              pendingApprovalId
+            : pendingApprovalId;
           if (resolvedId) {
             for (const [threadId, snapshot] of Object.entries(
               threadRuntimeSnapshotsRef.current
             )) {
-              if (snapshot.pendingApproval?.id !== resolvedId) {
+              if (snapshot.pendingApproval?.requestId !== resolvedId) {
                 continue;
               }
               cacheThreadPendingApproval(threadId, null);
@@ -7029,7 +5856,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               });
             }
           }
-          if (pendingApprovalId && resolvedId === pendingApprovalId) {
+          if (selectedPendingApprovalId && resolvedId === selectedPendingApprovalId) {
             bumpRunWatchdog();
             setPendingApproval(null);
             setActivity({
@@ -7106,7 +5933,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                     setActiveCommands([]);
                     setStreamingText(null);
                     reasoningSummaryRef.current = {};
-                    codexReasoningBufferRef.current = '';
+                    reasoningBufferRef.current = '';
                     hadCommandRef.current = false;
                     setActivity(() => {
                       if (statusHint && EXTERNAL_COMPLETE_STATUS_HINTS.has(statusHint)) {
@@ -7188,16 +6015,17 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     }, [
       ws,
       api,
-      pendingApproval?.id,
-      pendingUserInputRequest?.id,
+      pendingApproval?.requestId,
+      pendingUserInputRequest?.requestId,
+      recoverReplayGap,
       loadChat,
       loadAgentDetail,
       scheduleAgentThreadsRefresh,
       appendStopSystemMessageIfNeeded,
       agentDetailThreadId,
       bumpRunWatchdog,
+      bumpAgentRuntimeRevision,
       clearDeferredDisconnectActivity,
-      cacheCodexRuntimeForThread,
       cacheThreadActiveCommand,
       cacheThreadActivity,
       cacheThreadContextUsage,
@@ -7219,7 +6047,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       registerTurnStarted,
       pushActiveCommand,
       scrollToBottomIfPinned,
-      upsertLiveCursorToolMessage,
       upsertLiveReasoningMessage,
       upsertThreadRuntimeSnapshot,
     ]);
@@ -7227,8 +6054,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const applySynchronizedChat = useCallback((latest: Chat, assessment: ChatSyncAssessment) => {
       const targetChatId = latest.id;
       if (selectedChatIdRef.current !== targetChatId) return;
-      const hasPendingApproval = Boolean(pendingApproval?.id);
-      const hasPendingUserInput = Boolean(pendingUserInputRequest?.id);
+      const hasPendingApproval = Boolean(pendingApproval?.requestId);
+      const hasPendingUserInput = Boolean(pendingUserInputRequest?.requestId);
       const resolvedLatest = mergeChatWithPendingOptimisticMessages(latest);
       setSelectedChat((prev) => {
         if (!prev || prev.id !== resolvedLatest.id) return resolvedLatest;
@@ -7261,7 +6088,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             setActiveTurnId(null);
             setStoppingTurn(false);
             reasoningSummaryRef.current = {};
-            codexReasoningBufferRef.current = '';
+            reasoningBufferRef.current = '';
             hadCommandRef.current = false;
             setActivity((prev) => {
               if (resolvedLatest.status === 'complete') {
@@ -7292,8 +6119,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             });
           }
     }, [
-      pendingApproval?.id,
-      pendingUserInputRequest?.id,
+      pendingApproval?.requestId,
+      pendingUserInputRequest?.requestId,
       bumpRunWatchdog,
       clearRunWatchdog,
       mergeChatWithPendingOptimisticMessages,
@@ -7313,9 +6140,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     });
 
     const handleResolveApproval = useCallback(
-      async (id: string, decision: ApprovalDecision): Promise<void> => {
+      async (id: string, optionId: string): Promise<void> => {
         try {
-          await approvalController.resolveApproval(id, decision);
+          await approvalController.resolveApproval(id, optionId);
           if (selectedChatId) {
             cacheThreadPendingApproval(selectedChatId, null);
           }
@@ -7379,6 +6206,30 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       resolvingUserInput,
       userInputDrafts,
     ]);
+
+    const dismissUserInputRequest = useCallback(
+      async (action: 'decline' | 'cancel') => {
+        if (!pendingUserInputRequest || resolvingUserInput) return;
+        setResolvingUserInput(true);
+        try {
+          await approvalController.dismissUserInput(pendingUserInputRequest, action);
+          cacheThreadPendingUserInputRequest(pendingUserInputRequest.threadId, null);
+          setPendingUserInputRequest(null);
+          setUserInputDrafts({});
+          setUserInputError(null);
+        } catch (err) {
+          setUserInputError((err as Error).message);
+        } finally {
+          setResolvingUserInput(false);
+        }
+      },
+      [
+        approvalController,
+        cacheThreadPendingUserInputRequest,
+        pendingUserInputRequest,
+        resolvingUserInput,
+      ]
+    );
 
     const dismissBridgeUiSurface = useCallback(
       async (surface: BridgeUiSurface) => {
@@ -7659,36 +6510,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       (displayedActivity.tone !== 'idle' &&
         (!isGenericRunningActivity || showDelayedGenericRunningActivity)) ||
       Boolean(activityDetail);
-    const composerUsageLimitBadges =
-      activeChatEngine === 'codex'
-        ? buildComposerUsageLimitBadges(accountRateLimits)
-        : [];
-    const accountUsageLimitAlert =
-      activeChatEngine === 'codex'
-        ? buildComposerUsageLimitAlert(accountRateLimits)
-        : null;
-    const rateLimitErrorAlert =
-      activeChatEngine === 'codex' && !accountUsageLimitAlert
-        ? buildRateLimitAlertFromMessages([
-            error,
-            activity.detail,
-            displayedActivity.detail,
-            activity.title,
-            displayedActivity.title,
-          ])
-        : null;
-    const usageLimitAlert = accountUsageLimitAlert ?? rateLimitErrorAlert;
-    const usageLimitBannerTurnInProgress =
-      isLoading ||
-      isOpeningChat ||
-      stoppingTurn ||
-      Boolean(pendingApproval) ||
-      Boolean(pendingUserInputRequest) ||
-      isTurnLikelyRunning ||
-      hasRunWatchdog ||
-      displayedActivity.tone === 'running';
-    const showUsageLimitBanner =
-      Boolean(usageLimitAlert) && ws.isConnected && !usageLimitBannerTurnInProgress;
     const headerTitle = isOpeningChat ? 'Opening chat' : selectedChat?.title?.trim() || 'New chat';
     const defaultStartWorkspaceLabel =
       preferredStartCwd ?? 'Select project';
@@ -7769,6 +6590,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       : selectedBridgeQueuedMessages;
     const selectedQueueError = selectedThreadRuntimeSnapshot?.queuedMessageError ?? null;
     const oldestQueuedMessage = selectedQueuedMessages[0] ?? null;
+    const oldestQueuedMessageIsPendingSteer = Boolean(
+      oldestQueuedMessage &&
+        selectedThreadRuntimeSnapshot?.pendingSteerMessageIds?.includes(oldestQueuedMessage.id)
+    );
     const remainingQueuedMessagesCount = Math.max(0, selectedQueuedMessages.length - 1);
     const queueActionInFlight = Boolean(queueActionItemId);
     const inMemorySelectedThreadPlan = selectedChat
@@ -7809,15 +6634,19 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       selectedChat ? (planPanelCollapsedByThread[selectedChat.id] ?? false) : false;
     const fastModeControlDisabled = isOpeningChat;
     const showSlashSuggestions = slashSuggestions.length > 0 && draft.trimStart().startsWith('/');
-    const canSteerQueuedMessage =
-      Boolean(oldestQueuedMessage) &&
-      Boolean(selectedChatId) &&
-      !showingOptimisticQueuedMessage &&
-      !pendingApproval &&
-      !pendingUserInputRequest &&
-      !queueActionInFlight;
+    const canSteerQueuedMessage = canOfferQueuedMessageSteer({
+      hasQueuedMessage: Boolean(oldestQueuedMessage),
+      hasSelectedThread: Boolean(selectedChatId),
+      supportsSteer: activeAgentSupports?.turnSteer === true,
+      isPendingSteer: oldestQueuedMessageIsPendingSteer,
+      isOptimistic: showingOptimisticQueuedMessage,
+      actionInFlight: queueActionInFlight,
+    });
     const canCancelQueuedMessage =
-      Boolean(oldestQueuedMessage) && !showingOptimisticQueuedMessage && !queueActionInFlight;
+      Boolean(oldestQueuedMessage) &&
+      !showingOptimisticQueuedMessage &&
+      !queueActionInFlight &&
+      selectedThreadRuntimeSnapshot?.steeringInFlight !== true;
     const queuedMessageSteerDisabledReason = showingOptimisticQueuedMessage
       ? 'Sending the queued message to the bridge.'
       : selectedQueueError?.message
@@ -7826,10 +6655,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         ? 'Sending the queued message to the current turn.'
         : queueActionKind === 'cancel'
           ? 'Removing the queued message.'
-      : pendingApproval
-      ? 'Waiting for approval before steering.'
-      : pendingUserInputRequest
-        ? 'Waiting for required input before steering.'
+        : activeAgentSupports?.turnSteer !== true
+          ? 'The active agent does not support steering.'
         : null;
     const showQueuedMessageDock =
       Boolean(selectedChat) && !isOpeningChat && Boolean(oldestQueuedMessage);
@@ -7841,10 +6668,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       !stoppingTurn &&
       !pendingApproval &&
       !pendingUserInputRequest &&
-      !renameModalVisible &&
       !attachmentMenuVisible &&
       !attachmentModalVisible &&
-      !chatTitleMenuVisible &&
       !collaborationModeMenuVisible &&
       !modelSettingsMenuVisible &&
       !workspaceModalVisible &&
@@ -7862,8 +6687,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       shouldShowComposer &&
       Boolean(selectedChat) &&
       !isOpeningChat &&
-      !showBridgeRecoveryBanner &&
-      !showUsageLimitBanner;
+      !showBridgeRecoveryBanner;
     const chatBottomInset = shouldShowComposer
       ? theme.spacing.lg
       : Math.max(theme.spacing.xxl, safeAreaInsets.bottom + theme.spacing.lg);
@@ -7871,11 +6695,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const composerOverlayInset =
       Platform.OS === 'android' && keyboardVisible ? androidKeyboardInset : 0;
     const visibleError =
-      !ws.isConnected && isBridgeConnectionErrorMessage(error)
-        ? null
-        : usageLimitAlert && isRateLimitReachedMessage(error)
-          ? null
-          : error;
+      !ws.isConnected && isBridgeConnectionErrorMessage(error) ? null : error;
     useAccessibilityAnnouncement(visibleError ?? userInputError ?? gitCheckoutError);
     const androidComposerReservedInset = shouldShowComposer
       ? Math.max(
@@ -7938,34 +6758,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             ) : null}
           </View>
         ) : null}
-        {!showBridgeRecoveryBanner && showUsageLimitBanner && usageLimitAlert ? (
-          <View style={styles.bridgeRecoveryBanner} accessibilityLiveRegion="polite">
-            <View style={styles.bridgeRecoveryBannerTopRow}>
-              <View style={styles.bridgeRecoveryBannerIconWrap}>
-                <Ionicons
-                  {...decorativeAccessibilityProps}
-                  name="warning-outline"
-                  size={16}
-                  color={theme.colors.warning}
-                />
-              </View>
-              <View style={styles.bridgeRecoveryBannerCopy}>
-                <Text style={styles.bridgeRecoveryBannerTitle}>
-                  {usageLimitAlert.title}
-                </Text>
-                <Text style={styles.bridgeRecoveryBannerBody}>
-                  {usageLimitAlert.body}
-                </Text>
-                {usageLimitAlert.status ? (
-                  <Text style={styles.bridgeRecoveryBannerStatus}>
-                    {usageLimitAlert.status}
-                  </Text>
-                ) : null}
-              </View>
-            </View>
-          </View>
-        ) : null}
-        {!showBridgeRecoveryBanner && !showUsageLimitBanner
+        {!showBridgeRecoveryBanner
           ? bannerBridgeUiSurfaces.map((surface) => (
               <BridgeUiBanner
                 key={surface.id}
@@ -7993,6 +6786,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             steerEnabled={canSteerQueuedMessage}
             cancelEnabled={canCancelQueuedMessage}
             steeringActive={queueActionKind === 'steer' && queueActionItemId === oldestQueuedMessage.id}
+            steerPending={oldestQueuedMessageIsPendingSteer}
+            waitingForToolCalls={selectedThreadRuntimeSnapshot?.waitingForToolCalls === true}
+            steeringInFlight={selectedThreadRuntimeSnapshot?.steeringInFlight === true}
             steerDisabledReason={queuedMessageSteerDisabledReason}
             onCancelQueuedMessage={(messageId) => {
               void handleCancelQueuedMessage(messageId);
@@ -8099,15 +6895,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           attachments={composerAttachments}
           onRemoveAttachment={removeComposerAttachment}
           isLoading={isLoading}
-          placeholder={selectedChat ? 'Reply...' : `Message ${activeChatEngineLabel}...`}
+          placeholder={selectedChat ? 'Reply...' : `Message ${activeAgentLabel}...`}
           safeAreaBottomInset={composerSafeAreaBottomInset}
           keyboardVisible={keyboardVisible}
-          reserveFooterSpace={activeChatEngine === 'codex'}
-          footer={
-            composerUsageLimitBadges.length > 0 ? (
-              <ComposerUsageLimits limits={composerUsageLimitBadges} />
-            ) : null
-          }
+          reserveFooterSpace={false}
+          footer={null}
         />
       </View>
     );
@@ -8322,9 +7114,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         <ChatHeader
           onOpenDrawer={onOpenDrawer}
           title={headerTitle}
-          engine={selectedChat?.engine}
-          engineLabel={selectedChat ? getChatEngineLabel(selectedChat.engine) : undefined}
-          onOpenTitleMenu={selectedChat ? openChatTitleMenu : undefined}
+          agent={activeAgent}
           rightIconName={selectedChat ? 'git-branch-outline' : undefined}
           onRightActionPress={selectedChat ? handleOpenGit : undefined}
         />
@@ -8336,20 +7126,22 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.sessionMetaRowContent}
             >
-              <Pressable
-                style={({ pressed }) => [
-                  styles.modelChip,
-                  pressed && styles.modelChipPressed,
-                ]}
-                onPress={openModelReasoningMenu}
-                accessibilityRole="button"
-                accessibilityLabel={`Model controls, ${modelReasoningLabel}`}
-              >
-                <Ionicons {...decorativeAccessibilityProps} name="sparkles-outline" size={12} color={theme.colors.textMuted} />
-                <Text style={styles.modelChipText} numberOfLines={1}>
-                  {modelReasoningLabel}
-                </Text>
-              </Pressable>
+              {modelOptions.length > 0 ? (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.modelChip,
+                    pressed && styles.modelChipPressed,
+                  ]}
+                  onPress={openModelReasoningMenu}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Model controls, ${modelReasoningLabel}`}
+                >
+                  <Ionicons {...decorativeAccessibilityProps} name="sparkles-outline" size={12} color={theme.colors.textMuted} />
+                  <Text style={styles.modelChipText} numberOfLines={1}>
+                    {modelReasoningLabel}
+                  </Text>
+                </Pressable>
+              ) : null}
               <Pressable
                 style={({ pressed }) => [
                   styles.modeChip,
@@ -8493,14 +7285,22 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                   onScrollInteractionStart={clearPendingScrollRetries}
                   autoScrollStateRef={autoScrollStateRef}
                   bottomInset={androidComposerReservedInset}
+                  liveAssistantMessages={
+                    liveAssistantByThread[selectedChat.id] ?? null
+                  }
+                  continuationState={transcriptContinuationState}
+                  onLoadEarlier={() => {
+                    void handleLoadEarlier();
+                  }}
                 />
               ) : isOpeningChat ? (
                 <ChatOpeningView />
               ) : (
                 <ComposeView
                   startWorkspaceLabel={defaultStartWorkspaceLabel}
-                  showEnginePicker={availableNewChatEngines.length > 1}
-                  engineLabel={activeChatEngineLabel}
+                  showAgentPicker={readyAgents.length > 1}
+                  agentLabel={activeAgentLabel}
+                  showModelControls={modelOptions.length > 0}
                   modelReasoningLabel={modelReasoningLabel}
                   collaborationModeLabel={collaborationModeLabel}
                   showFastMode={supportsFastMode}
@@ -8510,7 +7310,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                   bottomInset={androidComposerReservedInset}
                   onSuggestion={(s) => setDraft(s)}
                   onOpenWorkspacePicker={openWorkspaceModal}
-                  onOpenEnginePicker={openEngineModal}
+                  onOpenAgentPicker={openAgentModal}
                   onOpenModelReasoningPicker={openModelReasoningMenu}
                   onOpenCollaborationModePicker={openCollaborationModeMenu}
                   onToggleFastMode={() => {
@@ -8547,14 +7347,22 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 onScrollInteractionStart={clearPendingScrollRetries}
                 autoScrollStateRef={autoScrollStateRef}
                 bottomInset={chatBottomInset}
+                liveAssistantMessages={
+                  liveAssistantByThread[selectedChat.id] ?? null
+                }
+                continuationState={transcriptContinuationState}
+                onLoadEarlier={() => {
+                  void handleLoadEarlier();
+                }}
               />
             ) : isOpeningChat ? (
               <ChatOpeningView />
             ) : (
               <ComposeView
                 startWorkspaceLabel={defaultStartWorkspaceLabel}
-                showEnginePicker={availableNewChatEngines.length > 1}
-                engineLabel={activeChatEngineLabel}
+                showAgentPicker={readyAgents.length > 1}
+                agentLabel={activeAgentLabel}
+                showModelControls={modelOptions.length > 0}
                 modelReasoningLabel={modelReasoningLabel}
                 collaborationModeLabel={collaborationModeLabel}
                 showFastMode={supportsFastMode}
@@ -8564,7 +7372,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 bottomInset={0}
                 onSuggestion={(s) => setDraft(s)}
                 onOpenWorkspacePicker={openWorkspaceModal}
-                onOpenEnginePicker={openEngineModal}
+                onOpenAgentPicker={openAgentModal}
                 onOpenModelReasoningPicker={openModelReasoningMenu}
                 onOpenCollaborationModePicker={openCollaborationModeMenu}
                 onToggleFastMode={() => {
@@ -8592,6 +7400,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           chat={agentDetailChat}
           parentChat={agentDetailParentChat}
           runtime={agentDetailRuntime}
+          liveAssistantMessages={
+            agentDetailThreadId ? liveAssistantByThread[agentDetailThreadId] ?? null : null
+          }
           display={agentDetailDisplay}
           title={agentDetailTitle}
           role={agentDetailSummary?.agentRole}
@@ -8628,15 +7439,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         />
 
         <SelectionSheet
-          visible={chatTitleMenuVisible}
-          eyebrow="Chat"
-          title={selectedChat?.title?.trim() || 'Chat options'}
-          subtitle="Quick actions for the current thread."
-          options={chatTitleMenuOptions}
-          onClose={() => setChatTitleMenuVisible(false)}
-        />
-
-        <SelectionSheet
           visible={agentThreadMenuVisible}
           eyebrow="Agents"
           title="Agent threads"
@@ -8653,10 +7455,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           visible={collaborationModeMenuVisible}
           eyebrow="Agent"
           title="Agent mode"
-          subtitle={`Choose a built-in mode or an agent exposed by ${activeChatEngineLabel}.`}
+          subtitle={`Choose a mode supported by ${activeAgentLabel}.`}
           options={collaborationModeOptions}
-          loading={loadingHarnessAgents}
-          loadingLabel="Loading harness agents…"
           onClose={() => setCollaborationModeMenuVisible(false)}
         />
 
@@ -8671,12 +7471,12 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         />
 
         <SelectionSheet
-          visible={engineModalVisible}
-          eyebrow="Engine"
-          title="Select engine"
-          subtitle="Choose which backend new chats should start with."
-          options={enginePickerOptions}
-          onClose={closeEngineModal}
+          visible={agentModalVisible}
+          eyebrow="Agent"
+          title="Select agent"
+          subtitle="Choose which installed ACP agent should start the new chat."
+          options={agentPickerOptions}
+          onClose={closeAgentModal}
         />
 
         <WorkspacePickerModal
@@ -8846,7 +7646,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           visible={modelModalVisible}
           eyebrow="Model"
           title="Select model"
-          subtitle={`Choose a ${activeChatEngineLabel} model for this chat or fall back to that engine's default.`}
+          subtitle="Choose an advertised model for this chat."
           options={modelPickerOptions}
           loading={loadingModels}
           loadingLabel="Refreshing available models…"
@@ -8867,72 +7667,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           presentation="expanded"
           onClose={closeEffortModal}
         />
-
-        <Modal
-          visible={renameModalVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={closeRenameModal}
-        >
-          <KeyboardAvoidingView
-            style={styles.renameModalKeyboardAvoider}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? safeAreaInsets.bottom : 0}
-          >
-            <View style={styles.renameModalBackdrop}>
-              <View
-                style={[
-                  styles.renameModalKeyboardContent,
-                  styles.renameModalKeyboardContentBottom,
-                  { paddingBottom: theme.spacing.md },
-                ]}
-              >
-                <View accessibilityViewIsModal importantForAccessibility="yes" style={styles.renameModalCard}>
-                  <Text style={styles.renameModalTitle}>Rename chat</Text>
-                  <TextInput
-                    value={renameDraft}
-                    onChangeText={setRenameDraft}
-                    keyboardAppearance={theme.keyboardAppearance}
-                    placeholder="Chat name"
-                    placeholderTextColor={theme.colors.textMuted}
-                    style={styles.renameModalInput}
-                    autoFocus
-                    editable={!renaming}
-                    maxLength={120}
-                    accessibilityLabel="Chat name"
-                  />
-                  <View style={styles.renameModalActions}>
-                    <Pressable
-                      onPress={closeRenameModal}
-                      style={({ pressed }) => [
-                        styles.renameModalButton,
-                        styles.renameModalButtonSecondary,
-                        pressed && styles.renameModalButtonPressed,
-                      ]}
-                      disabled={renaming}
-                    >
-                      <Text style={styles.renameModalButtonSecondaryText}>Cancel</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => void submitRenameChat()}
-                      style={({ pressed }) => [
-                        styles.renameModalButton,
-                        styles.renameModalButtonPrimary,
-                        pressed && styles.renameModalButtonPrimaryPressed,
-                        (renaming || !renameDraft.trim()) && styles.renameModalButtonDisabled,
-                      ]}
-                      disabled={renaming || !renameDraft.trim()}
-                    >
-                      <Text style={styles.renameModalButtonPrimaryText}>
-                        {renaming ? 'Saving...' : 'Save'}
-                      </Text>
-                    </Pressable>
-                  </View>
-                </View>
-              </View>
-            </View>
-          </KeyboardAvoidingView>
-        </Modal>
 
         <Modal
           visible={attachmentModalVisible}
@@ -9075,16 +7809,16 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                         <View style={styles.userInputOptionsColumn}>
                           {question.options?.map((option, index) => (
                             <Pressable
-                              key={`${question.id}-${String(index)}-${option.label}`}
+                              key={`${question.id}-${String(index)}-${option.value}`}
                               style={({ pressed }) => [
                                 styles.userInputOptionButton,
-                                answer.trim() === option.label.trim() &&
+                                answer.trim() === option.value.trim() &&
                                   styles.userInputOptionButtonSelected,
                                 pressed && styles.userInputOptionButtonPressed,
                               ]}
-                              onPress={() => setUserInputDraft(question.id, option.label)}
+                              onPress={() => setUserInputDraft(question.id, option.value)}
                               accessibilityRole="radio"
-                              accessibilityState={{ checked: answer.trim() === option.label.trim() }}
+                              accessibilityState={{ checked: answer.trim() === option.value.trim() }}
                               accessibilityLabel={option.label}
                               accessibilityHint={option.description || undefined}
                             >
@@ -9116,7 +7850,14 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                           placeholderTextColor={theme.colors.textMuted}
                           secureTextEntry={question.isSecret}
                           editable={!resolvingUserInput}
-                          multiline={!question.isSecret}
+                          multiline={!question.isSecret && question.fieldType !== 'boolean'}
+                          keyboardType={
+                            question.fieldType === 'integer'
+                              ? 'number-pad'
+                              : question.fieldType === 'number'
+                                ? 'decimal-pad'
+                                : 'default'
+                          }
                           style={[
                             styles.userInputAnswerInput,
                             question.isSecret && styles.userInputAnswerInputSecret,
@@ -9131,21 +7872,41 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               {userInputError ? (
                 <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={styles.userInputErrorText}>{userInputError}</Text>
               ) : null}
-              <Pressable
-                onPress={() => void submitUserInputRequest()}
-                style={({ pressed }) => [
-                  styles.userInputSubmitButton,
-                  pressed && styles.userInputSubmitButtonPressed,
-                  resolvingUserInput && styles.userInputSubmitButtonDisabled,
-                ]}
-                disabled={resolvingUserInput}
-                accessibilityRole="button"
-                accessibilityState={controlAccessibilityState({ disabled: resolvingUserInput, busy: resolvingUserInput })}
-              >
-                <Text style={styles.userInputSubmitButtonText}>
-                  {resolvingUserInput ? 'Submitting…' : 'Submit answers'}
-                </Text>
-              </Pressable>
+              <View style={styles.userInputModalActions}>
+                <Pressable
+                  onPress={() => void dismissUserInputRequest('cancel')}
+                  style={({ pressed }) => [styles.userInputSecondaryButton, pressed && styles.userInputSubmitButtonPressed]}
+                  disabled={resolvingUserInput}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel request"
+                >
+                  <Text style={styles.userInputSecondaryButtonText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => void dismissUserInputRequest('decline')}
+                  style={({ pressed }) => [styles.userInputSecondaryButton, pressed && styles.userInputSubmitButtonPressed]}
+                  disabled={resolvingUserInput}
+                  accessibilityRole="button"
+                  accessibilityLabel="Decline request"
+                >
+                  <Text style={styles.userInputSecondaryButtonText}>Decline</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => void submitUserInputRequest()}
+                  style={({ pressed }) => [
+                    styles.userInputSubmitButton,
+                    pressed && styles.userInputSubmitButtonPressed,
+                    resolvingUserInput && styles.userInputSubmitButtonDisabled,
+                  ]}
+                  disabled={resolvingUserInput}
+                  accessibilityRole="button"
+                  accessibilityState={controlAccessibilityState({ disabled: resolvingUserInput, busy: resolvingUserInput })}
+                >
+                  <Text style={styles.userInputSubmitButtonText}>
+                    {resolvingUserInput ? 'Submitting…' : 'Submit answers'}
+                  </Text>
+                </Pressable>
+              </View>
             </View>
           </View>
         </Modal>
@@ -9169,8 +7930,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
 function ComposeView({
   startWorkspaceLabel,
-  showEnginePicker,
-  engineLabel,
+  showAgentPicker,
+  agentLabel,
+  showModelControls,
   modelReasoningLabel,
   collaborationModeLabel,
   showFastMode,
@@ -9180,14 +7942,15 @@ function ComposeView({
   bottomInset,
   onSuggestion,
   onOpenWorkspacePicker,
-  onOpenEnginePicker,
+  onOpenAgentPicker,
   onOpenModelReasoningPicker,
   onOpenCollaborationModePicker,
   onToggleFastMode,
 }: {
   startWorkspaceLabel: string;
-  showEnginePicker: boolean;
-  engineLabel: string;
+  showAgentPicker: boolean;
+  agentLabel: string;
+  showModelControls: boolean;
   modelReasoningLabel: string;
   collaborationModeLabel: string;
   showFastMode: boolean;
@@ -9197,7 +7960,7 @@ function ComposeView({
   bottomInset: number;
   onSuggestion: (s: string) => void;
   onOpenWorkspacePicker: () => void;
-  onOpenEnginePicker: () => void;
+  onOpenAgentPicker: () => void;
   onOpenModelReasoningPicker: () => void;
   onOpenCollaborationModePicker: () => void;
   onToggleFastMode: () => void;
@@ -9244,38 +8007,40 @@ function ComposeView({
         </Text>
         <Ionicons {...decorativeAccessibilityProps} name="chevron-forward" size={14} color={theme.colors.textMuted} />
       </Pressable>
-      {showEnginePicker ? (
+      {showAgentPicker ? (
         <Pressable
           style={({ pressed }) => [
             styles.workspaceSelectBtn,
             pressed && styles.workspaceSelectBtnPressed,
           ]}
-          onPress={onOpenEnginePicker}
+          onPress={onOpenAgentPicker}
           accessibilityRole="button"
-          accessibilityLabel={`Engine, ${engineLabel}`}
+          accessibilityLabel={`Agent, ${agentLabel}`}
         >
           <Ionicons {...decorativeAccessibilityProps} name="layers-outline" size={16} color={theme.colors.textMuted} />
           <Text style={styles.workspaceSelectLabel} numberOfLines={1}>
-            {engineLabel}
+            {agentLabel}
           </Text>
           <Ionicons {...decorativeAccessibilityProps} name="chevron-forward" size={14} color={theme.colors.textMuted} />
         </Pressable>
       ) : null}
-      <Pressable
-        style={({ pressed }) => [
-          styles.workspaceSelectBtn,
-          pressed && styles.workspaceSelectBtnPressed,
-        ]}
-        onPress={onOpenModelReasoningPicker}
-        accessibilityRole="button"
-        accessibilityLabel={`Model controls, ${modelReasoningLabel}`}
-      >
-        <Ionicons {...decorativeAccessibilityProps} name="sparkles-outline" size={16} color={theme.colors.textMuted} />
-        <Text style={styles.workspaceSelectLabel} numberOfLines={1}>
-          {modelReasoningLabel}
-        </Text>
-        <Ionicons {...decorativeAccessibilityProps} name="chevron-forward" size={14} color={theme.colors.textMuted} />
-      </Pressable>
+      {showModelControls ? (
+        <Pressable
+          style={({ pressed }) => [
+            styles.workspaceSelectBtn,
+            pressed && styles.workspaceSelectBtnPressed,
+          ]}
+          onPress={onOpenModelReasoningPicker}
+          accessibilityRole="button"
+          accessibilityLabel={`Model controls, ${modelReasoningLabel}`}
+        >
+          <Ionicons {...decorativeAccessibilityProps} name="sparkles-outline" size={16} color={theme.colors.textMuted} />
+          <Text style={styles.workspaceSelectLabel} numberOfLines={1}>
+            {modelReasoningLabel}
+          </Text>
+          <Ionicons {...decorativeAccessibilityProps} name="chevron-forward" size={14} color={theme.colors.textMuted} />
+        </Pressable>
+      ) : null}
       <Pressable
         style={({ pressed }) => [
           styles.workspaceSelectBtn,
@@ -9598,7 +8363,7 @@ function areChatSummariesEquivalent(
     previous.statusUpdatedAt === next.statusUpdatedAt &&
     previous.lastMessagePreview === next.lastMessagePreview &&
     previous.cwd === next.cwd &&
-    previous.engine === next.engine &&
+    previous.agentId === next.agentId &&
     previous.modelProvider === next.modelProvider &&
     previous.agentNickname === next.agentNickname &&
     previous.agentRole === next.agentRole &&
@@ -9999,6 +8764,9 @@ function QueuedMessageDock({
   steerEnabled,
   cancelEnabled,
   steeringActive,
+  steerPending,
+  waitingForToolCalls,
+  steeringInFlight,
   steerDisabledReason,
   onCancelQueuedMessage,
   onSteerQueuedMessage,
@@ -10009,6 +8777,9 @@ function QueuedMessageDock({
   steerEnabled: boolean;
   cancelEnabled: boolean;
   steeringActive: boolean;
+  steerPending: boolean;
+  waitingForToolCalls: boolean;
+  steeringInFlight: boolean;
   steerDisabledReason: string | null;
   onCancelQueuedMessage: (messageId: string) => void;
   onSteerQueuedMessage: () => void;
@@ -10022,11 +8793,13 @@ function QueuedMessageDock({
         <View style={styles.queuedMessageHeader}>
           <View style={styles.queuedMessageHeaderText}>
             <Text style={styles.planCardTitle}>
-              {pendingSubmission
-                ? 'Queueing message'
-                : steeringActive
-                  ? 'Steering message'
-                  : 'Queued message'}
+              {queuedMessageStatusLabel({
+                pendingSubmission,
+                steeringActive,
+                steeringInFlight,
+                steerPending,
+                waitingForToolCalls,
+              })}
             </Text>
             {remainingQueuedMessagesCount > 0 ? (
               <Text style={styles.queuedMessageSummary}>
@@ -10058,7 +8831,7 @@ function QueuedMessageDock({
                 Cancel
               </Text>
             </Pressable>
-            <Pressable
+            {!steerPending ? <Pressable
               onPress={onSteerQueuedMessage}
               disabled={!steerEnabled}
               style={({ pressed }) => [
@@ -10079,7 +8852,7 @@ function QueuedMessageDock({
               >
                 {steeringActive ? 'Steering…' : 'Steer'}
               </Text>
-            </Pressable>
+            </Pressable> : null}
           </View>
         </View>
         <Text numberOfLines={3} style={styles.queuedMessageBody}>

@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
-const TEST_ONLY_RUST_FILES = /^(?:boundary_integration|coverage_main_.+|main_tests)\.rs$/;
+const TEST_ONLY_RUST_FILES = /^(?:coverage_main_.+|main_tests)\.rs$/;
 
 const walkRustSources = (directory) => readdirSync(directory, { withFileTypes: true })
   .flatMap((entry) => {

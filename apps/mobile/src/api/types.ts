@@ -1,14 +1,13 @@
-export type ChatStatus = 'idle' | 'running' | 'error' | 'complete';
-export type ChatEngine = 'codex' | 'opencode' | 'cursor';
+import type { RawAcpSnapshot } from './chatMapping';
 
-export interface EngineDefaultSettings {
-  modelId: string | null;
-  effort: ReasoningEffort | null;
-  serviceTier?: ServiceTier | null;
+export type ChatStatus = 'idle' | 'running' | 'error' | 'complete';
+export type AgentId = string;
+
+export interface AgentDefaultSettings {
   collaborationMode?: CollaborationMode;
 }
 
-export type EngineDefaultSettingsMap = Partial<Record<ChatEngine, EngineDefaultSettings>>;
+export type AgentDefaultSettingsMap = Record<AgentId, AgentDefaultSettings>;
 
 export type ChatMessageRole = 'user' | 'assistant' | 'system';
 
@@ -20,10 +19,18 @@ export interface ChatMessageSubAgentMeta {
   agentStatus?: string;
 }
 
+export type ChatMessagePart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data?: string; mimeType?: string; uri?: string; url?: string }
+  | { type: 'audio'; data?: string; mimeType?: string; uri?: string }
+  | { type: 'resourceLink'; uri: string; name?: string; description?: string; mimeType?: string; size?: number }
+  | { type: 'resource'; resource: { uri?: string; text?: string; blob?: string; mimeType?: string; [key: string]: unknown } };
+
 export interface ChatMessage {
   id: string;
   role: ChatMessageRole;
   content: string;
+  parts?: ChatMessagePart[];
   createdAt: string;
   systemKind?: 'tool' | 'reasoning' | 'subAgent' | 'compaction';
   subAgentMeta?: ChatMessageSubAgentMeta;
@@ -38,7 +45,7 @@ export interface ChatSummary {
   statusUpdatedAt: string;
   lastMessagePreview: string;
   cwd?: string;
-  engine?: ChatEngine;
+  agentId?: AgentId | null;
   modelProvider?: string;
   agentNickname?: string;
   agentRole?: string;
@@ -62,34 +69,35 @@ export interface ChatPlanSnapshot {
 
 export interface Chat extends ChatSummary {
   messages: ChatMessage[];
+  acpSnapshot?: RawAcpSnapshot;
   latestPlan?: ChatPlanSnapshot | null;
   latestTurnPlan?: ChatPlanSnapshot | null;
   latestTurnStatus?: string | null;
   activeTurnId?: string | null;
+  acpUsage?: { used: number | null; size: number | null; cost: string | null } | null;
+  acpMode?: string | null;
+  acpConfig?: Array<{ id: string; value: string }>;
+  acpCommands?: Array<{ name: string; description: string }>;
+  acpActive?: {
+    runId: string | null;
+    sourceTurnId: string | null;
+    generation: number | null;
+    toolIds: string[];
+  } | null;
 }
 
 export interface CreateChatRequest {
   title?: string;
   message?: string;
   cwd?: string;
-  engine?: ChatEngine;
+  agentId?: AgentId;
   model?: string;
   effort?: ReasoningEffort;
   serviceTier?: ServiceTier;
   approvalPolicy?: ApprovalPolicy;
 }
 
-export type CollaborationMode = 'default' | 'plan' | 'ask';
-
-export interface HarnessAgentOption {
-  id: string;
-  name: string;
-  description?: string;
-  mode: 'primary' | 'subagent' | 'all';
-  custom: boolean;
-  color?: string;
-  model?: string;
-}
+export type CollaborationMode = 'default' | 'plan';
 
 export interface SendChatMessageRequest {
   content: string;
@@ -136,6 +144,10 @@ export interface BridgeThreadQueueError {
 export interface BridgeThreadQueueState {
   threadId: string;
   items: BridgeQueuedMessage[];
+  pendingSteers: BridgeQueuedMessage[];
+  pendingSteerCount: number;
+  waitingForToolCalls: boolean;
+  steeringInFlight: boolean;
   lastError?: BridgeThreadQueueError | null;
 }
 
@@ -224,65 +236,6 @@ export type ReasoningEffort =
   | 'xhigh';
 
 export type ServiceTier = 'flex' | 'fast';
-
-export type PlanType =
-  | 'free'
-  | 'go'
-  | 'plus'
-  | 'pro'
-  | 'team'
-  | 'business'
-  | 'enterprise'
-  | 'edu'
-  | 'unknown';
-
-export interface AccountCreditsSnapshot {
-  hasCredits: boolean;
-  unlimited: boolean;
-  balance: string | null;
-}
-
-export interface AccountRateLimitWindow {
-  usedPercent: number;
-  windowDurationMins: number | null;
-  resetsAt: number | null;
-}
-
-export interface AccountRateLimitSnapshot {
-  limitId: string | null;
-  limitName: string | null;
-  primary: AccountRateLimitWindow | null;
-  secondary: AccountRateLimitWindow | null;
-  credits: AccountCreditsSnapshot | null;
-  planType: PlanType | null;
-}
-
-export interface AccountSnapshot {
-  type: 'apiKey' | 'chatgpt' | null;
-  email: string | null;
-  planType: PlanType | null;
-  requiresOpenaiAuth: boolean;
-}
-
-export type AccountLoginStartResponse =
-  | {
-      type: 'apiKey';
-    }
-  | {
-      type: 'chatgpt';
-      loginId: string;
-      authUrl: string;
-      userCode?: string | null;
-    }
-  | {
-      type: 'chatgptDeviceCode';
-      loginId: string;
-      verificationUrl: string;
-      userCode: string;
-    }
-  | {
-      type: 'chatgptAuthTokens';
-    };
 
 export type ApprovalPolicy =
   | 'untrusted'
@@ -497,48 +450,40 @@ export interface GitPushResponse {
   cwd?: string;
 }
 
-export type ApprovalKind = 'commandExecution' | 'fileChange';
-
-export interface ApprovalExecpolicyAmendmentDecision {
-  acceptWithExecpolicyAmendment: {
-    execpolicy_amendment: string[];
-  };
-}
-
-export type ApprovalDecision =
-  | 'accept'
-  | 'acceptForSession'
-  | 'decline'
-  | 'cancel'
-  | ApprovalExecpolicyAmendmentDecision;
+export type ApprovalKind = string;
 
 export interface PendingApproval {
-  id: string;
+  requestId: string;
+  agentId: AgentId;
   kind: ApprovalKind;
   threadId: string;
   turnId: string;
   itemId: string;
+  title: string;
+  message: string;
   requestedAt: string;
   reason?: string;
   command?: string;
   cwd?: string;
   grantRoot?: string;
   proposedExecpolicyAmendment?: string[];
+  options: Array<{ id: string; label: string; kind?: string }>;
 }
 
 export interface ResolveApprovalRequest {
-  decision: ApprovalDecision;
+  decision: string;
   resolutionId: string;
 }
 
 export interface ResolveApprovalResponse {
   ok: true;
   approval: PendingApproval;
-  decision: ApprovalDecision;
+  decision: string;
   resolutionId: string;
 }
 
 export interface UserInputQuestionOption {
+  value: string;
   label: string;
   description: string;
 }
@@ -549,24 +494,28 @@ export interface UserInputQuestion {
   question: string;
   isOther: boolean;
   isSecret: boolean;
+  required?: boolean;
+  fieldType?: 'string' | 'integer' | 'number' | 'boolean' | 'string-array';
+  defaultValue?: string | number | boolean | string[] | null;
   options: UserInputQuestionOption[] | null;
 }
 
 export interface PendingUserInputRequest {
-  id: string;
+  requestId: string;
+  agentId: AgentId | null;
   threadId: string;
   turnId: string;
   itemId: string;
+  message: string;
   requestedAt: string;
   questions: UserInputQuestion[];
 }
 
-export interface UserInputAnswerPayload {
-  answers: string[];
-}
+export type UserInputValue = string | number | boolean | string[];
 
 export interface ResolveUserInputRequest {
-  answers: Record<string, UserInputAnswerPayload>;
+  answers: Record<string, UserInputValue>;
+  action?: 'submit' | 'decline' | 'cancel';
 }
 
 export interface ResolveUserInputResponse {
@@ -699,26 +648,38 @@ export interface RunEvent {
 export interface BridgeCapabilities {
   protocolVersion: number;
   streamId: string;
-  activeEngine: ChatEngine;
-  preferredEngine?: ChatEngine;
-  configuredEngines?: ChatEngine[];
-  availableEngines: ChatEngine[];
-  unifiedChatList: boolean;
+  preferredAgentId: AgentId;
+  activeAgentId: AgentId | null;
+  agents: AgentDescriptor[];
+  supportsByAgent: Record<AgentId, BridgeCapabilitySupport>;
+  agUiEvents: boolean;
   supports: BridgeCapabilitySupport;
-  supportsByEngine?: Partial<Record<ChatEngine, BridgeCapabilitySupport>>;
+}
+
+export interface AgentDescriptor {
+  agentId: AgentId;
+  displayName: string;
+  icon?: string | null;
+  version: string;
+  provenance: string;
+  lifecycle: 'ready' | 'unavailable' | 'stopped';
+  lastError?: string | null;
+  capabilities?: {
+    sessionList: boolean;
+    sessionLoad: boolean;
+    sessionResume: boolean;
+    sessionSteer: boolean;
+  } | null;
 }
 
 export interface BridgeCapabilitySupport {
   reviewStart: boolean;
-  compactStart?: boolean;
   goalSlash?: boolean;
   planMode?: boolean;
   agentList?: boolean;
   turnSteer: boolean;
   commandOutputDelta: boolean;
   fastMode?: boolean;
-  account?: boolean;
-  accountRateLimits?: boolean;
   selfUpdate: boolean;
   browserPreview: boolean;
   genericUiSurface: boolean;
@@ -738,18 +699,8 @@ export interface BridgeStatus {
   uptimeSec: number;
   connectedClients: number;
   devices: BridgeDeviceConnection[];
-  engines: Partial<Record<ChatEngine, BridgeEngineStatus>>;
+  agents: AgentDescriptor[];
   operational: BridgeOperationalStatus;
-}
-
-export interface BridgeEngineStatus {
-  configured: boolean;
-  lifecycle: 'starting' | 'ready' | 'degraded' | 'restarting' | 'dead';
-  available: boolean;
-  restartCount: number;
-  pendingRequests: number;
-  timedOutRequests: number;
-  lastError: string | null;
 }
 
 export interface BridgeOperationalStatus {
@@ -848,19 +799,6 @@ export interface BridgeRuntimeInfo {
   updaterStatus?: BridgeUpdaterStatus | null;
 }
 
-export interface CursorCredentialStatus {
-  configured: boolean;
-  valid: boolean | null;
-  source: 'env' | null;
-  apiKeyName: string | null;
-  userEmail: string | null;
-  createdAt: string | null;
-  enabled: boolean;
-  runtimeAvailable: boolean;
-  active: boolean;
-  error: string | null;
-}
-
 export interface BridgeUpdateStartResponse {
   ok: boolean;
   jobId: string;
@@ -876,11 +814,6 @@ export interface BridgeRestartStartResponse {
   logPath?: string | null;
 }
 
-export interface CodexAppServerRestartResponse {
-  ok: boolean;
-  message: string;
-}
-
 export interface RpcNotification {
   method: string;
   params: Record<string, unknown> | null;
@@ -892,7 +825,8 @@ export interface RpcNotification {
 export type BridgeSnapshotRequiredReason =
   | 'streamChanged'
   | 'replayTruncated'
-  | 'replayInconsistent';
+  | 'replayInconsistent'
+  | 'recoveryOverflow';
 
 export interface BridgeSnapshotRequiredParams {
   reason: BridgeSnapshotRequiredReason;

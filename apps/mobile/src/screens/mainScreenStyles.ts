@@ -907,7 +907,26 @@ export const createStyles = (theme: AppTheme) => {
     ...theme.typography.caption,
     color: theme.colors.error,
   },
+  userInputModalActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
+  userInputSecondaryButton: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 10,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    alignItems: 'center',
+  },
+  userInputSecondaryButtonText: {
+    ...theme.typography.body,
+    color: theme.colors.textSecondary,
+    fontWeight: '600',
+  },
   userInputSubmitButton: {
+    flexGrow: 1,
     borderWidth: 1,
     borderColor: theme.colors.borderHighlight,
     backgroundColor: theme.colors.bgInput,

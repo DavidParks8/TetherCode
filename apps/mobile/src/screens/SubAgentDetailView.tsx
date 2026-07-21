@@ -14,6 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { Chat, RunEvent } from '../api/types';
 import type { AutoScrollState, ThreadRuntimeSnapshot } from './mainScreenHelpers';
 import type { AgentThreadDisplayState } from './agentThreadDisplay';
+import type { LiveAssistantMessage } from './controllers/transcriptProjectionController';
 import type { TranscriptDisplayItem } from './transcriptMessages';
 import { ChatTranscriptView } from './ChatTranscriptView';
 import { useAppTheme, type AppTheme } from '../theme';
@@ -29,6 +30,7 @@ interface SubAgentDetailViewProps {
   chat: Chat | null;
   parentChat: Chat | null;
   runtime: ThreadRuntimeSnapshot | null;
+  liveAssistantMessages: readonly LiveAssistantMessage[] | null;
   display: AgentThreadDisplayState | null;
   title: string;
   role?: string | null;
@@ -49,6 +51,7 @@ export function SubAgentDetailView({
   chat,
   parentChat,
   runtime,
+  liveAssistantMessages,
   display,
   title,
   role,
@@ -73,6 +76,14 @@ export function SubAgentDetailView({
   });
   const latestCommand: RunEvent | null =
     runtime?.latestCommand ?? runtime?.activeCommands?.at(-1) ?? null;
+  const resolvedLiveAssistantMessages =
+    liveAssistantMessages ??
+    (runtime?.streamingText?.trim()
+      ? [{
+          messageId: `live-assistant-${chat?.id ?? 'sub-agent'}`,
+          text: runtime.streamingText,
+        }]
+      : null);
   const activityDetail = display?.detail ?? latestCommand?.detail ?? role?.trim() ?? null;
   const modalFocusRef = useModalAccessibilityFocus(visible);
   useAccessibilityAnnouncement(visible ? error ?? (loading ? 'Loading agent transcript' : null) : null);
@@ -163,7 +174,7 @@ export function SubAgentDetailView({
               onScrollInteractionStart={() => {}}
               autoScrollStateRef={autoScrollStateRef}
               bottomInset={0}
-              liveAssistantText={runtime?.streamingText ?? null}
+              liveAssistantMessages={resolvedLiveAssistantMessages}
             />
           ) : (
             <View style={styles.loadingShell} accessibilityRole="progressbar" accessibilityLabel="Loading agent transcript">

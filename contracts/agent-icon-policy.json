@@ -1,0 +1,17 @@
+{
+  "maximumBytes": 2048,
+  "cases": [
+    { "name": "absent", "value": null, "valid": true },
+    { "name": "https", "value": "https://cdn.example.test/icons/agent.png", "valid": true },
+    { "name": "https-query", "value": "https://cdn.example.test/icons/agent.png?version=1", "valid": true },
+    { "name": "http", "value": "http://cdn.example.test/icon.png", "valid": false },
+    { "name": "file", "value": "file:///tmp/icon.png", "valid": false },
+    { "name": "data", "value": "data:image/png;base64,AAAA", "valid": false },
+    { "name": "javascript", "value": "javascript:alert(1)", "valid": false },
+    { "name": "credentials", "value": "https://user:pass@cdn.example.test/icon.png", "valid": false },
+    { "name": "fragment", "value": "https://cdn.example.test/icon.svg#agent", "valid": false },
+    { "name": "malformed", "value": "https://[invalid", "valid": false },
+    { "name": "empty", "value": "", "valid": false },
+    { "name": "relative", "value": "/icons/agent.png", "valid": false }
+  ]
+}

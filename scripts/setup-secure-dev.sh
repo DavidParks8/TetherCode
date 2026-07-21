@@ -10,12 +10,13 @@ fi
 SECURE_ENV_FILE="$ROOT_DIR/.env.secure"
 MOBILE_ENV_FILE="$ROOT_DIR/apps/mobile/.env"
 MOBILE_ENV_EXAMPLE="$ROOT_DIR/apps/mobile/.env.example"
-BRIDGE_ACTIVE_ENGINE="${BRIDGE_ACTIVE_ENGINE:-codex}"
-BRIDGE_ENABLED_ENGINES="${BRIDGE_ENABLED_ENGINES:-$BRIDGE_ACTIVE_ENGINE}"
-OPENCODE_CLI_BIN="${OPENCODE_CLI_BIN:-opencode}"
-CURSOR_APP_SERVER_BIN="${CURSOR_APP_SERVER_BIN:-cursor-app-server}"
-CURSOR_API_KEY="${CURSOR_API_KEY:-}"
-CURSOR_MODEL="${CURSOR_MODEL:-}"
+ACP_AGENT_IDS="${ACP_AGENT_IDS:-opencode}"
+ACP_PREFERRED_AGENT="${ACP_PREFERRED_AGENT:-${ACP_AGENT_IDS%%,*}}"
+ACP_INITIALIZE_TIMEOUT_MS="${ACP_INITIALIZE_TIMEOUT_MS:-15000}"
+ACP_DISTRIBUTION="${ACP_DISTRIBUTION:-}"
+ACP_REGISTRY_URL="${ACP_REGISTRY_URL:-}"
+ACP_TRUST_UNVERIFIED="${ACP_TRUST_UNVERIFIED:-false}"
+ACP_TRUST_INSTALL_SCRIPTS="${ACP_TRUST_INSTALL_SCRIPTS:-false}"
 BRIDGE_CONNECT_URL=""
 BRIDGE_PREVIEW_CONNECT_URL=""
 CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD="${CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD:-}"
@@ -236,64 +237,6 @@ case "$BRIDGE_NETWORK_MODE" in
     ;;
 esac
 
-case "$BRIDGE_ACTIVE_ENGINE" in
-  codex|opencode|cursor)
-    ;;
-  *)
-    echo "error: BRIDGE_ACTIVE_ENGINE must be 'codex', 'opencode', or 'cursor'." >&2
-    exit 1
-    ;;
-esac
-
-validate_enabled_engines() {
-  local raw="$1"
-  local normalized=""
-  local part=""
-  local seen=","
-  local -a parts=()
-  local -a parsed=()
-
-  IFS=',' read -r -a parts <<<"$raw"
-  for part in "${parts[@]}"; do
-    normalized="$(printf '%s' "$part" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-    if [[ -z "$normalized" ]]; then
-      continue
-    fi
-    case "$normalized" in
-      codex|opencode|cursor)
-        ;;
-      *)
-        return 1
-        ;;
-    esac
-    if [[ "$seen" == *",$normalized,"* ]]; then
-      continue
-    fi
-    parsed+=("$normalized")
-    seen="${seen}${normalized},"
-  done
-
-  if (( ${#parsed[@]} == 0 )); then
-    return 1
-  fi
-
-  BRIDGE_ENABLED_ENGINES="$(IFS=,; printf '%s' "${parsed[*]}")"
-  return 0
-}
-
-if ! validate_enabled_engines "$BRIDGE_ENABLED_ENGINES"; then
-  echo "error: BRIDGE_ENABLED_ENGINES must contain one or more of 'codex', 'opencode', and 'cursor'." >&2
-  exit 1
-fi
-
-case ",$BRIDGE_ENABLED_ENGINES," in
-  *,"$BRIDGE_ACTIVE_ENGINE",*)
-    ;;
-  *)
-    BRIDGE_ACTIVE_ENGINE="${BRIDGE_ENABLED_ENGINES%%,*}"
-    ;;
-esac
-
 if [[ -n "$BRIDGE_HOST" ]]; then
   HOST_SOURCE="override"
 else
@@ -336,6 +279,33 @@ if [[ "$CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD" != "true" ]] && [[ "$CLAWDEX_BRIDGE_F
   exit 1
 fi
 
+if ! [[ "$ACP_INITIALIZE_TIMEOUT_MS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: ACP_INITIALIZE_TIMEOUT_MS must be a positive integer." >&2
+  exit 1
+fi
+
+INSTALLER_ARGS=(--agents "$ACP_AGENT_IDS" --preferred-agent "$ACP_PREFERRED_AGENT")
+if [[ -n "$ACP_DISTRIBUTION" ]]; then
+  INSTALLER_ARGS+=(--distribution "$ACP_DISTRIBUTION")
+fi
+if [[ -n "$ACP_REGISTRY_URL" ]]; then
+  INSTALLER_ARGS+=(--registry-url "$ACP_REGISTRY_URL")
+fi
+if [[ "$ACP_TRUST_UNVERIFIED" == "true" ]]; then
+  INSTALLER_ARGS+=(--trust-unverified)
+fi
+if [[ "$ACP_TRUST_INSTALL_SCRIPTS" == "true" ]]; then
+  INSTALLER_ARGS+=(--trust-install-scripts)
+fi
+node "$SCRIPT_DIR/acp-agent-install.js" "${INSTALLER_ARGS[@]}"
+
+ACP_AGENT_MANIFEST="$ROOT_DIR/.clawdex/agents.json"
+ACP_AGENT_ROOTS="$ROOT_DIR/.clawdex/agents"
+if [[ ! -f "$ACP_AGENT_MANIFEST" ]] || [[ ! -d "$ACP_AGENT_ROOTS" ]]; then
+  echo "error: ACP installer did not produce the required local manifest and install root." >&2
+  exit 1
+fi
+
 cat > "$SECURE_ENV_FILE" <<EOT
 BRIDGE_NETWORK_MODE=$BRIDGE_NETWORK_MODE
 BRIDGE_HOST=$BRIDGE_HOST
@@ -346,14 +316,10 @@ BRIDGE_CONNECT_URL=$BRIDGE_CONNECT_URL
 BRIDGE_PREVIEW_CONNECT_URL=$BRIDGE_PREVIEW_CONNECT_URL
 BRIDGE_AUTH_TOKEN=$BRIDGE_TOKEN
 BRIDGE_ALLOW_QUERY_TOKEN_AUTH=true
-BRIDGE_ACTIVE_ENGINE=$BRIDGE_ACTIVE_ENGINE
-BRIDGE_ENABLED_ENGINES=$BRIDGE_ENABLED_ENGINES
+ACP_AGENT_MANIFEST=$ACP_AGENT_MANIFEST
+ACP_AGENT_ROOTS=$ACP_AGENT_ROOTS
+ACP_INITIALIZE_TIMEOUT_MS=$ACP_INITIALIZE_TIMEOUT_MS
 CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD=$CLAWDEX_BRIDGE_FORCE_SOURCE_BUILD
-CODEX_CLI_BIN=codex
-OPENCODE_CLI_BIN=$OPENCODE_CLI_BIN
-CURSOR_APP_SERVER_BIN=$CURSOR_APP_SERVER_BIN
-CURSOR_API_KEY=$CURSOR_API_KEY
-CURSOR_MODEL=$CURSOR_MODEL
 BRIDGE_WORKDIR=$ROOT_DIR
 EOT
 
@@ -374,7 +340,7 @@ echo "Bridge network mode: $BRIDGE_NETWORK_MODE"
 echo "Bridge host: $BRIDGE_HOST ($HOST_SOURCE)"
 echo "Bridge port: $BRIDGE_PORT"
 echo "Bridge connect URL: $BRIDGE_CONNECT_URL"
-echo "Harnesses: $BRIDGE_ENABLED_ENGINES"
+echo "ACP agents: $ACP_AGENT_IDS (preferred: $ACP_PREFERRED_AGENT)"
 echo "Token source: $SECURE_ENV_FILE"
 if has_local_mobile_workspace; then
   echo "Mobile env updated: $MOBILE_ENV_FILE"

@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    ffi::OsString,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -22,6 +23,8 @@ use super::TerminalService;
 pub(crate) struct GitService {
     terminal: Arc<TerminalService>,
     path_policy: Arc<PathPolicy>,
+    global_config_paths: Arc<Vec<PathBuf>>,
+    inspect_standard_config: bool,
 }
 
 impl GitService {
@@ -29,18 +32,45 @@ impl GitService {
         Self {
             terminal,
             path_policy,
+            global_config_paths: Arc::new(global_git_config_paths()),
+            inspect_standard_config: true,
         }
+    }
+
+    #[cfg(test)]
+    fn with_global_config_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.global_config_paths = Arc::new(paths);
+        self.inspect_standard_config = false;
+        self
     }
 
     fn resolve_repo_path(&self, raw_cwd: Option<&str>) -> Result<PathBuf, BridgeError> {
         self.path_policy.resolve_cwd(raw_cwd)
     }
 
+    async fn resolve_and_validate_git_path(
+        &self,
+        raw_cwd: Option<&str>,
+        require_repository: bool,
+    ) -> Result<PathBuf, BridgeError> {
+        let repo_path = self.resolve_repo_path(raw_cwd)?;
+        self.validate_repository_helpers(&repo_path).await?;
+        if require_repository {
+            self.run_git_stdout(
+                &repo_path,
+                &["rev-parse", "--git-dir"],
+                "git repository configuration inspection failed",
+            )
+            .await?;
+        }
+        Ok(repo_path)
+    }
+
     pub(crate) async fn get_status(
         &self,
         raw_cwd: Option<&str>,
     ) -> Result<GitStatusResponse, BridgeError> {
-        let repo_path = self.resolve_repo_path(raw_cwd)?;
+        let repo_path = self.resolve_and_validate_git_path(raw_cwd, true).await?;
         let args = vec![
             "-C".to_string(),
             repo_path.to_string_lossy().to_string(),
@@ -112,8 +142,7 @@ impl GitService {
         &self,
         raw_cwd: Option<&str>,
     ) -> Result<GitDiffResponse, BridgeError> {
-        let repo_path = self.resolve_repo_path(raw_cwd)?;
-        self.validate_repository_helpers(&repo_path).await?;
+        let repo_path = self.resolve_and_validate_git_path(raw_cwd, true).await?;
         let entries = self.get_porcelain_status_entries(&repo_path).await?;
         let total_entries = entries.len();
         let mut sections = Vec::new();
@@ -247,7 +276,7 @@ impl GitService {
         raw_cwd: Option<&str>,
         limit: Option<usize>,
     ) -> Result<GitHistoryResponse, BridgeError> {
-        let repo_path = self.resolve_repo_path(raw_cwd)?;
+        let repo_path = self.resolve_and_validate_git_path(raw_cwd, true).await?;
         let history_limit = limit.unwrap_or(12).clamp(1, 30);
         let args = vec![
             "-C".to_string(),
@@ -284,10 +313,17 @@ impl GitService {
         &self,
         raw_cwd: Option<&str>,
     ) -> Result<GitBranchesResponse, BridgeError> {
-        let repo_path = self.resolve_repo_path(raw_cwd)?;
+        let repo_path = self.resolve_and_validate_git_path(raw_cwd, true).await?;
+        self.get_branches_at_path(&repo_path).await
+    }
+
+    async fn get_branches_at_path(
+        &self,
+        repo_path: &Path,
+    ) -> Result<GitBranchesResponse, BridgeError> {
         let output = self
             .run_git_stdout(
-                &repo_path,
+                repo_path,
                 &[
                     "branch",
                     "--all",
@@ -314,10 +350,9 @@ impl GitService {
         branch: String,
         raw_cwd: Option<&str>,
     ) -> Result<GitSwitchResponse, BridgeError> {
-        let repo_path = self.resolve_repo_path(raw_cwd)?;
-        self.validate_repository_helpers(&repo_path).await?;
+        let repo_path = self.resolve_and_validate_git_path(raw_cwd, true).await?;
         let target = normalize_git_branch_target(&branch)?;
-        let known_branches = self.get_branches(raw_cwd).await?.branches;
+        let known_branches = self.get_branches_at_path(&repo_path).await?.branches;
         let switch_target = resolve_switch_target(&target, &known_branches);
         let mut args = vec![
             "-C".to_string(),
@@ -350,7 +385,10 @@ impl GitService {
         raw_parent_path: Option<&str>,
         directory_name: &str,
     ) -> Result<GitCloneResponse, BridgeError> {
-        let parent_path = self.resolve_repo_path(raw_parent_path)?;
+        let parent_path = self
+            .resolve_and_validate_git_path(raw_parent_path, false)
+            .await?;
+        self.validate_credentialed_transport(&parent_path).await?;
         let repository_url = validate_remote_url(repository_url)?;
         let normalized_directory_name = resolve_clone_directory_name(directory_name)?;
         let destination_path = normalize_path(&parent_path.join(&normalized_directory_name));
@@ -387,8 +425,7 @@ impl GitService {
         path: &str,
         raw_cwd: Option<&str>,
     ) -> Result<GitStageResponse, BridgeError> {
-        let repo_path = self.resolve_repo_path(raw_cwd)?;
-        self.validate_repository_helpers(&repo_path).await?;
+        let repo_path = self.resolve_and_validate_git_path(raw_cwd, true).await?;
         let relative_path = resolve_repo_relative_path(path, &repo_path)?;
         let args = vec![
             "-C".to_string(),
@@ -417,8 +454,7 @@ impl GitService {
         &self,
         raw_cwd: Option<&str>,
     ) -> Result<GitStageAllResponse, BridgeError> {
-        let repo_path = self.resolve_repo_path(raw_cwd)?;
-        self.validate_repository_helpers(&repo_path).await?;
+        let repo_path = self.resolve_and_validate_git_path(raw_cwd, true).await?;
         let args = vec![
             "-C".to_string(),
             repo_path.to_string_lossy().to_string(),
@@ -445,7 +481,7 @@ impl GitService {
         path: &str,
         raw_cwd: Option<&str>,
     ) -> Result<GitUnstageResponse, BridgeError> {
-        let repo_path = self.resolve_repo_path(raw_cwd)?;
+        let repo_path = self.resolve_and_validate_git_path(raw_cwd, true).await?;
         let relative_path = resolve_repo_relative_path(path, &repo_path)?;
         let args = vec![
             "-C".to_string(),
@@ -475,7 +511,7 @@ impl GitService {
         &self,
         raw_cwd: Option<&str>,
     ) -> Result<GitUnstageAllResponse, BridgeError> {
-        let repo_path = self.resolve_repo_path(raw_cwd)?;
+        let repo_path = self.resolve_and_validate_git_path(raw_cwd, true).await?;
         let args = vec![
             "-C".to_string(),
             repo_path.to_string_lossy().to_string(),
@@ -504,8 +540,7 @@ impl GitService {
         message: String,
         raw_cwd: Option<&str>,
     ) -> Result<GitCommitResponse, BridgeError> {
-        let repo_path = self.resolve_repo_path(raw_cwd)?;
-        self.validate_repository_helpers(&repo_path).await?;
+        let repo_path = self.resolve_and_validate_git_path(raw_cwd, true).await?;
         let args = vec![
             "-C".to_string(),
             repo_path.to_string_lossy().to_string(),
@@ -529,8 +564,8 @@ impl GitService {
     }
 
     pub(crate) async fn push(&self, raw_cwd: Option<&str>) -> Result<GitPushResponse, BridgeError> {
-        let repo_path = self.resolve_repo_path(raw_cwd)?;
-        self.validate_repository_helpers(&repo_path).await?;
+        let repo_path = self.resolve_and_validate_git_path(raw_cwd, true).await?;
+        self.validate_credentialed_transport(&repo_path).await?;
         self.validate_repository_remotes(&repo_path).await?;
         let status_output = self
             .run_git_stdout(
@@ -700,32 +735,273 @@ impl GitService {
     }
 
     async fn validate_repository_helpers(&self, repo_path: &Path) -> Result<(), BridgeError> {
+        self.validate_repository_config_source(repo_path, &[])
+            .await?;
+        if !self.inspect_standard_config {
+            for global_config in self.global_config_paths.iter() {
+                if global_config.is_file() {
+                    self.validate_repository_config_source(
+                        repo_path,
+                        &[
+                            "--file".to_string(),
+                            global_config.to_string_lossy().to_string(),
+                        ],
+                    )
+                    .await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn validate_repository_config_source(
+        &self,
+        repo_path: &Path,
+        source_args: &[String],
+    ) -> Result<(), BridgeError> {
+        let args = [
+            "-C".to_string(),
+            repo_path.to_string_lossy().to_string(),
+            "config".to_string(),
+        ]
+        .into_iter()
+        .chain(source_args.iter().cloned())
+        .chain([
+            "--includes".to_string(),
+            "--show-origin".to_string(),
+            "--show-scope".to_string(),
+            "--null".to_string(),
+            "--list".to_string(),
+        ])
+        .collect::<Vec<_>>();
+        let result = self
+            .terminal
+            .inspect_git_config(&args, repo_path.to_path_buf(), self.inspect_standard_config)
+            .await?;
+        match result.code {
+            Some(0) => validate_effective_git_config(&result.stdout),
+            _ => Err(BridgeError::server(
+                "git repository configuration inspection failed",
+            )),
+        }
+    }
+
+    async fn validate_credentialed_transport(&self, repo_path: &Path) -> Result<(), BridgeError> {
+        validate_credential_environment()?;
+        for global_config in self.global_config_paths.iter() {
+            if global_config.is_file() {
+                let source_args = vec![
+                    "--file".to_string(),
+                    global_config.to_string_lossy().to_string(),
+                ];
+                self.validate_transport_config_source(repo_path, &source_args)
+                    .await?;
+            }
+        }
+        self.validate_transport_config_source(repo_path, &[]).await
+    }
+
+    async fn validate_transport_config_source(
+        &self,
+        repo_path: &Path,
+        source_args: &[String],
+    ) -> Result<(), BridgeError> {
         let args = vec![
             "-C".to_string(),
             repo_path.to_string_lossy().to_string(),
             "config".to_string(),
-            "--local".to_string(),
-            "--get-regexp".to_string(),
-            "^(core\\.(hookspath|fsmonitor)|credential\\..*helper|diff\\..*\\.(command|textconv)|filter\\..*\\.(clean|smudge|process)|remote\\..*\\.(proxy|vcs))$".to_string(),
         ];
+        let args = args
+            .into_iter()
+            .chain(source_args.iter().cloned())
+            .chain([
+            "--includes".to_string(),
+            "--show-origin".to_string(),
+            "--null".to_string(),
+            "--get-regexp".to_string(),
+            r"^(http\..*|https\..*|remote\..*\.proxy|core\.gitproxy|credential\..*helper|url\..*\.insteadof)$".to_string(),
+            ])
+            .collect::<Vec<_>>();
         let result = self
             .terminal
             .execute_git(&args, repo_path.to_path_buf(), None)
             .await?;
         match result.code {
-            Some(0) if !result.stdout.trim().is_empty() => Err(BridgeError::forbidden(
-                "unsafe_git_configuration",
-                "Repository Git configuration contains executable helpers or remote overrides.",
-            )),
+            Some(0) => validate_transport_config_output(&result.stdout),
             Some(1) => Ok(()),
-            Some(0) => Ok(()),
-            _ => Err(BridgeError::server(if result.stderr.is_empty() {
-                "git repository configuration inspection failed"
-            } else {
-                &result.stderr
-            })),
+            _ => Err(BridgeError::server(
+                "git transport configuration inspection failed",
+            )),
         }
     }
+}
+
+fn global_git_config_paths() -> Vec<PathBuf> {
+    global_git_config_paths_from(
+        std::env::var_os("HOME"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+    )
+}
+
+fn global_git_config_paths_from(home: Option<OsString>, xdg: Option<OsString>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(home) = home.map(PathBuf::from) {
+        paths.push(home.join(".gitconfig"));
+        if xdg.is_none() {
+            paths.push(home.join(".config/git/config"));
+        }
+    }
+    if let Some(xdg) = xdg.map(PathBuf::from) {
+        paths.push(xdg.join("git/config"));
+    }
+    paths
+}
+
+const UNSAFE_GIT_ENVIRONMENT: &[&str] = &[
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_HTTP_PROXY_AUTHMETHOD",
+    "GIT_PROXY_COMMAND",
+    "GIT_SSL_CAINFO",
+    "GIT_SSL_CAPATH",
+    "GIT_SSL_CERT",
+    "GIT_SSL_CIPHER_LIST",
+    "GIT_SSL_KEY",
+    "GIT_SSL_NO_VERIFY",
+    "CURL_CA_BUNDLE",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "ALL_PROXY",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "all_proxy",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+];
+
+fn validate_credential_environment() -> Result<(), BridgeError> {
+    validate_credential_environment_with(|name| std::env::var_os(name).is_some())
+}
+
+fn validate_credential_environment_with(is_set: impl Fn(&str) -> bool) -> Result<(), BridgeError> {
+    if UNSAFE_GIT_ENVIRONMENT.iter().any(|name| is_set(name)) {
+        return Err(BridgeError::forbidden(
+            "unsafe_git_environment",
+            "Credentialed Git operations do not permit process-level proxy or TLS overrides.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_transport_config_output(raw: &str) -> Result<(), BridgeError> {
+    let mut fields = raw.split('\0').filter(|entry| !entry.is_empty());
+    while let Some(origin) = fields.next() {
+        let setting = fields.next().ok_or_else(|| {
+            BridgeError::server("git transport configuration output was malformed")
+        })?;
+        if origin.trim() == "command line:" {
+            continue;
+        }
+        let (key, value) = setting
+            .split_once('\n')
+            .or_else(|| setting.split_once(' '))
+            .unwrap_or((setting, ""));
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim();
+        let allowed = key == "http.sslverify" && value.eq_ignore_ascii_case("true");
+        if !allowed {
+            return Err(BridgeError::forbidden(
+                "unsafe_git_configuration",
+                "Credentialed Git operations reject proxy, TLS, credential-helper, and URL-rewrite overrides.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_effective_git_config(raw: &str) -> Result<(), BridgeError> {
+    let fields = raw.split('\0').collect::<Vec<_>>();
+    let records = fields.strip_suffix(&[""]).unwrap_or(&fields);
+    if records.len() % 3 != 0 {
+        return Err(BridgeError::server(
+            "git repository configuration output was malformed",
+        ));
+    }
+
+    for record in records.chunks_exact(3) {
+        let origin = record[1].trim();
+        let (key, value) = record[2].split_once('\n').ok_or_else(|| {
+            BridgeError::server("git repository configuration output was malformed")
+        })?;
+        if origin == "command line:" {
+            continue;
+        }
+
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim();
+        let executable = key == "core.hookspath"
+            || key == "core.fsmonitor"
+            || key == "core.sshcommand"
+            || key == "core.editor"
+            || key == "sequence.editor"
+            || (key.starts_with("credential.") && key.ends_with("helper"))
+            || (key.starts_with("filter.")
+                && [".clean", ".smudge", ".process"]
+                    .iter()
+                    .any(|suffix| key.ends_with(suffix)))
+            || (key.starts_with("diff.")
+                && [".command", ".textconv"]
+                    .iter()
+                    .any(|suffix| key.ends_with(suffix)))
+            || (key.starts_with("merge.") && key.ends_with(".driver"))
+            || (key.starts_with("alias.") && value.starts_with('!'));
+        let unsafe_transport = (key.starts_with("http.")
+            && !(key == "http.sslverify" && value.eq_ignore_ascii_case("true")))
+            || key.starts_with("https.")
+            || key == "core.gitproxy"
+            || key.starts_with("protocol.")
+            || (key.starts_with("remote.") && (key.ends_with(".proxy") || key.ends_with(".vcs")))
+            || (key.starts_with("url.") && key.ends_with(".insteadof"));
+        let unsafe_include = (key == "include.path" || key.starts_with("includeif."))
+            && !included_config_was_inspected(origin, value, records);
+        if executable || unsafe_transport || unsafe_include {
+            return Err(BridgeError::forbidden(
+                "unsafe_git_configuration",
+                "Git configuration contains executable helpers, unsafe includes, or transport overrides.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn included_config_was_inspected(origin: &str, value: &str, records: &[&str]) -> bool {
+    let Some(origin_path) = origin.strip_prefix("file:") else {
+        return false;
+    };
+    let include_path = Path::new(value);
+    let resolved = if include_path.is_absolute() {
+        include_path.to_path_buf()
+    } else {
+        Path::new(origin_path)
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(include_path)
+    };
+    let Ok(canonical) = resolved.canonicalize() else {
+        return false;
+    };
+    records.chunks_exact(3).any(|record| {
+        record[1]
+            .strip_prefix("file:")
+            .and_then(|path| Path::new(path).canonicalize().ok())
+            .is_some_and(|inspected| inspected == canonical)
+    })
 }
 
 fn validate_remote_url(raw: &str) -> Result<String, BridgeError> {
@@ -1087,10 +1363,12 @@ fn resolve_clone_directory_name(raw_name: &str) -> Result<String, BridgeError> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{
-        normalize_git_branch_target, parse_git_branches, parse_git_history,
-        parse_porcelain_status_entries, parse_status_branch, parse_status_has_upstream,
-        resolve_clone_directory_name, resolve_repo_relative_path, resolve_switch_target,
-        select_default_remote_name, validate_remote_name, validate_remote_url, GitSwitchTarget,
+        global_git_config_paths_from, normalize_git_branch_target, parse_git_branches,
+        parse_git_history, parse_porcelain_status_entries, parse_status_branch,
+        parse_status_has_upstream, resolve_clone_directory_name, resolve_repo_relative_path,
+        resolve_switch_target, select_default_remote_name, validate_credential_environment_with,
+        validate_effective_git_config, validate_remote_name, validate_remote_url,
+        validate_transport_config_output, GitSwitchTarget,
     };
     use crate::{path_policy::PathPolicy, GitBranchSummary};
     use std::{
@@ -1136,7 +1414,7 @@ mod tests {
         fn service(&self) -> super::GitService {
             let policy = Arc::new(PathPolicy::new(self.0.clone(), false).expect("create policy"));
             let terminal = Arc::new(super::TerminalService::new(policy.clone(), HashSet::new()));
-            super::GitService::new(terminal, policy)
+            super::GitService::new(terminal, policy).with_global_config_paths(Vec::new())
         }
     }
 
@@ -1266,6 +1544,9 @@ mod tests {
             "https://github.com/example/repo.git"
         );
         for remote in [
+            "",
+            "not a url",
+            "https://",
             "git@github.com:example/repo.git",
             "ssh://git@github.com/example/repo.git",
             "file:///tmp/repo",
@@ -1282,9 +1563,117 @@ mod tests {
     fn rejects_option_like_or_control_remote_names() {
         assert!(validate_remote_name("origin").is_ok());
         assert!(validate_remote_name("team/upstream-1").is_ok());
-        for name in ["--exec", "bad remote", "bad\nremote", ""] {
+        for name in ["--exec", "bad remote", "bad\nremote", "bad:remote", ""] {
             assert!(validate_remote_name(name).is_err(), "accepted {name:?}");
         }
+    }
+
+    #[test]
+    fn rejects_unsafe_transport_configuration_entries() {
+        assert!(
+            validate_transport_config_output("file:.git/config\0http.sslVerify\ntrue\0").is_ok()
+        );
+        assert!(validate_transport_config_output(
+            "command line:\0credential.helper\n!controlled-helper\0"
+        )
+        .is_ok());
+        let insecure_proxy = format!(
+            "file:.git/config\0http.https://example.com.proxy\n{}\0",
+            ["http", "://proxy.invalid"].concat()
+        );
+        let insecure_rewrite = format!(
+            "file:.git/config\0url.{}/.insteadOf\nhttps://example.com/\0",
+            ["http", "://example.com"].concat()
+        );
+        for entry in [
+            "file:.git/config\0http.sslVerify\nfalse\0".to_string(),
+            insecure_proxy,
+            "file:.git/config\0http.sslCAInfo\n/tmp/ca.pem\0".to_string(),
+            "file:.git/config\0remote.origin.proxy\ncommand\0".to_string(),
+            "file:.git/config\0core.gitProxy\ncommand\0".to_string(),
+            "file:.git/config\0credential.helper\n!command\0".to_string(),
+            insecure_rewrite,
+        ] {
+            assert!(
+                validate_transport_config_output(&entry).is_err(),
+                "accepted {entry:?}"
+            );
+        }
+        assert!(validate_transport_config_output("file:.git/config\0").is_err());
+    }
+
+    #[test]
+    fn parses_effective_git_configuration_fail_closed() {
+        assert!(validate_effective_git_config(
+            "local\0file:.git/config\0user.name\nClawdex Tests\0"
+        )
+        .is_ok());
+        for key_value in [
+            "filter.secret.clean\n/tmp/helper",
+            "diff.secret.textconv\n/tmp/helper",
+            "merge.secret.driver\n/tmp/helper %O %A %B",
+            "core.sshCommand\n/tmp/helper",
+            "credential.helper\nosxkeychain",
+            "sequence.editor\n/tmp/helper",
+            "alias.deploy\n!/tmp/helper",
+            "protocol.file.allow\nalways",
+        ] {
+            let raw = format!("local\0file:.git/config\0{key_value}\0");
+            assert!(
+                validate_effective_git_config(&raw).is_err(),
+                "accepted {key_value:?}"
+            );
+        }
+        assert!(validate_effective_git_config("local\0file:.git/config\0user.name\0").is_err());
+    }
+
+    #[test]
+    fn rejects_credentialed_git_environment_overrides() {
+        assert!(validate_credential_environment_with(|_| false).is_ok());
+        for variable in [
+            "GIT_SSL_NO_VERIFY",
+            "GIT_CONFIG_COUNT",
+            "GIT_PROXY_COMMAND",
+            "CURL_CA_BUNDLE",
+            "HTTPS_PROXY",
+            "http_proxy",
+        ] {
+            assert!(
+                validate_credential_environment_with(|name| name == variable).is_err(),
+                "accepted {variable}"
+            );
+        }
+        assert!(
+            validate_credential_environment_with(|name| { name == "GIT_CONFIG_SYSTEM" }).is_err()
+        );
+    }
+
+    #[test]
+    fn resolves_standard_global_git_config_paths() {
+        use std::ffi::OsString;
+
+        assert_eq!(
+            global_git_config_paths_from(Some(OsString::from("/home/user")), None),
+            vec![
+                PathBuf::from("/home/user/.gitconfig"),
+                PathBuf::from("/home/user/.config/git/config"),
+            ]
+        );
+        assert_eq!(
+            global_git_config_paths_from(
+                Some(OsString::from("/home/user")),
+                Some(OsString::from("/config")),
+            ),
+            vec![
+                PathBuf::from("/home/user/.gitconfig"),
+                PathBuf::from("/config/git/config"),
+            ]
+        );
+        assert!(global_git_config_paths_from(None, None).is_empty());
+        assert_eq!(
+            global_git_config_paths_from(None, Some(OsString::from("/config"))),
+            vec![PathBuf::from("/config/git/config")]
+        );
     }
 
     #[test]
@@ -1513,6 +1902,22 @@ mod tests {
 
         fs::write(repo.0.join("tracked.txt"), "first\nsecond\n").expect("modify tracked file");
         fs::write(repo.0.join("new file.txt"), "untracked\n").expect("write untracked file");
+        service
+            .run_git_diff_command(
+                &repo.0,
+                &[
+                    "diff",
+                    "--no-ext-diff",
+                    "--exit-code",
+                    "HEAD",
+                    "--",
+                    "tracked.txt",
+                ],
+                true,
+                "git diff --exit-code failed",
+            )
+            .await
+            .expect("allow git diff exit code one");
         let dirty = service.get_status(None).await.expect("dirty status");
         assert!(!dirty.clean);
         assert_eq!(dirty.total_files, 2);
@@ -1624,6 +2029,73 @@ mod tests {
         repo.git(&["config", "branch.main.merge", "refs/heads/main"]);
         let upstream_push = service.push(None).await.expect("upstream push response");
         assert!(!upstream_push.pushed);
+
+        repo.git(&["config", "http.sslVerify", "false"]);
+        let unsafe_local = service
+            .push(None)
+            .await
+            .expect_err("reject local transport override");
+        assert_eq!(
+            unsafe_local.data.unwrap()["error"],
+            "unsafe_git_configuration"
+        );
+        repo.git(&["config", "--unset", "http.sslVerify"]);
+
+        let included_config = repo.0.join("unsafe-transport.config");
+        fs::write(
+            &included_config,
+            "[http]\n\tsslCAInfo = /tmp/untrusted-ca.pem\n",
+        )
+        .expect("write included config");
+        repo.git(&[
+            "config",
+            "include.path",
+            included_config.to_str().expect("utf-8 include path"),
+        ]);
+        let unsafe_include = service
+            .push(None)
+            .await
+            .expect_err("reject included transport override");
+        assert_eq!(unsafe_include.code, -32003);
+        repo.git(&["config", "--unset", "include.path"]);
+
+        let global_config = repo.0.join("global.gitconfig");
+        fs::write(&global_config, "[core]\n\tgitProxy = command\n").expect("write global config");
+        let global_service = repo.service().with_global_config_paths(vec![global_config]);
+        assert_eq!(
+            global_service
+                .push(None)
+                .await
+                .expect_err("reject global transport override")
+                .code,
+            -32003
+        );
+
+        let missing_global_service = repo
+            .service()
+            .with_global_config_paths(vec![repo.0.join("missing.gitconfig")]);
+        assert!(
+            !missing_global_service
+                .push(None)
+                .await
+                .expect("ignore missing global config")
+                .pushed
+        );
+
+        let malformed_global = repo.0.join("malformed.gitconfig");
+        fs::write(&malformed_global, "[http\nsslVerify = false\n")
+            .expect("write malformed global config");
+        let malformed_service = repo
+            .service()
+            .with_global_config_paths(vec![malformed_global]);
+        assert_eq!(
+            malformed_service
+                .push(None)
+                .await
+                .expect_err("reject malformed global config")
+                .code,
+            -32000
+        );
 
         repo.git(&["remote", "set-url", "origin", "file:///tmp/unsafe"]);
         let unsafe_remote = service.push(None).await.expect_err("reject unsafe remote");
@@ -1739,6 +2211,260 @@ mod tests {
             .expect_err("reject unsafe git configuration");
         assert_eq!(error.code, -32003);
         assert!(error.data.as_ref().unwrap()["error"] == "unsafe_git_configuration");
+
+        let malformed = TestDir::new("malformed-config");
+        malformed.init();
+        fs::write(
+            malformed.0.join(".git/config"),
+            "[core\nhooksPath = /tmp/evil\n",
+        )
+        .expect("write malformed local config");
+        let error = malformed
+            .service()
+            .get_diff(None)
+            .await
+            .expect_err("report malformed local config");
+        assert_eq!(error.code, -32000);
+        assert_eq!(
+            error.message,
+            "git repository configuration inspection failed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn included_filter_is_rejected_before_git_add_executes_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = TestDir::new("included-filter");
+        repo.init();
+        let sentinel = repo.0.join("filter-ran");
+        let helper = repo.0.join("filter-helper.sh");
+        fs::write(
+            &helper,
+            format!("#!/bin/sh\ntouch '{}'\ncat\n", sentinel.display()),
+        )
+        .expect("write filter helper");
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
+            .expect("make filter helper executable");
+        let included = repo.0.join("included.gitconfig");
+        fs::write(
+            &included,
+            format!("[filter \"sentinel\"]\n\tclean = {}\n", helper.display()),
+        )
+        .expect("write included config");
+        repo.git(&[
+            "config",
+            "include.path",
+            included.to_str().expect("utf-8 include path"),
+        ]);
+        fs::write(repo.0.join(".gitattributes"), "*.secret filter=sentinel\n")
+            .expect("write attributes");
+        fs::write(repo.0.join("payload.secret"), "secret\n").expect("write payload");
+
+        let error = repo
+            .service()
+            .stage_all(None)
+            .await
+            .expect_err("reject included clean filter");
+        assert_eq!(error.data.unwrap()["error"], "unsafe_git_configuration");
+        assert!(!sentinel.exists(), "validation executed the clean filter");
+    }
+
+    #[tokio::test]
+    async fn effective_config_inspects_include_if_global_includes_and_benign_entries() {
+        let include_if_repo = TestDir::new("include-if-filter");
+        include_if_repo.init();
+        let include_if_config = include_if_repo.0.join("conditional.gitconfig");
+        fs::write(
+            &include_if_config,
+            "[filter \"conditional\"]\n\tprocess = /tmp/conditional-filter\n",
+        )
+        .expect("write conditional config");
+        include_if_repo.git(&[
+            "config",
+            &format!("includeIf.gitdir:{}/.path", include_if_repo.0.display()),
+            include_if_config.to_str().expect("utf-8 include path"),
+        ]);
+        assert_eq!(
+            include_if_repo
+                .service()
+                .stage_all(None)
+                .await
+                .expect_err("reject active includeIf filter")
+                .data
+                .unwrap()["error"],
+            "unsafe_git_configuration"
+        );
+
+        let global_repo = TestDir::new("global-include-filter");
+        global_repo.init();
+        let global_included = global_repo.0.join("global-included.gitconfig");
+        fs::write(
+            &global_included,
+            "[merge \"external\"]\n\tdriver = /tmp/merge-driver %O %A %B\n",
+        )
+        .expect("write global included config");
+        let global_config = global_repo.0.join("global.gitconfig");
+        fs::write(
+            &global_config,
+            format!("[include]\n\tpath = {}\n", global_included.display()),
+        )
+        .expect("write global config");
+        assert_eq!(
+            global_repo
+                .service()
+                .with_global_config_paths(vec![global_config])
+                .stage_all(None)
+                .await
+                .expect_err("reject global included driver")
+                .data
+                .unwrap()["error"],
+            "unsafe_git_configuration"
+        );
+
+        let benign_repo = TestDir::new("benign-config");
+        benign_repo.init();
+        let benign_included = benign_repo.0.join("benign-included.gitconfig");
+        fs::write(&benign_included, "[color]\n\tui = auto\n").expect("write benign include");
+        benign_repo.git(&[
+            "config",
+            "include.path",
+            benign_included.to_str().expect("utf-8 include path"),
+        ]);
+        let benign_global = benign_repo.0.join("benign-global.gitconfig");
+        fs::write(&benign_global, "[user]\n\tuseConfigOnly = true\n")
+            .expect("write benign global config");
+        benign_repo
+            .service()
+            .with_global_config_paths(vec![benign_global])
+            .stage_all(None)
+            .await
+            .expect("accept benign effective config");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_operations_validate_all_effective_config_sources_without_running_helpers() {
+        use std::os::unix::fs::PermissionsExt;
+
+        async fn assert_reads_reject(service: &super::GitService, sentinel: &Path) {
+            for error in [
+                service.get_status(None).await.expect_err("reject status"),
+                service
+                    .get_history(None, None)
+                    .await
+                    .expect_err("reject history"),
+                service
+                    .get_branches(None)
+                    .await
+                    .expect_err("reject branches"),
+                service.get_diff(None).await.expect_err("reject diff"),
+            ] {
+                assert_eq!(error.code, -32003);
+                assert_eq!(
+                    error.data.as_ref().and_then(|data| data["error"].as_str()),
+                    Some("unsafe_git_configuration")
+                );
+                assert!(!error
+                    .message
+                    .contains(&sentinel.to_string_lossy().to_string()));
+            }
+            assert!(!sentinel.exists(), "validation executed an unsafe helper");
+        }
+
+        fn executable_filter(repo: &TestDir, name: &str) -> (PathBuf, PathBuf) {
+            let sentinel = repo.0.join(format!("{name}-ran"));
+            let helper = repo.0.join(format!("{name}.sh"));
+            fs::write(
+                &helper,
+                format!("#!/bin/sh\ntouch '{}'\ncat\n", sentinel.display()),
+            )
+            .expect("write helper");
+            fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
+                .expect("make helper executable");
+            (sentinel, helper)
+        }
+
+        for source in ["local", "included", "include-if", "worktree"] {
+            let repo = TestDir::new(&format!("read-{source}"));
+            repo.init();
+            fs::write(repo.0.join("file.txt"), "content\n").expect("write file");
+            repo.git(&["add", "file.txt"]);
+            repo.git(&["commit", "-m", "initial"]);
+            let (sentinel, helper) = executable_filter(&repo, source);
+            match source {
+                "local" => {
+                    repo.git(&[
+                        "config",
+                        "filter.local.clean",
+                        helper.to_str().expect("utf-8 helper path"),
+                    ]);
+                }
+                "included" | "include-if" => {
+                    let included = repo.0.join(format!("{source}.gitconfig"));
+                    fs::write(
+                        &included,
+                        format!("[filter \"{source}\"]\n\tclean = {}\n", helper.display()),
+                    )
+                    .expect("write included config");
+                    let key = if source == "included" {
+                        "include.path".to_string()
+                    } else {
+                        format!("includeIf.gitdir:{}/.path", repo.0.display())
+                    };
+                    repo.git(&["config", &key, included.to_str().expect("utf-8 path")]);
+                }
+                "worktree" => {
+                    repo.git(&["config", "extensions.worktreeConfig", "true"]);
+                    repo.git(&[
+                        "config",
+                        "--worktree",
+                        "filter.worktree.clean",
+                        helper.to_str().expect("utf-8 helper path"),
+                    ]);
+                }
+                _ => unreachable!(),
+            }
+            assert_reads_reject(&repo.service(), &sentinel).await;
+        }
+
+        let global_repo = TestDir::new("read-global");
+        global_repo.init();
+        let (sentinel, helper) = executable_filter(&global_repo, "global");
+        let global_config = global_repo.0.join("global.gitconfig");
+        fs::write(
+            &global_config,
+            format!("[filter \"global\"]\n\tclean = {}\n", helper.display()),
+        )
+        .expect("write global config");
+        assert_reads_reject(
+            &global_repo
+                .service()
+                .with_global_config_paths(vec![global_config]),
+            &sentinel,
+        )
+        .await;
+
+        let benign_repo = TestDir::new("read-benign");
+        benign_repo.init();
+        fs::write(benign_repo.0.join("file.txt"), "content\n").expect("write file");
+        benign_repo.git(&["add", "file.txt"]);
+        benign_repo.git(&["commit", "-m", "initial"]);
+        let benign_service = benign_repo.service();
+        benign_service
+            .get_status(None)
+            .await
+            .expect("benign status");
+        benign_service
+            .get_history(None, None)
+            .await
+            .expect("benign history");
+        benign_service
+            .get_branches(None)
+            .await
+            .expect("benign branches");
+        benign_service.get_diff(None).await.expect("benign diff");
     }
 
     #[tokio::test]

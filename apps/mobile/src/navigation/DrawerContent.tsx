@@ -17,16 +17,16 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { HostBridgeApiClient } from '../api/client';
-import type { ChatEngine, ChatSummary, RpcNotification } from '../api/types';
+import type { AgentDescriptor, AgentId, ChatSummary, RpcNotification } from '../api/types';
 import type { HostBridgeWsClient } from '../api/ws';
-import { getChatEngineLabel } from '../chatEngines';
+import { parseAgUiEventNotification } from '../api/agUi';
+import { findAgentDescriptor, getAgentLabel } from '../agents';
 import { BrandMark } from '../components/BrandMark';
 import { controlAccessibilityState, decorativeAccessibilityProps } from '../accessibility';
-import { ChatEngineIcon } from '../components/ChatEngineIcon';
+import { AgentIcon } from '../components/AgentIcon';
 import {
-  DEFAULT_DRAWER_CHAT_ENGINES,
   filterDrawerChats,
-  filterDrawerChatsByEngines,
+  filterDrawerChatsByAgents,
   searchDrawerChats,
 } from './drawerChats';
 import {
@@ -83,24 +83,6 @@ const DRAWER_ROW_RADIUS = 14;
 const DRAWER_ACTION_HEIGHT = 36;
 const DRAWER_FOOTER_ACTION_HEIGHT = 52;
 const DRAWER_ICON_TILE_SIZE = 26;
-const CHAT_FILTER_OPTIONS: ReadonlyArray<{
-  key: ChatEngine;
-  label: string;
-}> = [
-  {
-    key: 'codex',
-    label: 'Codex',
-  },
-  {
-    key: 'opencode',
-    label: 'OpenCode',
-  },
-  {
-    key: 'cursor',
-    label: 'Cursor',
-  },
-];
-
 export const DrawerContent = memo(function DrawerContentComponent({
   api,
   ws,
@@ -115,13 +97,10 @@ export const DrawerContent = memo(function DrawerContentComponent({
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingOlderChats, setLoadingOlderChats] = useState(false);
+  const [partialHistoryDiagnostics, setPartialHistoryDiagnostics] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [selectedChatEngines, setSelectedChatEngines] = useState<ChatEngine[]>(() => [
-    ...DEFAULT_DRAWER_CHAT_ENGINES,
-  ]);
-  const [availableChatEngines, setAvailableChatEngines] = useState<ChatEngine[]>(() => [
-    ...DEFAULT_DRAWER_CHAT_ENGINES,
-  ]);
+  const [selectedAgentIds, setSelectedAgentIds] = useState<AgentId[]>([]);
+  const [agents, setAgents] = useState<AgentDescriptor[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMenuVisible, setFilterMenuVisible] = useState(false);
   const [collapsedWorkspaceKeys, setCollapsedWorkspaceKeys] = useState<Set<string>>(new Set());
@@ -149,16 +128,18 @@ export const DrawerContent = memo(function DrawerContentComponent({
   const chatsRef = useRef<ChatSummary[]>([]);
   const styles = useMemo(() => createStyles(theme), [theme]);
   const chatFilterOptions = useMemo(
-    () => CHAT_FILTER_OPTIONS.filter((option) => availableChatEngines.includes(option.key)),
-    [availableChatEngines]
+    () => agents.filter((agent) => agent.lifecycle === 'ready'),
+    [agents]
   );
-  const engineFilteredChats = useMemo(
-    () => filterDrawerChatsByEngines(chats, selectedChatEngines),
-    [chats, selectedChatEngines]
+  const agentFilteredChats = useMemo(
+    () => selectedAgentIds.length === chatFilterOptions.length
+      ? chats
+      : filterDrawerChatsByAgents(chats, selectedAgentIds),
+    [chatFilterOptions.length, chats, selectedAgentIds]
   );
   const filteredChats = useMemo(
-    () => searchDrawerChats(engineFilteredChats, searchQuery),
-    [engineFilteredChats, searchQuery]
+    () => searchDrawerChats(agentFilteredChats, searchQuery),
+    [agentFilteredChats, searchQuery]
   );
 
   useEffect(() => {
@@ -167,9 +148,10 @@ export const DrawerContent = memo(function DrawerContentComponent({
       if (cancelled) {
         return;
       }
-      const engines = capabilities.availableEngines;
-      setAvailableChatEngines(engines);
-      setSelectedChatEngines(engines);
+      setAgents(capabilities.agents);
+      setSelectedAgentIds(
+        capabilities.agents.filter((agent) => agent.lifecycle === 'ready').map((agent) => agent.agentId)
+      );
     }).catch(() => {});
     return () => {
       cancelled = true;
@@ -183,10 +165,10 @@ export const DrawerContent = memo(function DrawerContentComponent({
   const baseChatSections = useMemo(
     () =>
       sortWorkspaceSections(
-        sortPinnedChatsInSections(buildChatWorkspaceSections(engineFilteredChats), pinnedChatIds),
+        sortPinnedChatsInSections(buildChatWorkspaceSections(agentFilteredChats), pinnedChatIds),
         pinnedWorkspacePaths
       ),
-    [engineFilteredChats, pinnedChatIds, pinnedWorkspacePaths]
+    [agentFilteredChats, pinnedChatIds, pinnedWorkspacePaths]
   );
   const workspaceChatSections = useMemo(
     () =>
@@ -515,11 +497,11 @@ export const DrawerContent = memo(function DrawerContentComponent({
         return true;
       };
 
-      const loadDeepChatsOnce = async () => {
+      const loadDeepChatsOnce = async (forceDeepRefresh = false) => {
         if (hasLoadedDeepChatListRef.current || deepLoadInFlightRef.current) {
           return;
         }
-        if (applyCachedDeepChats()) {
+        if (!forceDeepRefresh && applyCachedDeepChats()) {
           return;
         }
 
@@ -527,17 +509,19 @@ export const DrawerContent = memo(function DrawerContentComponent({
           .listAllChats({
             pageLimit: DRAWER_DEEP_CHAT_PAGE_LIMIT,
             cacheTtlMs: DRAWER_DEEP_CHAT_CACHE_TTL_MS,
+            forceRefresh: forceDeepRefresh,
             onPage: (loadedChats) => {
               if (activeRef.current) {
                 applyChats(loadedChats);
               }
             },
           })
-          .then((deepChats) => {
+          .then((result) => {
             hasLoadedDeepChatListRef.current = true;
             if (activeRef.current) {
-              applyChats(deepChats);
-              void hydrateLoadedChats(deepChats);
+              applyChats(result.chats);
+              void hydrateLoadedChats(result.chats);
+              setPartialHistoryDiagnostics(result.partial ? result.diagnostics : []);
             }
           })
           .catch(() => {})
@@ -578,6 +562,11 @@ export const DrawerContent = memo(function DrawerContentComponent({
             void loadDeepChatsOnce();
           }
         }, DRAWER_DEEP_LOAD_DELAY_MS);
+      };
+
+      retryDeepChatListRef.current = async () => {
+        hasLoadedDeepChatListRef.current = false;
+        await loadDeepChatsOnce(true);
       };
 
       let streamStarted = false;
@@ -733,6 +722,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
     },
     [active, loadChatsNow]
   );
+  const retryDeepChatListRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
     activeRef.current = active;
@@ -790,12 +780,16 @@ export const DrawerContent = memo(function DrawerContentComponent({
       }
 
       setRunIndicatorsByThread((prev) => updateDrawerRunIndicatorsForEvent(prev, event));
+      const agUiEvent = parseAgUiEventNotification(event)?.event;
+      const agUiLifecycleEvent =
+        agUiEvent?.type === 'RUN_STARTED' ||
+        agUiEvent?.type === 'RUN_FINISHED' ||
+        agUiEvent?.type === 'RUN_ERROR';
 
       if (
         event.method === 'thread/started' ||
-        event.method === 'turn/started' ||
+        agUiLifecycleEvent ||
         event.method === 'thread/name/updated' ||
-        event.method === 'turn/completed' ||
         event.method === 'thread/status/changed'
       ) {
         scheduleLoadChats(DRAWER_EVENT_REFRESH_DEBOUNCE_MS, true);
@@ -910,19 +904,18 @@ export const DrawerContent = memo(function DrawerContentComponent({
   }, [baseChatSections]);
 
   const filteredChatCount = filteredChats.length;
-  const selectedChatEngineSet = useMemo(
-    () => new Set(selectedChatEngines),
-    [selectedChatEngines]
+  const selectedAgentIdSet = useMemo(
+    () => new Set(selectedAgentIds),
+    [selectedAgentIds]
   );
-  const hasFilteredEngines = selectedChatEngines.length < availableChatEngines.length;
-  const hasActiveFilters = hasFilteredEngines || isSearching;
-  const singleSelectedEngine =
-    selectedChatEngines.length === 1 ? selectedChatEngines[0] : null;
-  const emptyTitle = singleSelectedEngine
-    ? `No ${getChatEngineLabel(singleSelectedEngine)} chats`
+  const hasFilteredAgents = selectedAgentIds.length < chatFilterOptions.length;
+  const hasActiveFilters = hasFilteredAgents || isSearching;
+  const singleSelectedAgentId = selectedAgentIds.length === 1 ? selectedAgentIds[0] : null;
+  const emptyTitle = singleSelectedAgentId
+    ? `No ${getAgentLabel(agents, singleSelectedAgentId)} chats`
     : 'No chats yet';
-  const emptyHint = singleSelectedEngine
-    ? `Turn another engine back on or start a new ${getChatEngineLabel(singleSelectedEngine)} chat.`
+  const emptyHint = singleSelectedAgentId
+    ? `Turn another agent back on or start a new ${getAgentLabel(agents, singleSelectedAgentId)} chat.`
     : 'Start a new chat and it will show up here with live activity.';
   const resolvedEmptyTitle = isSearching ? 'No matching chats' : emptyTitle;
   const resolvedEmptyHint = isSearching
@@ -989,18 +982,13 @@ export const DrawerContent = memo(function DrawerContentComponent({
     [cancelChatListStream, isSearching, onNavigate]
   );
 
-  const toggleChatEngineFilter = useCallback((engine: ChatEngine) => {
-    setSelectedChatEngines((prev) => {
-      const hasEngine = prev.includes(engine);
-      if (hasEngine && prev.length === 1) {
+  const toggleAgentFilter = useCallback((agentId: AgentId) => {
+    setSelectedAgentIds((prev) => {
+      const selected = prev.includes(agentId);
+      if (selected && prev.length === 1) {
         return prev;
       }
-
-      const next = hasEngine
-        ? prev.filter((entry) => entry !== engine)
-        : [...prev, engine];
-
-      return DEFAULT_DRAWER_CHAT_ENGINES.filter((entry) => next.includes(entry));
+      return selected ? prev.filter((entry) => entry !== agentId) : [...prev, agentId];
     });
   }, []);
 
@@ -1098,7 +1086,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
             <View style={styles.sectionHeaderRight}>
               <View style={styles.filterMenuAnchor}>
                 <Pressable
-                  accessibilityLabel="Filter chat engines"
+                  accessibilityLabel="Filter chat agents"
                   accessibilityRole="button"
                   accessibilityState={controlAccessibilityState({ expanded: filterMenuVisible })}
                   hitSlop={6}
@@ -1164,14 +1152,14 @@ export const DrawerContent = memo(function DrawerContentComponent({
               </View>
               <View style={styles.filterChipRow}>
                 {chatFilterOptions.map((option) => {
-                  const selected = selectedChatEngineSet.has(option.key);
+                  const selected = selectedAgentIdSet.has(option.agentId);
                   return (
                     <Pressable
-                      key={option.key}
-                      accessibilityLabel={`Toggle ${option.label} chats`}
+                      key={option.agentId}
+                      accessibilityLabel={`Toggle ${option.displayName} chats`}
                       accessibilityRole="checkbox"
                       accessibilityState={{ checked: selected }}
-                      onPress={() => toggleChatEngineFilter(option.key)}
+                      onPress={() => toggleAgentFilter(option.agentId)}
                       style={({ pressed }) => [
                         styles.filterChip,
                         selected && styles.filterChipSelected,
@@ -1184,7 +1172,7 @@ export const DrawerContent = memo(function DrawerContentComponent({
                           selected && styles.filterChipTextSelected,
                         ]}
                       >
-                        {option.label}
+                        {option.displayName}
                       </Text>
                       {selected ? (
                         <Ionicons
@@ -1240,6 +1228,23 @@ export const DrawerContent = memo(function DrawerContentComponent({
                   }}
                   tintColor={theme.colors.textMuted}
                 />
+              }
+              ListHeaderComponent={
+                partialHistoryDiagnostics.length > 0 ? (
+                  <Pressable
+                    style={styles.emptyStateCard}
+                    onPress={() => {
+                      void retryDeepChatListRef.current();
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Chat history is partial. Retry loading all chats"
+                  >
+                    <Text style={styles.emptyTitle}>Some chat history could not be listed</Text>
+                    <Text style={styles.emptyHint}>
+                      {`${partialHistoryDiagnostics.join(' ')} Tap to retry.`}
+                    </Text>
+                  </Pressable>
+                ) : null
               }
               ListFooterComponent={
                 loadingOlderChats ? (
@@ -1432,10 +1437,10 @@ export const DrawerContent = memo(function DrawerContentComponent({
                                 style={styles.chatPinnedIcon}
                               />
                             ) : null}
-                            <ChatEngineIcon
-                              engine={chat.engine}
+                            <AgentIcon
+                              agent={findAgentDescriptor(agents, chat.agentId)}
                               size={16}
-                              style={styles.chatEngineIcon}
+                              style={styles.chatAgentIcon}
                             />
                             <Text
                               style={[
@@ -1640,7 +1645,7 @@ function areDrawerChatListsEquivalent(
       left.updatedAt !== right.updatedAt ||
       left.lastMessagePreview !== right.lastMessagePreview ||
       left.cwd !== right.cwd ||
-      left.engine !== right.engine ||
+      left.agentId !== right.agentId ||
       left.sourceKind !== right.sourceKind ||
       left.parentThreadId !== right.parentThreadId ||
       left.subAgentDepth !== right.subAgentDepth ||
@@ -2328,7 +2333,7 @@ const createStyles = (theme: AppTheme) => {
     flexShrink: 0,
     opacity: 0.72,
   },
-  chatEngineIcon: {
+  chatAgentIcon: {
     opacity: 0.92,
   },
   chatTitle: {

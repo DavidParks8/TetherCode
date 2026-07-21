@@ -25,7 +25,6 @@ pub(super) const QUEUE_COMPLETION_DISPOSITION_WAIT_MS: u64 = 2_000;
 pub(super) const QUEUE_COMPLETION_DISPOSITION_LIMIT: usize = 1_024;
 pub(super) const SUBMISSION_DEDUPE_LIMIT: usize = 1_024;
 pub(super) const APPROVAL_RESOLUTION_DEDUPE_LIMIT: usize = 1_024;
-pub(super) const QUEUE_STATUS_DISPATCH_FALLBACK_MS: u64 = 250;
 
 pub(super) struct PushService {
     pub(super) registry: PushRegistryStore,
@@ -62,29 +61,133 @@ impl PushService {
     pub(super) fn spawn_event_loop_with_queue(
         self: &Arc<Self>,
         hub: &Arc<ClientHub>,
-        backend: Arc<RuntimeBackend>,
+        _backend: Arc<RuntimeBackend>,
         queue: Option<Arc<BridgeQueueService>>,
     ) {
         let this = Arc::clone(self);
-        let mut receiver = hub.subscribe_notifications();
+        let mut receiver = hub.subscribe_canonical_events();
         tokio::spawn(async move {
-            loop {
-                match receiver.recv().await {
-                    Ok(notification) => {
-                        this.handle_notification(
-                            &notification.method,
-                            &notification.params,
-                            Some(&backend),
-                            queue.as_deref(),
-                            Some(notification.event_id),
-                        )
-                        .await;
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
-                }
+            while let Some(event) = receiver.recv().await {
+                this.handle_canonical_event(event, queue.as_deref()).await;
             }
         });
+    }
+
+    pub(super) async fn handle_canonical_event(
+        self: &Arc<Self>,
+        received: CanonicalHubEvent,
+        queue: Option<&BridgeQueueService>,
+    ) {
+        match received.event {
+            crate::acp::events::CanonicalEvent::MessageChunk {
+                thread_id,
+                role: crate::acp::events::MessageRole::Agent,
+                content,
+                ..
+            } => self.accumulate_canonical_reply(&thread_id, &content).await,
+            crate::acp::events::CanonicalEvent::RunFinished { thread_id, .. }
+            | crate::acp::events::CanonicalEvent::RunFailed { thread_id, .. } => {
+                let reply_preview = self.take_reply_preview(&thread_id).await;
+                let Some(queue) = queue else {
+                    return;
+                };
+                if queue
+                    .wait_for_completion_disposition(received.event_id)
+                    .await
+                    != Some(QueueCompletionDisposition::Final)
+                {
+                    return;
+                }
+                self.send_canonical_push(
+                    PushEvent::TurnCompleted,
+                    Some(thread_id),
+                    None,
+                    reply_preview,
+                )
+                .await;
+            }
+            crate::acp::events::CanonicalEvent::PermissionRequested { approval } => {
+                self.send_canonical_push(
+                    PushEvent::ApprovalRequested,
+                    Some(approval.thread_id),
+                    Some(approval.request_id),
+                    None,
+                )
+                .await;
+            }
+            _ => {}
+        }
+    }
+
+    async fn accumulate_canonical_reply(&self, thread_id: &str, content: &str) {
+        if content.is_empty() {
+            return;
+        }
+        let mut replies = self.recent_replies.write().await;
+        if !replies.contains_key(thread_id) && replies.len() >= PUSH_PREVIEW_MAX_THREADS {
+            if let Some(oldest_key) = replies.keys().next().cloned() {
+                replies.remove(&oldest_key);
+            }
+        }
+        let entry = replies.entry(thread_id.to_string()).or_default();
+        if entry.len() < PUSH_PREVIEW_ACCUMULATE_CAP {
+            let remaining = PUSH_PREVIEW_ACCUMULATE_CAP - entry.len();
+            let (bounded, _) = resource_limits::truncate_utf8_bytes(content, remaining);
+            entry.push_str(&bounded);
+        }
+    }
+
+    async fn send_canonical_push(
+        self: &Arc<Self>,
+        event: PushEvent,
+        thread_id: Option<String>,
+        approval_id: Option<String>,
+        reply_preview: Option<String>,
+    ) {
+        let targets = {
+            let registry = self.registry.snapshot().await;
+            registry
+                .devices
+                .iter()
+                .filter(|device| match event {
+                    PushEvent::TurnCompleted => device.events.turn_completed,
+                    PushEvent::ApprovalRequested => device.events.approval_requested,
+                })
+                .map(|device| {
+                    (
+                        device.token.clone(),
+                        device.profile_id.clone(),
+                        device.registration_id.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        if targets.is_empty() {
+            return;
+        }
+        let (title, body) = match event {
+            PushEvent::TurnCompleted => (
+                "Turn finished".to_string(),
+                reply_preview.unwrap_or_else(|| {
+                    format!("The agent finished working in {}", self.project_label)
+                }),
+            ),
+            PushEvent::ApprovalRequested => (
+                "Approval needed".to_string(),
+                format!(
+                    "The agent is waiting for your approval in {}",
+                    self.project_label
+                ),
+            ),
+        };
+        let data = json!({
+            "type": event.as_str(),
+            "notificationId": Uuid::new_v4().to_string(),
+            "threadId": thread_id,
+            "approvalId": approval_id,
+        });
+        let category_id = matches!(event, PushEvent::ApprovalRequested).then_some("approval");
+        self.send(&title, &body, &data, category_id, targets).await;
     }
 
     pub(super) async fn register(
@@ -147,53 +250,6 @@ impl PushService {
             .collect()
     }
 
-    /// Pull params.threadId (or thread_id), trimmed and non-empty.
-    pub(super) fn read_thread_id(params: &Value) -> Option<String> {
-        read_string(params.get("threadId"))
-            .or_else(|| read_string(params.get("thread_id")))
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-    }
-
-    /// Accumulate streamed agent reply text per thread so a completed turn can
-    /// include a short preview. Handles the app-server delta method and the
-    /// codex-event variant; only text deltas are captured. Returns true if the
-    /// notification was a reply delta (and thus fully handled here).
-    pub(super) async fn accumulate_reply(&self, method: &str, params: &Value) -> bool {
-        let is_delta = matches!(
-            method,
-            "item/agentMessage/delta" | "codex/event/agent_message_delta"
-        );
-        if !is_delta {
-            return false;
-        }
-        let field_is_text = read_string(params.get("field"))
-            .map(|value| value == "text")
-            .unwrap_or(true);
-        let delta = read_string(params.get("delta"))
-            .or_else(|| read_string(params.get("text")))
-            .unwrap_or_default();
-        if !field_is_text || delta.is_empty() {
-            return true;
-        }
-        if let Some(thread_id) = Self::read_thread_id(params) {
-            let mut replies = self.recent_replies.write().await;
-            if !replies.contains_key(&thread_id) && replies.len() >= PUSH_PREVIEW_MAX_THREADS {
-                if let Some(oldest_key) = replies.keys().next().cloned() {
-                    replies.remove(&oldest_key);
-                }
-            }
-            let entry = replies.entry(thread_id).or_default();
-            // Cap accumulation so a long turn cannot grow this unbounded.
-            if entry.len() < PUSH_PREVIEW_ACCUMULATE_CAP {
-                let remaining = PUSH_PREVIEW_ACCUMULATE_CAP - entry.len();
-                let (bounded, _) = resource_limits::truncate_utf8_bytes(&delta, remaining);
-                entry.push_str(&bounded);
-            }
-        }
-        true
-    }
-
     /// Remove and format the accumulated reply for a thread into a one-line
     /// preview: last non-empty line (agents usually end with the conclusion),
     /// whitespace-collapsed, length-capped.
@@ -208,139 +264,6 @@ impl PushService {
             return None;
         }
         Some(truncate_chars(&collapsed, PUSH_PREVIEW_MAX_CHARS))
-    }
-
-    pub(super) async fn handle_notification(
-        self: &Arc<Self>,
-        method: &str,
-        params: &Value,
-        backend: Option<&RuntimeBackend>,
-        queue: Option<&BridgeQueueService>,
-        event_id: Option<u64>,
-    ) {
-        if self.accumulate_reply(method, params).await {
-            return;
-        }
-        let event = match method {
-            "turn/completed" => PushEvent::TurnCompleted,
-            "bridge/approval.requested" => PushEvent::ApprovalRequested,
-            _ => return,
-        };
-
-        let thread_id = read_string(params.get("threadId"))
-            .or_else(|| read_string(params.get("thread_id")))
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-
-        // For approval events, carry the approval id so a notification action can
-        // resolve exactly this approval without opening the conversation first.
-        let approval_id = match event {
-            PushEvent::ApprovalRequested => read_string(params.get("id"))
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
-            PushEvent::TurnCompleted => None,
-        };
-
-        // Drain the accumulated reply buffer on completion regardless of whether
-        // any device is registered, otherwise threads streamed while no device
-        // is subscribed would leak their buffers indefinitely.
-        let reply_preview = match event {
-            PushEvent::TurnCompleted => match thread_id.as_deref() {
-                Some(tid) => self.take_reply_preview(tid).await,
-                None => None,
-            },
-            PushEvent::ApprovalRequested => None,
-        };
-
-        if matches!(event, PushEvent::TurnCompleted) {
-            let (Some(queue), Some(event_id)) = (queue, event_id) else {
-                return;
-            };
-            match queue.wait_for_completion_disposition(event_id).await {
-                Some(QueueCompletionDisposition::Final) => {}
-                Some(QueueCompletionDisposition::Continued) | None => return,
-            }
-        }
-
-        let targets: Vec<(String, String, String)> = {
-            let registry = self.registry.snapshot().await;
-            registry
-                .devices
-                .iter()
-                .filter(|device| match event {
-                    PushEvent::TurnCompleted => device.events.turn_completed,
-                    PushEvent::ApprovalRequested => device.events.approval_requested,
-                })
-                .map(|device| {
-                    (
-                        device.token.clone(),
-                        device.profile_id.clone(),
-                        device.registration_id.clone(),
-                    )
-                })
-                .collect()
-        };
-        if targets.is_empty() {
-            return;
-        }
-        if matches!(event, PushEvent::TurnCompleted) {
-            let Some(thread_id) = thread_id.as_deref() else {
-                return;
-            };
-            let Some(backend) = backend else {
-                return;
-            };
-            let thread = match backend
-                .request_internal(
-                    "thread/read",
-                    Some(json!({
-                        "threadId": thread_id,
-                        "includeTurns": false,
-                    })),
-                )
-                .await
-            {
-                Ok(result) => result,
-                Err(error) => {
-                    eprintln!(
-                        "skipping turn-completed push because thread lineage could not be read for {thread_id}: {error}"
-                    );
-                    return;
-                }
-            };
-            if !push_thread_is_top_level(&thread) {
-                return;
-            }
-        }
-        let (title, body) = match event {
-            PushEvent::TurnCompleted => (
-                "Turn finished".to_string(),
-                reply_preview.unwrap_or_else(|| {
-                    format!("The agent finished working in {}", self.project_label)
-                }),
-            ),
-            PushEvent::ApprovalRequested => (
-                "Approval needed".to_string(),
-                format!(
-                    "The agent is waiting for your approval in {}",
-                    self.project_label
-                ),
-            ),
-        };
-        let data = json!({
-            "type": event.as_str(),
-            "notificationId": Uuid::new_v4().to_string(),
-            "threadId": thread_id,
-            "approvalId": approval_id,
-        });
-        // Only approval pushes get the actionable category; turn-complete pushes
-        // have nothing to act on.
-        let category_id = match event {
-            PushEvent::ApprovalRequested if approval_id.is_some() => Some("approval"),
-            _ => None,
-        };
-
-        self.send(&title, &body, &data, category_id, targets).await;
     }
 
     pub(super) async fn send(

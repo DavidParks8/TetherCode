@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "extensions": [],
+  "agents": [
+    {
+      "id": "mixed-agent",
+      "name": "Mixed Agent",
+      "version": "2.3.4",
+      "icon": "https://cdn.agentclientprotocol.com/registry/v1/latest/mixed-agent.svg",
+      "distribution": {
+        "binary": {
+          "darwin-aarch64": {
+            "archive": "https://downloads.example.test/mixed-agent.bin",
+            "cmd": "./mixed-agent.bin",
+            "args": ["acp"],
+            "env": { "ACP_LOG": "warn" },
+            "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          }
+        },
+        "npx": { "package": "@example/mixed-agent@2.3.4", "args": ["--acp"] }
+      }
+    },
+    {
+      "id": "python-agent",
+      "name": "Python Agent",
+      "version": "0.4.0",
+      "distribution": { "uvx": { "package": "python-agent==0.4.0", "args": ["--stdio"] } }
+    }
+  ]
+}

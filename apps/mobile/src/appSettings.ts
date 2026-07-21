@@ -1,8 +1,7 @@
 import type {
+  AgentDefaultSettingsMap,
+  AgentId,
   ApprovalMode,
-  ChatEngine,
-  EngineDefaultSettingsMap,
-  ReasoningEffort,
 } from './api/types';
 import { dedupeRecentPreviewTargets, normalizePreviewTargetInput } from './browserPreview';
 import { normalizeBridgeUrlInput } from './bridgeUrl';
@@ -13,7 +12,7 @@ import {
 } from './fonts';
 import type { AppearancePreference, DarkUiPalette } from './theme';
 
-export const APP_SETTINGS_VERSION = 12;
+export const APP_SETTINGS_VERSION = 13;
 export const DEFAULT_WORKSPACE_CHAT_LIMIT = 5;
 export const WORKSPACE_CHAT_LIMIT_OPTIONS = [5, 10, 25, null] as const;
 export type WorkspaceChatLimit = (typeof WORKSPACE_CHAT_LIMIT_OPTIONS)[number];
@@ -22,8 +21,8 @@ export function parseAppSettings(raw: string): {
   bridgeUrl: string | null;
   bridgeToken: string | null;
   defaultStartCwd: string | null;
-  defaultChatEngine: ChatEngine;
-  defaultEngineSettings: EngineDefaultSettingsMap;
+  preferredAgentId: AgentId | null;
+  agentSettings: AgentDefaultSettingsMap;
   approvalMode: ApprovalMode;
   showToolCalls: boolean;
   appearancePreference: AppearancePreference;
@@ -37,8 +36,8 @@ export function parseAppSettings(raw: string): {
       bridgeUrl: null,
       bridgeToken: null,
       defaultStartCwd: null,
-      defaultChatEngine: 'codex',
-      defaultEngineSettings: createEmptyEngineDefaultSettingsMap(),
+      preferredAgentId: null,
+      agentSettings: {},
       approvalMode: 'normal',
       showToolCalls: true,
       appearancePreference: 'system',
@@ -55,25 +54,14 @@ export function parseAppSettings(raw: string): {
     if (
       !parsed ||
       typeof parsed !== 'object' ||
-      (parsedVersion !== 1 &&
-        parsedVersion !== 2 &&
-        parsedVersion !== 3 &&
-        parsedVersion !== 4 &&
-        parsedVersion !== 5 &&
-        parsedVersion !== 6 &&
-        parsedVersion !== 7 &&
-         parsedVersion !== 8 &&
-         parsedVersion !== 9 &&
-         parsedVersion !== 10 &&
-         parsedVersion !== 11 &&
-         parsedVersion !== APP_SETTINGS_VERSION)
+      parsedVersion !== APP_SETTINGS_VERSION
     ) {
       return {
         bridgeUrl: null,
         bridgeToken: null,
         defaultStartCwd: null,
-        defaultChatEngine: 'codex',
-        defaultEngineSettings: createEmptyEngineDefaultSettingsMap(),
+        preferredAgentId: null,
+        agentSettings: {},
         approvalMode: 'normal',
         showToolCalls: true,
         appearancePreference: 'system',
@@ -84,33 +72,18 @@ export function parseAppSettings(raw: string): {
       };
     }
 
-    const legacyDefaultModelId = normalizeModelId(
-      (parsed as { defaultModelId?: unknown }).defaultModelId
-    );
-    const legacyDefaultReasoningEffort = normalizeReasoningEffort(
-      (parsed as { defaultReasoningEffort?: unknown }).defaultReasoningEffort
-    );
-    const defaultChatEngine =
-      normalizeChatEngine((parsed as { lastUsedChatEngine?: unknown }).lastUsedChatEngine) ??
-      normalizeChatEngine((parsed as { defaultChatEngine?: unknown }).defaultChatEngine) ??
-      inferChatEngineFromModelId(legacyDefaultModelId) ??
-      'codex';
-    const defaultEngineSettings = normalizeEngineDefaultSettingsMap(
-      (parsed as { lastUsedEngineSettings?: unknown }).lastUsedEngineSettings ??
-        (parsed as { defaultEngineSettings?: unknown }).defaultEngineSettings,
-      legacyDefaultModelId,
-      legacyDefaultReasoningEffort,
-      parsedVersion === 11 || parsedVersion === APP_SETTINGS_VERSION
-    );
-
     return {
       bridgeUrl: normalizeBridgeUrl((parsed as { bridgeUrl?: unknown }).bridgeUrl),
       bridgeToken: normalizeBridgeToken((parsed as { bridgeToken?: unknown }).bridgeToken),
       defaultStartCwd: normalizeDefaultStartCwd(
         (parsed as { defaultStartCwd?: unknown }).defaultStartCwd
       ),
-      defaultChatEngine,
-      defaultEngineSettings,
+      preferredAgentId: normalizeAgentId(
+        (parsed as { preferredAgentId?: unknown }).preferredAgentId
+      ),
+      agentSettings: normalizeAgentSettings(
+        (parsed as { agentSettings?: unknown }).agentSettings
+      ),
       approvalMode: normalizeStoredApprovalMode(
         (parsed as { approvalMode?: unknown }).approvalMode
       ),
@@ -120,7 +93,7 @@ export function parseAppSettings(raw: string): {
           : normalizeBoolean((parsed as { showToolCalls?: unknown }).showToolCalls),
       appearancePreference: normalizeStoredAppearancePreference(
         (parsed as { appearancePreference?: unknown }).appearancePreference,
-        parsedVersion === 4 ? 'dark' : 'system'
+        'system'
       ),
       darkUiPalette: normalizeStoredDarkUiPalette(
         (parsed as { darkUiPalette?: unknown }).darkUiPalette
@@ -140,8 +113,8 @@ export function parseAppSettings(raw: string): {
       bridgeUrl: null,
       bridgeToken: null,
       defaultStartCwd: null,
-      defaultChatEngine: 'codex',
-      defaultEngineSettings: createEmptyEngineDefaultSettingsMap(),
+      preferredAgentId: null,
+      agentSettings: {},
       approvalMode: 'normal',
       showToolCalls: true,
       appearancePreference: 'system',
@@ -202,131 +175,43 @@ function normalizeWorkspaceChatLimit(value: unknown): WorkspaceChatLimit {
       : DEFAULT_WORKSPACE_CHAT_LIMIT;
 }
 
-function normalizeModelId(value: unknown): string | null {
+function normalizeAgentId(value: unknown): AgentId | null {
   if (typeof value !== 'string') {
     return null;
   }
 
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
-function normalizeChatEngine(value: unknown): ChatEngine | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  if (normalized === 'codex' || normalized === 'opencode' || normalized === 'cursor') {
-    return normalized;
-  }
-
-  return null;
-}
-
-function inferChatEngineFromModelId(value: string | null | undefined): ChatEngine | null {
-  const normalized = typeof value === 'string' ? value.trim() : '';
-  if (!normalized) {
-    return null;
-  }
-
-  return normalized.includes('/') ? 'opencode' : 'codex';
-}
-
-function createEmptyEngineDefaultSettingsMap(): EngineDefaultSettingsMap {
-  return {
-    codex: {
-      modelId: null,
-      effort: null,
-    },
-    opencode: {
-      modelId: null,
-      effort: null,
-    },
-    cursor: {
-      modelId: null,
-      effort: null,
-    },
-  };
-}
-
-function normalizeEngineDefaultSettingsMap(
-  value: unknown,
-  legacyDefaultModelId: string | null,
-  legacyDefaultEffort: ReasoningEffort | null,
-  includeRememberedThreadSettings: boolean
-): EngineDefaultSettingsMap {
-  const base = createEmptyEngineDefaultSettingsMap();
+function normalizeAgentSettings(value: unknown): AgentDefaultSettingsMap {
+  const normalized: AgentDefaultSettingsMap = {};
   const record = value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
-
-  for (const engine of ['codex', 'opencode', 'cursor'] as const) {
-    const entry =
-      record && typeof record[engine] === 'object'
-        ? (record[engine] as Record<string, unknown>)
-        : null;
-    if (!entry) {
+  if (!record) return normalized;
+  for (const [rawAgentId, rawEntry] of Object.entries(record)) {
+    const agentId = normalizeAgentId(rawAgentId);
+    const entry = rawEntry && typeof rawEntry === 'object'
+      ? (rawEntry as Record<string, unknown>)
+      : null;
+    if (!agentId || !entry) {
       continue;
     }
-
-    base[engine] = {
-      modelId: normalizeModelId(entry.modelId),
-      effort: normalizeReasoningEffort(entry.effort),
-      ...(includeRememberedThreadSettings
-        ? {
-            serviceTier: normalizeServiceTier(entry.serviceTier),
-            collaborationMode: normalizeCollaborationMode(entry.collaborationMode, engine),
-          }
-        : {}),
+    normalized[agentId] = {
+      collaborationMode: normalizeCollaborationMode(entry.collaborationMode),
     };
   }
-
-  if (legacyDefaultModelId) {
-    const legacyEngine = inferChatEngineFromModelId(legacyDefaultModelId) ?? 'codex';
-    base[legacyEngine] = {
-      modelId: legacyDefaultModelId,
-      effort: legacyDefaultEffort,
-    };
-  }
-
-  return base;
+  return normalized;
 }
 
-function normalizeServiceTier(value: unknown): 'fast' | null {
-  return typeof value === 'string' && value.trim().toLowerCase() === 'fast' ? 'fast' : null;
-}
-
-function normalizeCollaborationMode(
-  value: unknown,
-  engine: ChatEngine
-): 'default' | 'plan' | 'ask' {
+function normalizeCollaborationMode(value: unknown): 'default' | 'plan' {
   if (typeof value !== 'string') {
     return 'default';
   }
   const normalized = value.trim().toLowerCase();
-  if (normalized === 'plan' || (normalized === 'ask' && engine === 'cursor')) {
+  if (normalized === 'plan') {
     return normalized;
   }
   return 'default';
-}
-
-function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  if (
-    normalized === 'none' ||
-    normalized === 'minimal' ||
-    normalized === 'low' ||
-    normalized === 'medium' ||
-    normalized === 'high' ||
-    normalized === 'xhigh'
-  ) {
-    return normalized;
-  }
-
-  return null;
 }
 
 function normalizeBrowserTargetUrls(value: unknown): string[] {

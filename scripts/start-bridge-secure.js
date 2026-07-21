@@ -633,6 +633,27 @@ async function start() {
   }
 
   const fileEnv = readEnvFile(secureEnvFile);
+  const manifestPath = readNonEmptyEnv(fileEnv, "ACP_AGENT_MANIFEST");
+  const agentRoots = readNonEmptyEnv(fileEnv, "ACP_AGENT_ROOTS")
+    .split(path.delimiter)
+    .filter(Boolean);
+  if (!manifestPath || !path.isAbsolute(manifestPath) || !fs.existsSync(manifestPath)) {
+    console.error("error: ACP_AGENT_MANIFEST must name an existing absolute manifest. Run: clawdex init");
+    process.exit(1);
+  }
+  if (agentRoots.length === 0 || agentRoots.some((root) => !path.isAbsolute(root) || !fs.existsSync(root))) {
+    console.error("error: ACP_AGENT_ROOTS must contain existing absolute install roots. Run: clawdex init");
+    process.exit(1);
+  }
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    if (!manifest.preferredAgentId || !Array.isArray(manifest.agents) || manifest.agents.length === 0) {
+      throw new Error("manifest has no preferred agent or installed agents");
+    }
+  } catch (error) {
+    console.error(`error: invalid ACP agent manifest: ${error.message}`);
+    process.exit(1);
+  }
   const env = {
     ...process.env,
     ...fileEnv,

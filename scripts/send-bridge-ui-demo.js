@@ -5,19 +5,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
-const DEFAULT_SOURCE_KINDS = [
-  "cli",
-  "vscode",
-  "exec",
-  "appServer",
-  "unknown",
-  "subAgent",
-  "subAgentReview",
-  "subAgentCompact",
-  "subAgentThreadSpawn",
-  "subAgentOther",
-];
-
 function usage() {
   console.log(`Usage:
   npm run bridge:ui:demo
@@ -290,11 +277,6 @@ async function resolveLatestThreadId(client) {
   const response = await client.request("thread/list", {
     cursor: null,
     limit: 1,
-    sortKey: "updated_at",
-    modelProviders: null,
-    sourceKinds: DEFAULT_SOURCE_KINDS,
-    archived: false,
-    cwd: null,
   });
 
   const threadId = response?.data?.[0]?.id;

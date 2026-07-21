@@ -16,6 +16,7 @@
     "test:watch": "jest --watch"
   },
   "dependencies": {
+    "@ag-ui/core": "0.0.57",
     "@expo-google-fonts/fira-code": "^0.4.1",
     "@expo-google-fonts/ibm-plex-mono": "^0.4.1",
     "@expo-google-fonts/ibm-plex-sans": "^0.4.1",
@@ -74,14 +75,15 @@
   "jest": {
     "preset": "jest-expo",
     "collectCoverageFrom": [
-      "src/**/*.ts",
+      "App.tsx",
+      "src/**/*.{ts,tsx}",
       "!src/**/*.d.ts",
       "!src/**/__tests__/**",
       "!src/screens/mainScreenStyles.ts"
     ],
     "coverageThreshold": {
       "global": {
-        "branches": 85
+        "branches": 86
       }
     },
     "transformIgnorePatterns": [

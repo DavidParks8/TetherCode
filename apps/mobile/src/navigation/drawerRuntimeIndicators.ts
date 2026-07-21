@@ -1,4 +1,5 @@
 import type { ChatSummary, RpcNotification } from '../api/types';
+import { parseAgUiEventNotification } from '../api/agUi';
 import type { ChatWorkspaceSection } from './chatThreadTree';
 
 export interface DrawerRunIndicator {
@@ -12,30 +13,6 @@ const RUN_HEARTBEAT_STALE_MS = 20_000;
 const RUN_LIFECYCLE_SAFETY_STALE_MS = 6 * 60 * 60 * 1000;
 const RUN_INDICATOR_REFRESH_MIN_MS = 3000;
 const CHAT_STATUS_EVENT_SKEW_MS = 1000;
-
-const CODEX_RUN_LIFECYCLE_EVENT_TYPES = new Set(['taskstarted']);
-const CODEX_RUN_HEARTBEAT_EVENT_TYPES = new Set([
-  'agentreasoningdelta',
-  'reasoningcontentdelta',
-  'reasoningrawcontentdelta',
-  'agentreasoningrawcontentdelta',
-  'agentreasoningsectionbreak',
-  'agentmessagedelta',
-  'agentmessagecontentdelta',
-  'execcommandbegin',
-  'execcommandend',
-  'mcpstartupupdate',
-  'mcptoolcallbegin',
-  'websearchbegin',
-  'backgroundevent',
-]);
-const CODEX_RUN_COMPLETION_EVENT_TYPES = new Set(['taskcomplete']);
-const CODEX_RUN_TERMINAL_EVENT_TYPES = new Set([
-  'taskfailed',
-  'taskinterrupted',
-  'turnaborted',
-  'turnfailed',
-]);
 
 const DRAWER_RUNNING_STATUS_HINTS = new Set([
   'running',
@@ -58,13 +35,11 @@ const DRAWER_NON_RUNNING_STATUS_HINTS = new Set([
 ]);
 
 const DRAWER_LIFECYCLE_METHODS = new Set([
-  'turn/started',
   'bridge/approval.requested',
   'bridge/userInput.requested',
 ]);
 const DRAWER_HEARTBEAT_METHODS = new Set([
   'item/started',
-  'item/agentMessage/delta',
   'item/plan/delta',
   'item/reasoning/summaryPartAdded',
   'item/reasoning/summaryTextDelta',
@@ -74,7 +49,7 @@ const DRAWER_HEARTBEAT_METHODS = new Set([
   'turn/plan/updated',
   'turn/diff/updated',
 ]);
-const DRAWER_TERMINAL_METHODS = new Set(['turn/completed']);
+const DRAWER_TERMINAL_METHODS = new Set<string>();
 
 export function countDrawerRunningChats(
   chats: ChatSummary[],
@@ -158,6 +133,19 @@ export function updateDrawerRunIndicatorsForEvent(
   event: RpcNotification,
   now = Date.now()
 ): DrawerRunIndicatorMap {
+  const agUi = parseAgUiEventNotification(event);
+  if (agUi) {
+    if (agUi.event.type === 'RUN_STARTED') {
+      return setRunningIndicator(previous, agUi.threadId, 'lifecycle', now);
+    }
+    if (agUi.event.type === 'TEXT_MESSAGE_CONTENT') {
+      return setRunningIndicator(previous, agUi.threadId, 'heartbeat', now);
+    }
+    if (agUi.event.type === 'RUN_FINISHED' || agUi.event.type === 'RUN_ERROR') {
+      return clearRunningIndicator(previous, agUi.threadId);
+    }
+    return previous;
+  }
   const params = toRecord(event.params);
   const threadId = extractDrawerNotificationThreadId(params);
   if (!threadId) {
@@ -185,33 +173,6 @@ export function updateDrawerRunIndicatorsForEvent(
 
   if (DRAWER_HEARTBEAT_METHODS.has(event.method)) {
     return setRunningIndicator(previous, threadId, 'heartbeat', now);
-  }
-
-  if (!event.method.startsWith('codex/event/')) {
-    return previous;
-  }
-
-  const msg = toRecord(params?.msg);
-  const codexEventType = normalizeToken(
-    readString(msg?.type) ?? event.method.replace('codex/event/', '')
-  );
-  if (!codexEventType) {
-    return previous;
-  }
-
-  if (CODEX_RUN_LIFECYCLE_EVENT_TYPES.has(codexEventType)) {
-    return setRunningIndicator(previous, threadId, 'lifecycle', now);
-  }
-
-  if (CODEX_RUN_HEARTBEAT_EVENT_TYPES.has(codexEventType)) {
-    return setRunningIndicator(previous, threadId, 'heartbeat', now);
-  }
-
-  if (
-    CODEX_RUN_COMPLETION_EVENT_TYPES.has(codexEventType) ||
-    CODEX_RUN_TERMINAL_EVENT_TYPES.has(codexEventType)
-  ) {
-    return clearRunningIndicator(previous, threadId);
   }
 
   return previous;

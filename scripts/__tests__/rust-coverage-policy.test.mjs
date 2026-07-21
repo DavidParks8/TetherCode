@@ -8,7 +8,7 @@ import test from 'node:test';
 const root = path.resolve(import.meta.dirname, '../..');
 const checker = path.join(root, 'scripts/check-rust-coverage.mjs');
 
-function runChecker(report, minimum = '85') {
+function runChecker(report, minimum = '86') {
   const directory = mkdtempSync(path.join(tmpdir(), 'clawdex-rust-coverage-'));
   const reportPath = path.join(directory, 'coverage.json');
   writeFileSync(reportPath, JSON.stringify(report));
@@ -23,15 +23,15 @@ function runChecker(report, minimum = '85') {
 
 test('Rust coverage checker accepts the exact threshold', () => {
   const result = runChecker({
-    data: [{ totals: { branches: { count: 100, covered: 85 } } }],
+    data: [{ totals: { branches: { count: 100, covered: 86 } } }],
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /85\.00%/);
+  assert.match(result.stdout, /86\.00%/);
 });
 
 test('Rust coverage checker rejects below-threshold and empty reports', () => {
   const below = runChecker({
-    data: [{ totals: { branches: { count: 100, covered: 84 } } }],
+    data: [{ totals: { branches: { count: 100, covered: 85 } } }],
   });
   assert.equal(below.status, 1);
 

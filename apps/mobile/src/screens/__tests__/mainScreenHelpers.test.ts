@@ -1,10 +1,8 @@
 import {
   buildOptimisticGoalBridgeUiSurface,
-  extractCodexFailureMessage,
   formatGitCloneFailureMessage,
   findSlashCommandDefinition,
   isSlashCommandAvailable,
-  mergeChatEngines,
   parseChatBridgeUiSurfaces,
   parseGoalSlashObjective,
   shouldSurfaceChatLoadError,
@@ -15,31 +13,18 @@ import {
 describe('mainScreenHelpers', () => {
   const availability = {
     hasOpenChat: true,
-    supportsCompact: true,
     supportsGoal: false,
     supportsPlanMode: true,
     supportsReview: false,
   };
 
-  it('exposes only executable slash commands for the active engine and chat state', () => {
+  it('exposes only executable slash commands for the active agent and chat state', () => {
     const compact = findSlashCommandDefinition('compact');
     const goal = findSlashCommandDefinition('goal');
     const permissions = findSlashCommandDefinition('permissions');
-    expect(compact && isSlashCommandAvailable(compact, availability)).toBe(true);
+    expect(compact).toBeNull();
     expect(goal && isSlashCommandAvailable(goal, availability)).toBe(false);
     expect(permissions && isSlashCommandAvailable(permissions, availability)).toBe(false);
-    expect(
-      compact &&
-        isSlashCommandAvailable(compact, {
-          ...availability,
-          hasOpenChat: false,
-        })
-    ).toBe(false);
-  });
-
-  it('does not invent Codex when no harness is reported', () => {
-    expect(mergeChatEngines([])).toEqual([]);
-    expect(mergeChatEngines(['opencode'], 'opencode')).toEqual(['opencode']);
   });
 
   it('keeps transient revalidation failures behind a hydrated chat snapshot', () => {
@@ -90,22 +75,6 @@ describe('mainScreenHelpers', () => {
         'Mohit-Patil/launchkit'
       )
     ).toBe('Git clone failed for Mohit-Patil/launchkit.');
-  });
-
-  it('extracts nested Codex failure details from live event payloads', () => {
-    expect(
-      extractCodexFailureMessage({
-        msg: {
-          status: {
-            error: {
-              details: {
-                stderr: 'model quota exceeded',
-              },
-            },
-          },
-        },
-      })
-    ).toBe('model quota exceeded');
   });
 
   it('parses bridge UI surfaces for provider-owned workflow cards', () => {
@@ -209,13 +178,13 @@ describe('mainScreenHelpers', () => {
 
     expect(
       buildOptimisticGoalBridgeUiSurface(
-        'codex:thread-1',
+        'agent-alpha:thread-1',
         'Now verify the PR',
         '2026-05-17T03:00:00.000Z'
       )
     ).toMatchObject({
-      id: 'goal-codex:thread-1',
-      threadId: 'codex:thread-1',
+      id: 'goal-agent-alpha:thread-1',
+      threadId: 'agent-alpha:thread-1',
       kind: 'goal',
       presentation: 'workflowCard',
       subtitle: 'Starting',

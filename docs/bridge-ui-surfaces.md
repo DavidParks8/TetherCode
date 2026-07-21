@@ -2,7 +2,7 @@
 
 Bridge UI surfaces are the stable way for the bridge to show new provider or harness details in the mobile app without adding provider-specific React Native screens.
 
-Use this contract when a provider adds a new workflow concept, status object, or action prompt that can be represented with existing primitives. Examples include Codex goals, quota warnings, compaction notices, model-switch suggestions, background task status, and provider-specific warnings.
+Use this contract when an ACP agent adds a workflow concept, status object, or action prompt that can be represented with existing primitives. Examples include quota warnings, compaction notices, model-switch suggestions, background task status, and agent-specific warnings.
 
 Do not send arbitrary HTML, JavaScript, React component names, or provider-native payloads to mobile. The bridge owns provider-specific translation. Mobile owns rendering these safe primitives.
 
@@ -97,57 +97,28 @@ type BridgeUiAction = {
 - Put provider-specific raw data in `code` only when it helps the user act.
 - Keep `kind` stable for semantic grouping, for example `goal`, `quota`, `compaction`, or `provider-warning`.
 
-## Codex Goal Example
+## Implemented ACP Plan Example
 
-Codex writes goal tool results as `function_call_output` rollout items. The Rust bridge maps any output with a top-level `goal` object into a generic UI surface with `kind: "goal"` and `presentation: "workflowCard"`. That means a real `create_goal`, `get_goal`, or `update_goal` call can show on mobile without adding a goal-specific React Native component.
+The Rust bridge maps an ACP `plan` session update into `CanonicalEvent::Plan`. The AG-UI projector emits that event as a `CUSTOM` event named `clawdex.dev/plan`, preserving the bridge thread and active run correlation when one exists. Mobile renders the entries with its existing plan surface; no agent-specific parser or component is required.
 
-The bridge uses a stable surface id per Codex thread:
-
-```text
-goal-codex:<thread-id>
-```
-
-Repeated goal updates should broadcast `bridge/ui.update` with the same id so mobile replaces the current goal card.
-
-The normalized card shape is:
+The projected AG-UI event shape is:
 
 ```json
 {
-  "id": "goal-codex:019e2a-thread",
-  "threadId": "codex:019e2a-thread",
-  "turnId": null,
-  "kind": "goal",
-  "presentation": "workflowCard",
-  "tone": "info",
-  "title": "Goal",
-  "subtitle": "Active",
-  "bodyMarkdown": "Implement generic bridge-driven UI surfaces.",
-  "blocks": [
-    {
-      "type": "keyValue",
-      "items": [
-        { "label": "Status", "value": "Active" },
-        { "label": "Tokens used", "value": "4200" },
-        { "label": "Time used", "value": "12m 4s" },
-        { "label": "Remaining tokens", "value": "7800" }
-      ]
-    },
-    {
-      "type": "markdown",
-      "markdown": "Completion budget report text, when Codex includes it."
-    }
-  ],
-  "actions": [
-    {
-      "id": "dismiss",
-      "label": "Dismiss",
-      "style": "secondary",
-      "dismissesSurface": true
-    }
-  ],
-  "dismissible": true,
-  "createdAt": "2026-05-16T00:00:00Z",
-  "updatedAt": "2026-05-16T00:05:00Z"
+  "type": "CUSTOM",
+  "threadId": "v1.YWNwLWFnZW50.c2Vzc2lvbi0x",
+  "runId": "v1.YWNwLWFnZW50.c2Vzc2lvbi0x::turn::7",
+  "name": "clawdex.dev/plan",
+  "value": {
+    "entries": [
+      {
+        "content": "Implement the session index",
+        "priority": "High",
+        "status": "InProgress"
+      }
+    ]
+  },
+  "timestamp": 1784505600000
 }
 ```
 
@@ -157,7 +128,7 @@ For a local smoke test of the generic renderer only, open a chat in the mobile a
 npm run bridge:ui:demo
 ```
 
-That sends a sample `goal` workflow card to the latest chat. Use `npm run bridge:ui:demo -- --modal` or `npm run bridge:ui:demo -- --banner` to test the other presentations. Use `npm run bridge:ui:demo -- --thread <thread-id>` when the latest chat is not the one visible on the phone.
+That sends a sample workflow card to the latest chat. Use `npm run bridge:ui:demo -- --modal` or `npm run bridge:ui:demo -- --banner` to test the other presentations. Use `npm run bridge:ui:demo -- --thread <thread-id>` when the latest chat is not the one visible on the phone.
 
 ## Rules For Future Integrations
 

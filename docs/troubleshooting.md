@@ -47,18 +47,6 @@ npm run stop:services
 - Do not configure `*` or `null`; they are rejected. Use exact origins such as `http://127.0.0.1:3000` only when needed.
 - Prefer a short-lived local token: set a random `BRIDGE_AUTH_TOKEN`, set `BRIDGE_ALLOW_INSECURE_NO_AUTH=false`, restart bridge and client with that token, then rotate or remove it after debugging.
 
-- If Codex login just completed, restart the bridge once so it reloads the Codex auth home:
-
-```bash
-npm run secure:bridge
-```
-
-- You can inspect whether Codex saved auth:
-
-```bash
-ls -la "${CODEX_HOME:-$HOME/.codex}/auth.json"
-```
-
 ## Local browser preview does not open
 
 - The in-app browser only supports loopback targets from the bridge host: `localhost`, `127.0.0.1`, or `::1`.
@@ -78,10 +66,14 @@ ls -la "${CODEX_HOME:-$HOME/.codex}/auth.json"
 - Verify host and phone are on the same Tailscale network
 - Check host IP (`tailscale ip -4`) and the bridge URL saved in the mobile app
 
-## `codex` not found
+## ACP agent manifest or executable not found
 
-- Ensure `codex` is in `PATH`
-- Or set `CODEX_CLI_BIN` explicitly
+- Re-run `clawdex init --agent <registry-id>` so setup can restore the exact workspace-local install and manifest.
+- Confirm `.env.secure` points `ACP_AGENT_MANIFEST` at `.clawdex/agents.json` and `ACP_AGENT_ROOTS` at `.clawdex/agents`.
+- Do not replace the executable with `npx`, `uvx`, or a global command. Runtime intentionally has no network or PATH-resolution fallback.
+- If setup reports an unsigned binary, review its registry provenance before using `--trust-unverified`.
+- If an npm package requires lifecycle scripts, review the package before using `--trust-install-scripts`; scripts are disabled by default.
+- If a uv distribution is selected, install `uv` and rerun setup. Runtime does not invoke `uvx`.
 
 ## Bridge build fails with `linker 'cc' not found`
 

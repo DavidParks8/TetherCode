@@ -5,9 +5,6 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const reviewedAdvisories = new Map([
-  [1114638, 'undici'],
-  [1114640, 'undici'],
-  [1121245, 'undici'],
   [1121797, 'linkify-it'],
 ]);
 

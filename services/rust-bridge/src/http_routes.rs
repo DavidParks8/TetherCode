@@ -62,8 +62,8 @@ pub(super) async fn local_image_handler(
         return response;
     }
 
-    let path = match resolve_local_image_preview_path(&state.path_policy, &query.path) {
-        Ok(path) => path,
+    let (file, path) = match state.path_policy.open_regular_file_beneath(&query.path) {
+        Ok(opened) => opened,
         Err(error) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -76,7 +76,7 @@ pub(super) async fn local_image_handler(
         }
     };
 
-    let metadata = match fs::metadata(&path).await {
+    let metadata = match file.metadata() {
         Ok(metadata) => metadata,
         Err(_) => {
             return (
@@ -129,19 +129,7 @@ pub(super) async fn local_image_handler(
         }
     };
 
-    let mut file = match fs::File::open(&path).await {
-        Ok(file) => file,
-        Err(error) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "read_failed",
-                    "message": format!("Failed to read image file: {error}")
-                })),
-            )
-                .into_response();
-        }
-    };
+    let mut file = fs::File::from_std(file);
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     if let Err(error) = (&mut file)
         .take(LOCAL_IMAGE_MAX_BYTES + 1)
@@ -186,13 +174,6 @@ pub(super) async fn local_image_handler(
             )
                 .into_response()
         })
-}
-
-pub(super) fn resolve_local_image_preview_path(
-    path_policy: &PathPolicy,
-    raw_path: &str,
-) -> Result<PathBuf, BridgeError> {
-    path_policy.resolve_existing(raw_path, PathKind::File)
 }
 
 pub(super) async fn preview_entry_handler(

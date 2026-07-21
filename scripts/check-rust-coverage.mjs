@@ -7,7 +7,7 @@ const reportPath = path.resolve(
   root,
   process.argv[2] ?? 'services/rust-bridge/target/llvm-cov/coverage.json'
 );
-const minimum = Number(process.env.MIN_RUST_BRANCH_COVERAGE ?? '85');
+const minimum = Number(process.env.MIN_RUST_BRANCH_COVERAGE ?? '86');
 const report = JSON.parse(readFileSync(reportPath, 'utf8'));
 const totals = report.data?.[0]?.totals?.branches;
 

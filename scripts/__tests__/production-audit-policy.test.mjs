@@ -21,14 +21,6 @@ function runChecker(vulnerabilities) {
 }
 
 const reviewed = {
-  undici: {
-    via: [
-      { source: 1114638, name: 'undici', severity: 'high' },
-      { source: 1114640, name: 'undici', severity: 'high' },
-      { source: 1121245, name: 'undici', severity: 'high' },
-    ],
-    fixAvailable: false,
-  },
   'linkify-it': {
     via: [{ source: 1121797, name: 'linkify-it', severity: 'high' }],
     fixAvailable: false,
@@ -38,7 +30,7 @@ const reviewed = {
 test('production audit accepts only the reviewed high-severity advisories', () => {
   const result = runChecker(reviewed);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /4 reviewed high-severity advisories/);
+  assert.match(result.stdout, /1 reviewed high-severity advisories/);
 });
 
 test('production audit rejects new, stale, or newly fixable advisories', () => {
@@ -52,26 +44,27 @@ test('production audit rejects new, stale, or newly fixable advisories', () => {
   assert.notEqual(unexpected.status, 0);
   assert.match(unexpected.stderr, /unexpected: dangerous#9999999/);
 
-  const stale = runChecker({ undici: reviewed.undici });
+  const stale = runChecker({});
   assert.notEqual(stale.status, 0);
   assert.match(stale.stderr, /stale exceptions: linkify-it#1121797/);
 
   const fixable = runChecker({
     ...reviewed,
-    undici: { ...reviewed.undici, fixAvailable: true },
+    'linkify-it': { ...reviewed['linkify-it'], fixAvailable: true },
   });
   assert.notEqual(fixable.status, 0);
-  assert.match(fixable.stderr, /fix now available: undici/);
+  assert.match(fixable.stderr, /fix now available: linkify-it/);
 
   const escalated = runChecker({
     ...reviewed,
-    undici: {
-      ...reviewed.undici,
-      via: reviewed.undici.via.map((advisory, index) =>
-        index === 0 ? { ...advisory, severity: 'critical' } : advisory
-      ),
+    'linkify-it': {
+      ...reviewed['linkify-it'],
+      via: reviewed['linkify-it'].via.map((advisory) => ({
+        ...advisory,
+        severity: 'critical',
+      })),
     },
   });
   assert.notEqual(escalated.status, 0);
-  assert.match(escalated.stderr, /critical: undici#1114638/);
+  assert.match(escalated.stderr, /critical: linkify-it#1121797/);
 });

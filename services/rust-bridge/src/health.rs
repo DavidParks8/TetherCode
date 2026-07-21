@@ -1,13 +1,13 @@
-use std::{collections::HashMap, time::Instant};
+use std::time::Instant;
 
 use serde::Serialize;
 
 use crate::{
+    acp::manager::{AgentDescriptor, AgentLifecycle},
     now_iso,
-    observability::{LiveSyncMetrics, OperationalError, PushMetrics, RequestMetrics},
+    observability::{OperationalError, PushMetrics, RequestMetrics},
     replay::ReplayStatus,
     services::terminal::TerminalStatus,
-    BackendLifecycleState, BridgeRuntimeEngine,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,27 +28,14 @@ pub(crate) struct BridgeStatus {
     uptime_sec: u64,
     connected_clients: usize,
     devices: Vec<BridgeDeviceConnection>,
-    pub(crate) engines: HashMap<BridgeRuntimeEngine, BridgeEngineStatus>,
+    pub(crate) agents: Vec<AgentDescriptor>,
     pub(crate) operational: BridgeOperationalStatus,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct BridgeEngineStatus {
-    pub(crate) configured: bool,
-    pub(crate) lifecycle: BackendLifecycleState,
-    pub(crate) available: bool,
-    pub(crate) restart_count: u32,
-    pub(crate) pending_requests: usize,
-    pub(crate) timed_out_requests: u64,
-    pub(crate) last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeOperationalStatus {
     pub(crate) requests: RequestMetrics,
-    pub(crate) live_sync: LiveSyncMetrics,
     pub(crate) replay: ReplayStatus,
     pub(crate) queue: QueueStatus,
     pub(crate) push: PushMetrics,
@@ -67,13 +54,19 @@ pub(crate) struct QueueStatus {
 pub(crate) fn bridge_status(
     started_at: Instant,
     devices: Vec<BridgeDeviceConnection>,
-    engines: HashMap<BridgeRuntimeEngine, BridgeEngineStatus>,
+    agents: Vec<AgentDescriptor>,
     operational: BridgeOperationalStatus,
 ) -> BridgeStatus {
-    let available = engines.values().filter(|engine| engine.available).count();
+    let available = agents
+        .iter()
+        .filter(|agent| agent.lifecycle == AgentLifecycle::Ready)
+        .count();
     let status = if available == 0 {
         "unhealthy"
-    } else if engines.values().all(|engine| engine.available) {
+    } else if agents
+        .iter()
+        .all(|agent| agent.lifecycle == AgentLifecycle::Ready)
+    {
         "ok"
     } else {
         "degraded"
@@ -84,7 +77,7 @@ pub(crate) fn bridge_status(
         uptime_sec: started_at.elapsed().as_secs(),
         connected_clients: devices.len(),
         devices,
-        engines,
+        agents,
         operational,
     }
 }
@@ -93,22 +86,24 @@ pub(crate) fn bridge_status(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::backend_runtime::BackendLifecycleState;
+    use crate::acp::manager::{AgentCapabilities, AgentDescriptor};
     use crate::observability::OperationalMetrics;
 
-    fn engine(available: bool) -> BridgeEngineStatus {
-        BridgeEngineStatus {
-            configured: true,
-            lifecycle: if available {
-                BackendLifecycleState::Ready
-            } else {
-                BackendLifecycleState::Degraded
-            },
-            available,
-            restart_count: 0,
-            pending_requests: 0,
-            timed_out_requests: 0,
+    fn agent(id: &str, lifecycle: AgentLifecycle) -> AgentDescriptor {
+        AgentDescriptor {
+            agent_id: id.to_string(),
+            display_name: id.to_string(),
+            icon: None,
+            version: "1.0.0".to_string(),
+            provenance: "test".to_string(),
+            lifecycle,
             last_error: None,
+            capabilities: Some(AgentCapabilities {
+                session_list: true,
+                session_load: true,
+                session_resume: true,
+                session_steer: false,
+            }),
         }
     }
 
@@ -116,7 +111,6 @@ mod tests {
         let metrics = OperationalMetrics::new();
         BridgeOperationalStatus {
             requests: metrics.request_snapshot(),
-            live_sync: metrics.live_sync_snapshot(),
             replay: crate::replay::NotificationReplay::new(4, 1024)
                 .status(0)
                 .await,
@@ -139,12 +133,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_is_unhealthy_without_available_engines() {
-        let status = bridge_status(
-            Instant::now(),
-            Vec::new(),
-            HashMap::new(),
-            operational().await,
-        );
+        let status = bridge_status(Instant::now(), Vec::new(), Vec::new(), operational().await);
         assert_eq!(status.status, "unhealthy");
         assert_eq!(status.connected_clients, 0);
     }
@@ -158,11 +147,11 @@ mod tests {
             connected_at: "then".to_string(),
             last_seen_at: "now".to_string(),
         }];
-        let engines = HashMap::from([
-            (BridgeRuntimeEngine::Codex, engine(true)),
-            (BridgeRuntimeEngine::Opencode, engine(true)),
-        ]);
-        let status = bridge_status(Instant::now(), devices, engines, operational().await);
+        let agents = vec![
+            agent("alpha", AgentLifecycle::Ready),
+            agent("beta", AgentLifecycle::Ready),
+        ];
+        let status = bridge_status(Instant::now(), devices, agents, operational().await);
         assert_eq!(status.status, "ok");
         assert_eq!(status.connected_clients, 1);
         assert_eq!(status.devices[0].client_id, 1);
@@ -170,11 +159,11 @@ mod tests {
 
     #[tokio::test]
     async fn status_is_degraded_for_mixed_engine_availability() {
-        let engines = HashMap::from([
-            (BridgeRuntimeEngine::Codex, engine(true)),
-            (BridgeRuntimeEngine::Cursor, engine(false)),
-        ]);
-        let status = bridge_status(Instant::now(), Vec::new(), engines, operational().await);
+        let agents = vec![
+            agent("alpha", AgentLifecycle::Ready),
+            agent("beta", AgentLifecycle::Unavailable),
+        ];
+        let status = bridge_status(Instant::now(), Vec::new(), agents, operational().await);
         assert_eq!(status.status, "degraded");
     }
 }

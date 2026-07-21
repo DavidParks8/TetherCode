@@ -2,29 +2,47 @@
 
 This guide is the detailed companion to the top-level `README.md`.
 
-For bridge-driven provider UI payloads such as Codex goals, see `docs/bridge-ui-surfaces.md`.
+For bridge-driven provider UI payloads such as agent goals, see `docs/bridge-ui-surfaces.md`.
 
-## Choosing Harnesses
+## Choosing ACP Agents
 
-The setup wizard now lets you choose which harnesses the phone should control.
-
-If you want Codex, OpenCode, and Cursor:
+Setup accepts any agent ID in the ACP registry. Fresh setup uses `opencode` as the preferred registry ID; it does not fall back to a different agent when that ID is unavailable.
 
 ```bash
-clawdex init --engines codex,opencode,cursor
+clawdex init --agents alpha-agent,beta-agent --preferred-agent alpha-agent
 ```
 
 From a source checkout, the equivalent command is:
 
 ```bash
-npm run setup:wizard -- --engines codex,opencode,cursor
+npm run setup:wizard -- --agents alpha-agent,beta-agent --preferred-agent alpha-agent
 ```
 
-That writes `BRIDGE_ENABLED_ENGINES=codex,opencode,cursor` into `.env.secure`, so the bridge starts the selected backends and the mobile app can control them from one UI. The bridge reports configured harnesses separately from backends that started successfully; the mobile app only offers available backends for new chats. When Cursor is selected, `clawdex init` uses the bundled `cursor-app-server`, asks for a Cursor account API key from Cursor Dashboard > Integrations > User API Keys, and saves it in `.env.secure`. Cursor documents this under CLI authentication: https://docs.cursor.com/en/cli/reference/authentication
+The installer fetches the registry over bounded, timed HTTPS during setup only. Redirects are limited to 301, 302, 303, 307, and 308 with a fixed hop limit, loop detection, one cumulative timeout/body budget, and credential-free HTTPS validation at every hop; HTTPS downgrades and invalid or missing `Location` headers are rejected. It validates the registry with Zod, rejects empty, traversal, control-character, `.` and `..` agent IDs before deriving paths, chooses a verified current-platform binary before npm and uv alternatives, and installs exact versions under `.clawdex/agents/<id>/<version>`. Optional agent icons may be absent or a credential-free HTTPS URL of at most 2,048 UTF-8 bytes with no fragment. A malformed optional icon does not invalidate the registry list, but selection of that entry fails before installation. Runtime is network-free and starts only canonical executables from the generated manifest.
 
-If you want only one harness, use `--engine codex`, `--engine opencode`, or `--engine cursor`.
+Use `--agent <id>` for one agent. `--distribution binary|npx|uvx` overrides automatic selection. `--registry-url <https-url>` is intended only for tests or controlled administration.
 
-Cursor usage limits are not exposed by Cursor's public API today. The app shows key status, key metadata, runtime state, and models from Cursor; plan or weekly usage details remain in Cursor.
+Binary archives are bounded by compressed size, expanded size, and entry count; absolute paths, traversal, symlinks, and hardlinks are rejected. A binary without a registry SHA-256 requires `--trust-unverified`.
+
+Npm packages use two isolated phases. Before any package code is installed, the installer writes a minimal `package.json` containing one exact dependency and runs resolution-only `npm install --package-lock-only --ignore-scripts --package-lock=true --save-exact`. It accepts only lockfile version 3 with the exact root spec, a bounded graph, exact versions for every package, credential-free HTTPS tarball URLs, and valid SHA-512 SRI for every non-root entry. Links and Git, file, workspace, VCS, HTTP, missing-integrity, and untrusted lifecycle-script entries are rejected. The canonical lock is saved as `.clawdex-dependency-plan`, hashed, and recorded in provenance before installation. Package code is then installed only with `npm ci`; scripts remain disabled unless `--trust-install-scripts` is explicit, and any lock rewrite fails the transaction.
+
+Uv packages require an exact normalized package name and version. Before creating the environment, `uv pip compile --generate-hashes` creates a bounded requirements plan. Every entry must have an exact version and at least one SHA-256 artifact hash; indexes must be credential-free HTTPS; VCS, path, direct mutable URL, HTTP, and unhashed sources are rejected. The saved plan is hashed before a controlled virtual environment is created, and installation uses only `uv pip sync --require-hashes`. The console executable is resolved from the selected distribution's `entry_points.txt`, and matching `METADATA` plus integrity-bearing `RECORD` files are required for the selected package and every installed dependency. Any plan rewrite fails the transaction.
+
+The live ACP registry schema currently publishes exact top-level `npx` and `uvx` specs, but it does not publish transitive locks, lock digests, artifact hash sets, or expected installation-tree digests. When a future authoritative registry/package plan is available, it must take precedence over local resolution and its advertised digest must match. With today's schema, separate clean installs at different times may resolve different authenticated transitive plans. `registry-provenance.json` records each plan digest, marks `resolutionPolicy` as `plan-before-install`, and explicitly sets `crossTimeReproducible` to `false`. A published installation is frozen, auditable, and runtime-verified against its own saved plan and tree receipt; it is not claimed to be cross-time reproducible or cryptographically reproducible beyond those inputs.
+
+Install cache metadata is untrusted. Validation requires a strict installer-policy record whose fingerprint binds the selected agent, distribution, platform, version, command, arguments, environment, package/archive source, registry SHA-256, registry URL, and trust flags. The installer rehashes each executable and verifies distribution-specific evidence: verified binary executables are freshly derived from the retained registry-hashed artifact; npm revalidates the complete saved lock and plan digest, every installed package version, root/bin mappings, and metadata hashes; uv revalidates the complete saved hash plan, package identity, console-script mapping, metadata, every `RECORD` artifact hash, and a deterministic environment receipt. Valid signed-binary, npm, and uv installs may be reused; any mismatch triggers a clean staged reinstall. Unsigned binaries require `--trust-unverified` and refresh on every setup.
+
+Npm and uv reuse and runtime launch additionally use the `clawdex-tree-v1` installation receipt over the complete controlled install prefix. Entries are UTF-8 JSON Lines sorted by slash-normalized relative path using raw UTF-8 byte order. Directory entries bind path, type, and four-digit octal permission mode; regular-file entries additionally bind byte size and lowercase SHA-256; symlink entries bind a lexically normalized contained target. The root digest is lowercase SHA-256 of the exact JSONL bytes, including each trailing newline. Absolute, escaping, or broken symlinks, hardlinked regular files, special files, non-UTF-8 paths, more than 100,000 entries, more than 2 GiB of regular-file content, paths over 4,096 UTF-8 bytes, or receipts over 32 MiB fail closed. The only exclusion is `.clawdex-install.json`, the installer-owned cache receipt stored at the install root; it is excluded to avoid self-reference and is never imported or executed. The immutable dependency plan, package code, every transitive dependency, directories, npm lock and bin artifacts, uv virtual-environment metadata and `dist-info`, environment executables, and contained symlinks are included. The plan digest is also included in agent and registry provenance; the tree digest therefore binds plan plus installed bytes into the runtime manifest. On POSIX systems package-manager regular files are made non-writable after installation; verification remains authoritative.
+
+Agent selection is authoritative: a successful invocation publishes exactly the selected agents and removes obsolete install directories. One symlink-safe workspace lock serializes every selection set. The complete set, `agents.json`, and registry provenance are built under one unique staging root, then published through a backup journal and atomic renames. The journal is durably prepared before the first mutation. Each temporary JSON file is exclusively created at mode `0600`, completely written, file-synced, closed, renamed, and followed by a parent-directory sync. Backup and staged-destination renames sync both affected parent directories; committed state is file- and parent-synced before backup or staging cleanup; every cleanup removal is followed by a parent sync; and journal removal is followed by a final journal-parent sync. Staging and backup roots are derived beneath the same canonical `.clawdex` root, and publication rejects differing filesystem device IDs instead of relying on cross-filesystem rename behavior.
+
+Journals use a strict versioned schema and bounded transaction ID. Recovery derives staging, backup, destination, and entry paths from the canonical `.clawdex` root plus that ID; serialized paths must match exactly. The install root and temporary roots must be real directories without symlink components. Invalid journals are quarantined and recovery stops without recursively deleting any untrusted path. A prepared or publishing journal is idempotently rolled back from actual backup/destination presence; a committed journal preserves the published state and idempotently completes cleanup. Any fsync failure propagates and is never reported as durable success, even if a rename is already visible. macOS directory fsync is required and failures are closed; only documented Windows directory-handle unsupported errors are ignored. Consequently an interrupted invocation recovers to one complete old or new selected state, never a merged or mixed manifest. `.clawdex/` is workspace-local, ignored by Git, and excluded from published npm packages.
+
+Every generated agent entry carries the lowercase SHA-256 digest of its actual runtime executable and a typed integrity descriptor. Binary distributions use executable integrity. Npm and uv distributions require a canonical contained install root plus the `clawdex-tree-v1` digest. The Rust bridge independently recomputes the complete installation tree receipt in-process and verifies both the tree and executable immediately before constructing the SDK process transport. The ACP SDK accepts an executable path rather than an already-open file descriptor, so a local actor with permission to replace paths still has a narrow race between verification and the SDK spawn; preventing that residual path-replacement race requires SDK support for descriptor-based execution.
+
+ACP subprocesses start with an empty inherited environment. The bridge restores only the safe host baseline `PATH`, `HOME`, `TMPDIR`, and `LANG` when present, then applies validated manifest literals or approved host references. Approved host references are limited to `CODEX_PATH`, `HOME`, `PATH`, and `XDG_CONFIG_HOME`. Environment names matching bridge/Expo tokens or general token, key, secret, or password patterns are denied even when supplied as manifest literals. There is no default agent-auth secret exception; adding one requires a narrowly named, reviewed policy rather than a broad pattern bypass.
+
+Bridge security metadata that uses the Rust private atomic-write helper, including the ACP session index, push registry, and generated Git credential file, is created at mode `0600` before publication, file-synced, renamed relative to an open no-follow parent directory descriptor on Unix/macOS, and followed by a parent-directory sync. A parent sync failure is returned to the caller; a visible rename alone is not reported as durable success.
 
 ## Onboarding Output Cues
 
@@ -37,7 +55,7 @@ After `clawdex init`, expected sequence:
 
 Published npm releases bundle prebuilt bridge binaries for `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`, `linux-armv7l`, and `win32-x64`. On those hosts, normal bridge startup does not require a Rust compile.
 
-`clawdex init` does not run a project-local `npm install` for the published CLI path. The only required npm install there is `npm install -g clawdex-mobile@latest`.
+`clawdex init` may run a setup-time isolated npm or uv install for the selected registry distribution. It never installs an agent globally.
 
 Published CLI installs are bridge-only. They do not include the Expo workspace or mobile app source files.
 
@@ -60,15 +78,17 @@ npm install
 npm run secure:setup
 ```
 
-To generate multi-harness config instead:
+To install multiple agents instead:
 
 ```bash
-BRIDGE_ENABLED_ENGINES=codex,opencode,cursor npm run secure:setup
+ACP_AGENT_IDS=alpha-agent,beta-agent ACP_PREFERRED_AGENT=alpha-agent npm run secure:setup
 ```
 
 Creates/updates:
 
-- `.env.secure` (bridge runtime config + token)
+- `.env.secure` (bridge runtime config, local ACP manifest/root, and token)
+- `.clawdex/agents.json` (resolved runtime manifest)
+- `.clawdex/agents/` (workspace-local exact agent installs)
 - `apps/mobile/.env` (repo checkout only, for local mobile dev builds)
 
 ### 3) Start bridge
@@ -77,13 +97,7 @@ Creates/updates:
 npm run secure:bridge
 ```
 
-If you want a one-off multi-harness launch without rewriting `.env.secure`:
-
-```bash
-BRIDGE_ENABLED_ENGINES=codex,opencode,cursor npm run secure:bridge
-```
-
-When multiple harnesses are selected, the bridge starts each backend and merges chat lists while still routing each thread by engine.
+Startup fails when the local manifest or approved install root is missing. It has no direct-command or network-resolution fallback.
 
 ### 4) Pair from the mobile app
 
@@ -122,7 +136,7 @@ npm run mobile
 `npm run mobile` uses `scripts/start-expo.sh`, which sets `REACT_NATIVE_PACKAGER_HOSTNAME` from your secure config so QR resolution is predictable.
 
 If you want one command that switches the bridge between LAN/VLAN and Tailscale, preserves your
-existing bridge token and enabled harnesses, restarts the bridge in the background, and then opens
+existing bridge token and ACP agent manifest, restarts the bridge in the background, and then opens
 Expo:
 
 ```bash
@@ -146,7 +160,7 @@ Optional environment variables:
 
 The authenticated `GET /status` endpoint and `bridge/status/read` RPC expose the same live operational snapshot. In the app, open `Settings > Connections > Connection tools` to view it.
 
-The snapshot includes request completions/failures/timeouts, per-backend lifecycle and pending counts, rollout live-sync counters, replay event and byte bounds plus evictions/client drops, message queue depth, push ticket/receipt outcomes, terminal concurrency/saturation, and up to 32 recent operational errors. Recent errors contain only timestamps, generated request IDs, method names, backend labels, and stable error kinds. Logs use structured JSON metadata and deliberately omit request parameters, prompts, tokens, backend response bodies, and raw protocol or stderr lines.
+The snapshot includes request completions/failures/timeouts, ACP agent lifecycle and negotiated capabilities, replay event and byte bounds plus evictions/client drops, message queue depth, push ticket/receipt outcomes, terminal concurrency/saturation, and up to 32 recent operational errors. Recent errors contain only timestamps, generated request IDs, method names, backend labels, and stable error kinds. Logs use structured JSON metadata and deliberately omit request parameters, prompts, tokens, backend response bodies, and raw protocol or stderr lines.
 
 ## Local Browser Preview
 
@@ -220,17 +234,9 @@ npm run teardown -- --yes
 | `BRIDGE_ALLOW_INSECURE_NO_AUTH` | local debugging escape hatch; without a token, startup requires a literal loopback `BRIDGE_HOST` |
 | `BRIDGE_NO_AUTH_ALLOWED_ORIGINS` | optional comma-separated exact browser origins allowed in no-auth mode; wildcards and `null` are rejected |
 | `BRIDGE_ALLOW_QUERY_TOKEN_AUTH` | query-token auth fallback |
-| `CODEX_CLI_BIN` | codex executable |
-| `BRIDGE_ACTIVE_ENGINE` | preferred backend for unqualified bridge requests; it must be one of the enabled harnesses |
-| `BRIDGE_ENABLED_ENGINES` | configured harnesses to start (`codex`, `opencode`, `cursor`, or a comma-separated mix); runtime availability is reported separately after startup |
-| `OPENCODE_CLI_BIN` | opencode executable for dual-engine startup |
-| `CURSOR_APP_SERVER_BIN` | Cursor app-server executable, usually the `cursor-app-server` binary bundled with `clawdex-mobile` |
-| `CURSOR_API_KEY` | Cursor account API key used by the Cursor SDK harness; create it from Cursor Dashboard > Integrations > User API Keys, then provide it to `clawdex init` when Cursor is selected. See https://docs.cursor.com/en/cli/reference/authentication |
-| `CURSOR_MODEL` | optional Cursor model id for non-interactive host defaults; normal mobile chats send the selected model |
-| `BRIDGE_OPENCODE_HOST` | loopback host for spawned opencode server |
-| `BRIDGE_OPENCODE_PORT` | loopback port for spawned opencode server |
-| `BRIDGE_OPENCODE_SERVER_USERNAME` | basic-auth username passed to opencode server |
-| `BRIDGE_OPENCODE_SERVER_PASSWORD` | basic-auth password passed to opencode server |
+| `ACP_AGENT_MANIFEST` | absolute path to `.clawdex/agents.json` |
+| `ACP_AGENT_ROOTS` | path-delimited absolute roots that may contain resolved agent executables |
+| `ACP_INITIALIZE_TIMEOUT_MS` | positive ACP initialize timeout in milliseconds (default `15000`) |
 | `BRIDGE_WORKDIR` | absolute, canonical root for host path access and attachment storage |
 | `BRIDGE_ALLOW_OUTSIDE_ROOT_CWD` | allow canonical existing paths outside `BRIDGE_WORKDIR` for terminal, Git, workspace browsing, mentions, and local images |
 | `BRIDGE_WS_MAX_FRAME_BYTES` | maximum inbound WebSocket frame size (default 32 MiB) |
@@ -284,7 +290,7 @@ If you enable the optional tip jar:
 - Treat `Session`/`Allow similar` approval actions as privileged
 - Run bridge under a supervisor with restart policy
 - Rotate bridge tokens periodically and on device loss
-- Keep `codex`, Node deps, Expo SDK, and OS patches updated
+- Keep installed ACP agents, Node dependencies, Expo SDK, and OS patches updated
 
 ## Verifying Setup
 
@@ -296,8 +302,8 @@ curl "http://$BRIDGE_HOST:$BRIDGE_PORT/health"
 ```
 
 Expected response contains `"status":"ok"` or `"status":"degraded"` with HTTP
-200 when at least one configured engine is ready. It returns HTTP 503 with
-`"status":"unhealthy"` when no configured engine is ready. `/health` is the one
+200 when at least one configured agent is ready. It returns HTTP 503 with
+`"status":"unhealthy"` when no configured agent is ready. `/health` is the one
 unauthenticated, minimal availability endpoint; use authenticated `/status` or
 `bridge/status/read` for operational detail.
 
@@ -320,7 +326,7 @@ unauthenticated, minimal availability endpoint; use authenticated `/status` or
 1. Open sidebar
 2. Under `Start Directory`, pick either:
    - `Bridge default workspace`
-   - a discovered workspace path from existing Codex chats
+  - a discovered workspace path from existing agent sessions
    - any folder on the bridge host via the built-in folder browser or manual path entry
 
 Behavior:
@@ -330,25 +336,23 @@ Behavior:
 
 ### Model and Slash Commands
 
-The Agent mode picker includes built-in modes for every harness. When OpenCode
-is active, it also lists custom agents exposed by the current workspace's
-`/agent` catalog and applies the selected agent to the next turn.
+The Agent mode picker and available commands follow capabilities reported by the selected ACP agent. Workspace-defined modes, when advertised, apply to the next turn.
 
 Supported mobile slash commands:
 
 - `/help`
 - `/new`
 - `/model [model-id]`
-- `/plan [on|off|prompt]` (uses the OpenCode plan/build agents)
+- `/plan [on|off|prompt]`
 - `/status`
 - `/rename <new-name>`
-- `/compact` (Codex and OpenCode)
-- `/review` (Codex only)
+- `/compact`
+- `/review`
 - `/fork`
 - `/diff`
 
-`/goal` is Codex-only. Commands that require an existing chat are hidden until a chat is open.
-`/new` keeps the current chat engine selected.
+Commands that require an existing chat or an unsupported capability are hidden until available.
+`/new` keeps the current chat agent selected.
 
 ### Plan Mode and Clarifications
 
@@ -388,7 +392,7 @@ git push --atomic origin main --follow-tags
 ```
 
 The `npm version` lifecycle synchronizes workspace, Expo, Cargo manifest, and lockfile versions before creating the release commit and tag. The atomic push prevents a tag from reaching the remote if the `main` update is rejected. Automation verifies metadata, tag/version consistency, and that the tagged commit is reachable from `origin/main` before building or publishing to npm.
-The `main` push still builds every bridge target but cannot publish. Only an exact `v<package.json version>` tag on `main`, or a manual run from `main` with `publish_package` explicitly selected and the `npm-publish` environment approved, can enter the publish job. Publishes for the same package and version share one non-cancelling concurrency group, so the release commit and tag cannot compete.
+The `main` push still builds every bridge target but cannot publish. Only an exact `v<package.json version>` tag on `main`, or a manual run from `main` with `publish_package` explicitly selected and the `npm-publish` environment approved, can enter the publish job. Every publish also depends on the release workflow's own strict contract, lint, typecheck, test, mobile branch coverage, and Rust branch coverage job; a successful check from another workflow run cannot substitute for it. Publishes for the same package and version share one non-cancelling concurrency group, so the release commit and tag cannot compete.
 
 Use `npm run test:release` to validate workflow YAML and the release ownership guard locally. CI runs the same focused policy suite on pull requests.
 
@@ -401,9 +405,10 @@ Use `npm run test:release` to validate workflow YAML and the release ownership g
 - `GET /rpc`: authenticated WebSocket JSON-RPC; bearer auth is preferred and query-token auth is a
   private-network compatibility fallback when explicitly enabled
 - `GET /status`: authenticated full bridge/backend/operational status
-- `GET /local-image`: authenticated, path-policy-constrained local image response (maximum `20 MiB`)
+- `GET /local-image`: authenticated, descriptor-relative local image response beneath
+  `BRIDGE_WORKDIR` (maximum `20 MiB`; symlinks and hardlinks rejected)
 - `POST /attachments`: bearer-authenticated `multipart/form-data`; one streamed file, maximum
-  `20 MiB`
+  `20 MiB`; staging, synchronization, and final rename use retained directory descriptors
 
 Browser preview uses its separately configured listener and a short-lived, owner-scoped session
 bootstrap rather than adding another route to the main bridge listener.
@@ -413,12 +418,38 @@ bootstrap rather than adding another route to the main bridge listener.
 The bridge forwards an explicit allowlist, not arbitrary `thread/*` or `turn/*` methods. It includes
 the mobile account/auth reads and actions, model/agent/app/skill/config catalogs, supported config
 writes, review start, thread lifecycle/history operations, and turn start/steer/interrupt. The
-versioned inventory in `contracts/bridge-rpc/v1/manifest.json` is the checked contract for methods
+versioned inventory in `contracts/bridge-rpc/v2/manifest.json` is the checked contract for methods
 the mobile client invokes; `services/rust-bridge/src/rpc.rs` is the complete runtime allowlist.
+
+`thread/read` ACP snapshots expose monotonic timeline sequences and per-collection truncation
+metadata. `thread/snapshot/page` accepts the opaque `threadId`, one opaque `beforeCursor` or
+`afterCursor`, and a limit clamped to 100. It returns typed message/reasoning/tool history from a
+per-session journal bounded to 1,024 entries and 4 MiB. `unavailableCount` and
+`earliestAvailableSequence` explicitly report history that has already been evicted; cursors never
+claim that evicted content is retrievable.
+
+`thread/list` always merges the durable session index with native ACP list results and loaded
+sessions. Its `diagnostics` array reports partial native discovery caused by empty or duplicate-only
+pages, repeated cursors, the 32-page budget, or the 2,048-session cap; durable IDs remain present in
+all of those cases.
+
+The durable session index stores each ACP identity with its canonical workspace directory. The
+current schema is version 2; older index files are ignored rather than migrated without a trusted
+workspace path. A `thread/read` or `thread/snapshot/page` request for a durable but unloaded session
+reconstructs it once through `session/resume` when negotiated, otherwise `session/load`. Concurrent
+reads share that reconstruction, while already-loaded reads stay local. Before reconstruction the
+bridge re-canonicalizes the stored directory, verifies that it still exists and satisfies
+`BRIDGE_ALLOW_OUTSIDE_ROOT_CWD`, and rejects stale or out-of-policy paths without launching the
+agent.
+
+Session-index writes are atomic and transactional. A failed write leaves the previous file and
+in-memory durable set unchanged. New or explicitly resumed ACP sessions remain safely loaded in the
+current bridge process, but the acknowledging RPC returns an explicit persistence error; a later
+session listing or event flush retries the pending durable write.
 
 ### Bridge-native RPC methods
 
-The checked inventory is `contracts/bridge-rpc/v1/manifest.json`. Major groups are:
+The checked inventory is `contracts/bridge-rpc/v2/manifest.json`. Major groups are:
 
 - Health/runtime: `bridge/health/read`, `bridge/status/read`, `bridge/capabilities/read`, and
   `bridge/runtime/read`
@@ -428,23 +459,22 @@ The checked inventory is `contracts/bridge-rpc/v1/manifest.json`. Major groups a
 - Host surfaces: `bridge/workspaces/list`, `bridge/fs/list`, `bridge/terminal/exec`, and
   `bridge/git/*`
 - Interaction: `bridge/approvals/*`, `bridge/userInput/resolve`, and `bridge/ui/*`
-- Browser and maintenance: `bridge/browser/*`, `bridge/codex/*`, `bridge/restart/start`, and
+- Browser and maintenance: browser-preview, agent-maintenance, restart, and
   `bridge/update/start`
 
 All of these methods are available only after the WebSocket connection passes bridge authentication.
 
-### Boundary integration tests
+### ACP integration tests
 
-Run `npm run test:boundary` from the repository root. The suite starts the production Axum router on
-ephemeral loopback ports and isolated fake stdio app servers. It covers transport authentication and
-origins, reconnect/replay, backend death and degraded status, concurrent queue sends, request timeout
-and disconnect cancellation, path confinement, atomic push-registry persistence, and the shared
-Rust/TypeScript contract fixtures. It does not read bridge runtime state, bind configured bridge ports,
-or stop/restart a developer bridge. CI runs it in the Rust bridge job in addition to the full Rust suite.
+Run `npm run test:acp` from the repository root. The focused Rust target exercises fake ACP
+transports, capability negotiation, session lifecycle and routing, permission and elicitation flows,
+canonical event projection, steering, cancellation, and manager recovery. It does not read bridge
+runtime state, bind configured bridge ports, or stop/restart a developer bridge. CI runs it in the
+Rust bridge job in addition to the full Rust suite.
 
 ### Mobile branch coverage
 
-Run `npm run coverage:check` from the repository root. CI enforces at least 85% branch coverage
+Run `npm run coverage:check` from the repository root. CI enforces at least 86% branch coverage
 across the active mobile logic layer: persisted state, profiles, bridge transport/API mapping,
 realtime synchronization controllers, navigation logic, and pure product helpers. Declarative screen
 rendering, styles, generated files, and native projects remain covered by component, build, and
@@ -460,17 +490,18 @@ rustup toolchain install nightly-2026-07-15 --profile minimal --component llvm-t
 cargo install cargo-llvm-cov@0.8.7 --locked
 ```
 
-CI and the local command enforce at least 85% branch coverage over all Rust production source.
-Inline `#[cfg(test)]` modules and `src/boundary_integration.rs` are excluded from instrumentation as
-test infrastructure; the production paths they exercise remain included. The command writes JSON
-and HTML reports under `services/rust-bridge/target/llvm-cov/`.
+CI and the local command enforce at least 86% branch coverage over all Rust production source.
+Inline `#[cfg(test)]` modules are test infrastructure; the production paths they exercise remain
+included. The command writes JSON and HTML reports under `services/rust-bridge/target/llvm-cov/`.
 
 ### Host execution policy
 
 - `bridge/terminal/exec` is deny-all by default. Opt in with `BRIDGE_TERMINAL_EXEC_POLICIES=pwd,ls,cat`; an unset or empty value enables nothing.
 - Each terminal policy validates arguments: `pwd` takes none, `ls` accepts only `-a`, `-A`, `-l`, `-h`, and `-1` plus canonicalized paths, and `cat` accepts only canonicalized files.
-- Generic `git` terminal commands are always forbidden. `bridge/git/*` uses a separate hardened runner that ignores system/global Git configuration, disables hooks, external diff/filter helpers and unsafe transports, and rejects non-HTTPS or credential-bearing remotes before network operations.
+- Generic `git` terminal commands are always forbidden. Before diff, stage, commit, branch mutation, or push, `bridge/git/*` safely inventories effective system, global, local, worktree, `include.path`, and active `includeIf` configuration with origins and scopes. It fails closed on unreadable includes, executable filters, diff and merge drivers, hooks, fsmonitor, SSH commands, credential helpers, shell aliases, editors, and transport weakening. The inspection command clears inherited command environment and applies command-scope helper, hook, and protocol defenses, so validation cannot execute the configuration it is examining.
+- Repository operations then use a separate hardened runner that ignores system/global Git configuration, disables hooks and external commands, resets credential helpers, forces TLS verification, clears command-scope proxies, and denies all protocols except HTTPS. Credentialed Git network operations additionally reject effective `http.*`, proxy, CA, `core.gitProxy`, and `url.*.insteadOf` transport overrides. Ambient Git/curl proxy, CA, and TLS override variables fail closed before credentials can be used.
 - The bridge-owned GitHub credential store is passed directly to hardened Git commands; installation no longer changes the user's global Git configuration.
+- Local images and uploaded attachments do not rely on canonicalize-then-open pathname checks. On Unix platforms the bridge retains a `BRIDGE_WORKDIR` directory descriptor, traverses components with no-follow directory opens, checks regular-file metadata from the opened image descriptor, creates upload files relative to a retained staging descriptor, and renames plus synchronizes within retained directories. Symlink-component swaps cannot redirect reads or writes outside the root; local images also reject hardlinks. These operations fail closed on unsupported non-Unix platforms.
 
 ### Notifications (examples)
 

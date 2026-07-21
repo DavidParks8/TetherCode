@@ -4,13 +4,13 @@
   <img src="https://raw.githubusercontent.com/Mohit-Patil/clawdex-mobile/main/screenshots/social/clawdex-social-poster-1200x675.png" alt="Clawdex social banner" width="100%" />
 </p>
 
-Run Codex or OpenCode from your phone. `clawdex-mobile` ships the bridge CLI plus bundled Rust bridge binaries for supported hosts, and the mobile app pairs to that bridge over Tailscale or local LAN.
+Run ACP-compatible coding agents from your phone. `clawdex-mobile` ships the bridge CLI plus bundled Rust bridge binaries for supported hosts, and the mobile app pairs to that bridge over Tailscale or local LAN.
 
 This project is for trusted/private networking by default. Keep the bridge on a private network, leave bridge auth enabled, and do not expose it directly to the public internet.
 
 ## What You Get
 
-- Mobile chat for Codex and OpenCode
+- Mobile chat for agents published in the Agent Client Protocol registry
 - Live run updates over WebSocket
 - Approval and clarification flows in-app
 - Attachments, terminal, and Git actions
@@ -23,9 +23,6 @@ Before you start:
 - Node.js 22.13+
 - npm 10+
 - `git`
-- `codex` in `PATH` for the default Codex flow
-- `opencode` in `PATH` if you want the OpenCode flow
-- Cursor app-server is bundled with `clawdex-mobile` for the Cursor SDK flow
 
 Install the mobile app:
 
@@ -53,23 +50,22 @@ clawdex init
 clawdex stop
 ```
 
-## Extra Harness Setup
+## ACP Agent Setup
 
-OpenCode and Cursor can run beside Codex from the same bridge.
+Setup downloads the registry from `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`, installs exact agent versions under `.clawdex/agents`, and atomically writes `.clawdex/agents.json`. The workspace-local `.clawdex/` directory is ignored by Git and excluded from the npm package. Runtime reads only that local manifest and never uses `npx`, `uvx`, or registry network resolution.
 
 ```bash
-npm install -g opencode-ai
 npm install -g clawdex-mobile@latest
-clawdex init --engines codex,opencode,cursor
+clawdex init --agents alpha-agent,beta-agent --preferred-agent alpha-agent
 ```
 
-That writes `BRIDGE_ENABLED_ENGINES=codex,opencode,cursor` to `.env.secure`, so the mobile app can control the selected harnesses from one bridge. When Cursor is selected, `clawdex init` uses the bundled `cursor-app-server`, asks for a Cursor account API key from Cursor Dashboard > Integrations > User API Keys, and saves it in `.env.secure`. Cursor documents this under CLI authentication: https://docs.cursor.com/en/cli/reference/authentication
+Fresh interactive setup prefers the registry ID `opencode`; if it is absent from the fetched registry, setup fails clearly. Use `--agent <id>` for one agent or `--agents <id,...> --preferred-agent <id>` for several.
 
-Notes:
+Distribution priority is verified platform binary, then npm package, then uv tool. Unsigned binaries require `--trust-unverified`; npm lifecycle scripts are disabled by default and require `--trust-install-scripts`. `--distribution binary|npx|uvx` provides an explicit override. `--registry-url` is available for tests and controlled administration and must use credential-free HTTPS.
 
-- `clawdex init` without flags now lets you multi-select harnesses in the wizard with Space, then Enter to continue.
-- Use `clawdex init --engine codex`, `clawdex init --engine opencode`, or `clawdex init --engine cursor` if you want a single-harness setup.
-- For non-interactive host automation, set `CURSOR_API_KEY` before running setup. This should be a Cursor account API key for the Cursor agent/SDK, not an OpenAI, Anthropic, or other provider key configured inside the Cursor editor. `CURSOR_MODEL` is optional; the app model picker sends the model for normal chats.
+Setup follows only bounded credential-free HTTPS redirects and never permits an HTTPS downgrade. Registry-SHA-256 binary installs are reused only after their registry-derived fingerprint, executable hash, and artifact integrity evidence are recomputed. Npm installs are reused only after a bounded `clawdex-tree-v1` receipt rehashes the complete isolated prefix, including first-party modules, transitive dependencies, package metadata, lockfile, modes, directories, and contained bin symlinks; Rust independently verifies that tree immediately before spawn. Uv tools verify every integrity-bearing `RECORD` artifact. Unsigned binaries require `--trust-unverified` and refresh on every setup. Any mismatch or refresh is built in a unique staging directory and atomically swapped under an install lock; a failed rebuild leaves the previously published manifest and install directory untouched.
+
+Registry `env` values become literal defaults. Host environment values are not copied into the manifest; explicit `HostReference` entries are limited by the Rust runtime allowlist.
 
 ## Monorepo Development
 
@@ -91,17 +87,17 @@ npm run stack:tailscale
 
 `stack:lan` is the local network path, so it also covers the same-device LAN/VLAN case.
 
-For an OpenCode-first repo checkout:
+For a specific registry agent ID:
 
 ```bash
-npm run setup:wizard -- --engine opencode
+npm run setup:wizard -- --agent alpha-agent
 ```
 
 Use `npm run setup:wizard -- --no-start` if you only want to write config.
 
 ## Main Commands
 
-- `clawdex init [--engine codex|opencode|cursor] [--engines codex,opencode,cursor] [--no-start]`
+- `clawdex init [--agent <id>] [--agents <id,...> --preferred-agent <id>] [--no-start]`
 - `clawdex stop`
 - `clawdex upgrade` / `clawdex update`
 - `clawdex version`

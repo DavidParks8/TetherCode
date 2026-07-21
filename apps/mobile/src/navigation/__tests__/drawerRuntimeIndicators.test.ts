@@ -22,7 +22,7 @@ function chat(id: string, partial: Partial<ChatSummary> = {}): ChatSummary {
     statusUpdatedAt: partial.statusUpdatedAt ?? '2026-04-01T00:00:00.000Z',
     lastMessagePreview: partial.lastMessagePreview ?? '',
     cwd: partial.cwd,
-    engine: partial.engine,
+    agentId: partial.agentId,
     modelProvider: partial.modelProvider,
     sourceKind: partial.sourceKind,
     parentThreadId: partial.parentThreadId,
@@ -43,6 +43,20 @@ function event(method: string, params: RpcNotification['params']): RpcNotificati
   };
 }
 
+function agUiEvent(
+  threadId: string,
+  type: 'RUN_STARTED' | 'TEXT_MESSAGE_CONTENT' | 'RUN_FINISHED' | 'RUN_ERROR'
+): RpcNotification {
+  const runId = `${threadId}::turn::turn`;
+  const canonical =
+    type === 'RUN_STARTED' || type === 'RUN_FINISHED'
+      ? { type, threadId, runId }
+      : type === 'RUN_ERROR'
+        ? { type, message: 'failed', code: 'failed' }
+        : { type, messageId: `${runId}::item::message`, delta: 'delta' };
+  return event('bridge/agui.event', { threadId, runId, sourceTurnId: 'turn', event: canonical });
+}
+
 function section(chats: ChatSummary[]): ChatWorkspaceSection {
   return {
     key: 'workspace',
@@ -60,10 +74,7 @@ describe('drawerRuntimeIndicators', () => {
   it('keeps turn-start lifecycle indicators beyond the short heartbeat window', () => {
     const state = updateDrawerRunIndicatorsForEvent(
       {},
-      event('turn/started', {
-        threadId: 'thr_1',
-        turnId: 'turn_1',
-      }),
+      agUiEvent('thr_1', 'RUN_STARTED'),
       1000
     );
 
@@ -74,21 +85,12 @@ describe('drawerRuntimeIndicators', () => {
   it('clears lifecycle indicators on turn completion', () => {
     const running = updateDrawerRunIndicatorsForEvent(
       {},
-      event('turn/started', {
-        threadId: 'thr_1',
-        turnId: 'turn_1',
-      }),
+      agUiEvent('thr_1', 'RUN_STARTED'),
       1000
     );
     const complete = updateDrawerRunIndicatorsForEvent(
       running,
-      event('turn/completed', {
-        threadId: 'thr_1',
-        turn: {
-          id: 'turn_1',
-          status: 'completed',
-        },
-      }),
+      agUiEvent('thr_1', 'RUN_FINISHED'),
       2000
     );
 
@@ -125,38 +127,10 @@ describe('drawerRuntimeIndicators', () => {
     expect(isDrawerChatRunning(chat('thr_1'), complete, 3000)).toBe(false);
   });
 
-  it('handles Codex task start and task completion events', () => {
-    const running = updateDrawerRunIndicatorsForEvent(
-      {},
-      event('codex/event/task_started', {
-        msg: {
-          type: 'task_started',
-          thread_id: 'codex:thr_1',
-        },
-      }),
-      1000
-    );
-    expect(isDrawerChatRunning(chat('codex:thr_1'), running, 25_000)).toBe(true);
-
-    const complete = updateDrawerRunIndicatorsForEvent(
-      running,
-      event('codex/event/task_complete', {
-        msg: {
-          type: 'task_complete',
-          thread_id: 'codex:thr_1',
-        },
-      }),
-      2000
-    );
-    expect(isDrawerChatRunning(chat('codex:thr_1'), complete, 3000)).toBe(false);
-  });
-
   it('does not let an older idle chat snapshot erase a newer live event', () => {
     const state = updateDrawerRunIndicatorsForEvent(
       {},
-      event('turn/started', {
-        threadId: 'thr_1',
-      }),
+      agUiEvent('thr_1', 'RUN_STARTED'),
       Date.parse('2026-04-01T00:01:00.000Z')
     );
     const reconciled = reconcileDrawerRunIndicatorsWithChats(
@@ -179,9 +153,7 @@ describe('drawerRuntimeIndicators', () => {
   it('lets a newer non-running chat snapshot clear stale live state', () => {
     const state = updateDrawerRunIndicatorsForEvent(
       {},
-      event('turn/started', {
-        threadId: 'thr_1',
-      }),
+      agUiEvent('thr_1', 'RUN_STARTED'),
       Date.parse('2026-04-01T00:01:00.000Z')
     );
     const reconciled = reconcileDrawerRunIndicatorsWithChats(
@@ -218,9 +190,7 @@ describe('drawerRuntimeIndicators', () => {
   it('preserves lifecycle source when heartbeat progress arrives later', () => {
     const lifecycle = updateDrawerRunIndicatorsForEvent(
       {},
-      event('turn/started', {
-        threadId: 'thr_1',
-      }),
+      agUiEvent('thr_1', 'RUN_STARTED'),
       1000
     );
     const refreshed = updateDrawerRunIndicatorsForEvent(
@@ -238,9 +208,7 @@ describe('drawerRuntimeIndicators', () => {
   it('marks a workspace section live when any chat inside it is live', () => {
     const state = updateDrawerRunIndicatorsForEvent(
       {},
-      event('turn/started', {
-        threadId: 'thr_live',
-      }),
+      agUiEvent('thr_live', 'RUN_STARTED'),
       1000
     );
 
@@ -352,37 +320,6 @@ describe('drawerRuntimeIndicators', () => {
     expect(
       updateDrawerRunIndicatorsForEvent({}, event('turn/completed', { threadId: 'absent' }), 2000)
     ).toEqual({});
-  });
-
-  it.each([
-    ['codex/event/agent_message_delta', 'heartbeat'],
-    ['codex/event/task_failed', 'clear'],
-    ['codex/event/unknown_event', 'unchanged'],
-  ])('handles Codex event method fallback %s', (method, expected) => {
-    const previous = { thread: { source: 'lifecycle' as const, updatedAt: 1000 } };
-    const result = updateDrawerRunIndicatorsForEvent(
-      previous,
-      event(method, { threadId: 'thread' }),
-      5000
-    );
-    if (expected === 'heartbeat') {
-      expect(result).toEqual({ thread: { source: 'lifecycle', updatedAt: 5000 } });
-    } else if (expected === 'clear') {
-      expect(result).toEqual({});
-    } else {
-      expect(result).toBe(previous);
-    }
-  });
-
-  it('ignores Codex events whose type normalizes to empty', () => {
-    const previous = {};
-    expect(
-      updateDrawerRunIndicatorsForEvent(
-        previous,
-        event('codex/event/---', { threadId: 'thread', msg: { type: '---' } }),
-        1000
-      )
-    ).toBe(previous);
   });
 
   it.each([

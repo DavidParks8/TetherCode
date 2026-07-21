@@ -71,6 +71,18 @@ fn hardened_git_args_with_helper(args: &[String], helper: Option<String>) -> Vec
         "-c".to_string(),
         "diff.external=".to_string(),
         "-c".to_string(),
+        "http.sslVerify=true".to_string(),
+        "-c".to_string(),
+        "http.proxy=".to_string(),
+        "-c".to_string(),
+        "https.proxy=".to_string(),
+        "-c".to_string(),
+        "core.gitProxy=".to_string(),
+        "-c".to_string(),
+        "protocol.allow=never".to_string(),
+        "-c".to_string(),
+        "protocol.https.allow=always".to_string(),
+        "-c".to_string(),
         "protocol.ext.allow=never".to_string(),
         "-c".to_string(),
         "protocol.file.allow=never".to_string(),
@@ -106,6 +118,12 @@ pub(crate) struct TerminalStatus {
     pub(crate) waiting: u64,
     pub(crate) saturation_count: u64,
     pub(crate) timed_out: u64,
+}
+
+struct BinaryExecutionOptions {
+    timeout_ms: Option<u64>,
+    max_output_bytes: usize,
+    preserve_git_config: bool,
 }
 
 impl TerminalService {
@@ -184,8 +202,11 @@ impl TerminalService {
             &args,
             command.to_string(),
             cwd,
-            request.timeout_ms,
-            DEFAULT_TERMINAL_MAX_OUTPUT_BYTES,
+            BinaryExecutionOptions {
+                timeout_ms: request.timeout_ms,
+                max_output_bytes: DEFAULT_TERMINAL_MAX_OUTPUT_BYTES,
+                preserve_git_config: false,
+            },
         )
         .await
     }
@@ -212,8 +233,36 @@ impl TerminalService {
             &hardened_args,
             display,
             cwd,
-            timeout_ms,
-            GIT_COMMAND_MAX_OUTPUT_BYTES,
+            BinaryExecutionOptions {
+                timeout_ms,
+                max_output_bytes: GIT_COMMAND_MAX_OUTPUT_BYTES,
+                preserve_git_config: false,
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn inspect_git_config(
+        &self,
+        args: &[String],
+        cwd: PathBuf,
+        preserve_standard_config: bool,
+    ) -> Result<TerminalExecResponse, BridgeError> {
+        let cwd = self
+            .path_policy
+            .resolve_existing(cwd.to_string_lossy().as_ref(), PathKind::Directory)?;
+        let hardened_args = hardened_git_args(args);
+
+        self.execute_binary_internal(
+            "git",
+            &hardened_args,
+            "git config inspection".to_string(),
+            cwd,
+            BinaryExecutionOptions {
+                timeout_ms: None,
+                max_output_bytes: GIT_COMMAND_MAX_OUTPUT_BYTES,
+                preserve_git_config: preserve_standard_config,
+            },
         )
         .await
     }
@@ -297,8 +346,7 @@ impl TerminalService {
         args: &[String],
         display_command: String,
         cwd: PathBuf,
-        timeout_ms: Option<u64>,
-        max_output_bytes: usize,
+        options: BinaryExecutionOptions,
     ) -> Result<TerminalExecResponse, BridgeError> {
         if self.concurrency_limiter.available_permits() == 0 {
             self.saturated.fetch_add(1, Ordering::Relaxed);
@@ -319,7 +367,7 @@ impl TerminalService {
             running: self.running.clone(),
             _permit: permit,
         };
-        let timeout_ms = timeout_ms.unwrap_or(30_000).clamp(100, 120_000);
+        let timeout_ms = options.timeout_ms.unwrap_or(30_000).clamp(100, 120_000);
         let started_at = Instant::now();
 
         let mut command = Command::new(binary);
@@ -328,11 +376,14 @@ impl TerminalService {
             .current_dir(&cwd)
             .env_clear()
             .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if !options.preserve_git_config {
+            command
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null");
+        }
         #[cfg(unix)]
         command.process_group(0);
         for name in ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SystemRoot"] {
@@ -353,9 +404,11 @@ impl TerminalService {
             .take()
             .ok_or_else(|| BridgeError::server("failed to capture stderr"))?;
 
+        let max_output_bytes = options.max_output_bytes;
         let stdout_task =
             tokio::spawn(async move { read_stream_limited(stdout, max_output_bytes).await });
 
+        let max_output_bytes = options.max_output_bytes;
         let stderr_task =
             tokio::spawn(async move { read_stream_limited(stderr, max_output_bytes).await });
 
@@ -507,8 +560,8 @@ fn finalize_output(bytes: Vec<u8>, truncated: bool) -> String {
 mod tests {
     use super::{
         append_wait_error, finalize_output, hardened_git_args, hardened_git_args_with_helper,
-        read_stream_limited, trusted_credential_helper_from_home, TerminalExecPolicy,
-        TerminalService, DEFAULT_TERMINAL_MAX_CONCURRENT,
+        read_stream_limited, trusted_credential_helper_from_home, BinaryExecutionOptions,
+        TerminalExecPolicy, TerminalService, DEFAULT_TERMINAL_MAX_CONCURRENT,
     };
     use crate::{path_policy::PathPolicy, TerminalExecRequest};
     use std::{
@@ -717,8 +770,11 @@ mod tests {
                 &args,
                 "fixture command".to_string(),
                 temp.0.clone(),
-                None,
-                1024,
+                BinaryExecutionOptions {
+                    timeout_ms: None,
+                    max_output_bytes: 1024,
+                    preserve_git_config: false,
+                },
             )
             .await
             .expect("execute shell fixture");
@@ -733,8 +789,11 @@ mod tests {
                 &[],
                 "missing".to_string(),
                 temp.0.clone(),
-                None,
-                1024,
+                BinaryExecutionOptions {
+                    timeout_ms: None,
+                    max_output_bytes: 1024,
+                    preserve_git_config: false,
+                },
             )
             .await
             .expect_err("report spawn error");
@@ -756,8 +815,11 @@ mod tests {
                 ],
                 "large output".to_string(),
                 temp.0.clone(),
-                None,
-                5,
+                BinaryExecutionOptions {
+                    timeout_ms: None,
+                    max_output_bytes: 5,
+                    preserve_git_config: false,
+                },
             )
             .await
             .expect("execute output fixture");
@@ -778,8 +840,11 @@ mod tests {
                 &["-c".to_string(), "sleep 10 & wait".to_string()],
                 "slow command".to_string(),
                 temp.0.clone(),
-                Some(100),
-                1024,
+                BinaryExecutionOptions {
+                    timeout_ms: Some(100),
+                    max_output_bytes: 1024,
+                    preserve_git_config: false,
+                },
             ),
         )
         .await
@@ -815,8 +880,11 @@ mod tests {
                         ],
                         format!("holder {index}"),
                         cwd,
-                        Some(5_000),
-                        1024,
+                        BinaryExecutionOptions {
+                            timeout_ms: Some(5_000),
+                            max_output_bytes: 1024,
+                            preserve_git_config: false,
+                        },
                     )
                     .await
             }));
@@ -832,8 +900,11 @@ mod tests {
                     &["-c".to_string(), "printf never".to_string()],
                     "waiter".to_string(),
                     waiting_cwd,
-                    None,
-                    1024,
+                    BinaryExecutionOptions {
+                        timeout_ms: None,
+                        max_output_bytes: 1024,
+                        preserve_git_config: false,
+                    },
                 )
                 .await
         });
@@ -1002,6 +1073,12 @@ mod tests {
             "core.fsmonitor=false",
             "commit.gpgSign=false",
             "diff.external=",
+            "http.sslVerify=true",
+            "http.proxy=",
+            "https.proxy=",
+            "core.gitProxy=",
+            "protocol.allow=never",
+            "protocol.https.allow=always",
             "protocol.ext.allow=never",
             "protocol.file.allow=never",
             "credential.helper=",

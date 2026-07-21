@@ -36,7 +36,9 @@ import {
   type TranscriptDisplayItem,
 } from './transcriptMessages';
 import { projectTranscript } from './controllers/transcriptProjectionController';
+import type { LiveAssistantMessage } from './controllers/transcriptProjectionController';
 import { decorativeAccessibilityProps } from '../accessibility';
+import type { TranscriptContinuationState } from './controllers/transcriptContinuationController';
 
 export interface ChatTranscriptViewProps {
   chat: Chat;
@@ -54,8 +56,10 @@ export interface ChatTranscriptViewProps {
   onScrollInteractionStart: () => void;
   autoScrollStateRef: React.MutableRefObject<AutoScrollState>;
   bottomInset: number;
-  liveAssistantText?: string | null;
+  liveAssistantMessages?: readonly LiveAssistantMessage[] | null;
   onOpenSubAgentThread?: (threadId: string) => void;
+  continuationState?: TranscriptContinuationState;
+  onLoadEarlier?: () => void;
 }
 
 export const ChatTranscriptView = memo(function ChatTranscriptView({
@@ -74,8 +78,10 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
   onScrollInteractionStart,
   autoScrollStateRef,
   bottomInset,
-  liveAssistantText = null,
+  liveAssistantMessages = null,
   onOpenSubAgentThread,
+  continuationState,
+  onLoadEarlier,
 }: ChatTranscriptViewProps) {
   const theme = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -96,9 +102,9 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
         parentChat,
         showToolCalls,
         threadStatuses: agentThreadStatusById,
-        liveAssistantText,
+        liveAssistantMessages,
       }),
-    [agentThreadStatusById, chat, liveAssistantText, parentChat, showToolCalls]
+    [agentThreadStatusById, chat, liveAssistantMessages, parentChat, showToolCalls]
   );
   const visibleMessages = transcriptView.messages;
   const [visibleStartIndex, setVisibleStartIndex] = useState(() =>
@@ -144,6 +150,9 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
   const maybeAutoLoadOlderMessages = useCallback(
     (allowShortContentLoad = false) => {
       if (visibleStartIndex <= 0) {
+        if (!continuationState?.loading && !continuationState?.exhausted) {
+          onLoadEarlier?.();
+        }
         return;
       }
 
@@ -174,8 +183,45 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
       autoLoadOlderCheckpointRef.current = visibleStartIndex;
       loadOlderMessages();
     },
-    [loadOlderMessages, visibleStartIndex]
+    [continuationState?.exhausted, continuationState?.loading, loadOlderMessages, onLoadEarlier, visibleStartIndex]
   );
+
+  const historyBoundary = useMemo(() => {
+    if (!continuationState) return null;
+    if (continuationState.loading) {
+      return <Text style={styles.inlineChoiceHint}>Loading earlier history...</Text>;
+    }
+    if (continuationState.error) {
+      return (
+        <Pressable
+          onPress={onLoadEarlier}
+          accessibilityRole="button"
+          accessibilityLabel="Retry loading earlier history"
+        >
+          <Text style={styles.inlineChoiceHint}>Earlier history failed to load. Tap to retry.</Text>
+        </Pressable>
+      );
+    }
+    if (!continuationState.exhausted) {
+      return (
+        <Pressable
+          onPress={onLoadEarlier}
+          accessibilityRole="button"
+          accessibilityLabel="Load earlier messages"
+        >
+          <Text style={styles.inlineChoiceHint}>Load earlier</Text>
+        </Pressable>
+      );
+    }
+    if (continuationState.unavailableCount > 0) {
+      return (
+        <Text style={styles.inlineChoiceHint} accessibilityRole="alert">
+          {`${String(continuationState.unavailableCount)} older history ${continuationState.unavailableCount === 1 ? 'entry is' : 'entries are'} no longer available.`}
+        </Text>
+      );
+    }
+    return <Text style={styles.inlineChoiceHint}>Beginning of history</Text>;
+  }, [continuationState, onLoadEarlier, styles.inlineChoiceHint]);
 
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -234,7 +280,6 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
           <View style={styles.chatMessageBlock}>
             <ToolActivityGroup
               messages={item.messages}
-              engine={chat.engine}
               bridgeUrl={bridgeUrl}
               bridgeToken={bridgeToken}
               liveTurnActive={liveTurnActive}
@@ -249,7 +294,6 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
         <View style={styles.chatMessageBlock}>
           <ChatMessage
             message={msg}
-            engine={chat.engine}
             bridgeUrl={bridgeUrl}
             bridgeToken={bridgeToken}
             onOpenLocalPreview={onOpenLocalPreview}
@@ -291,7 +335,6 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
     [
       bridgeToken,
       bridgeUrl,
-      chat.engine,
       chat.status,
       inlineChoiceSet,
       liveTurnActive,
@@ -310,6 +353,7 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
         extraData={chat.status}
         keyExtractor={keyExtractor}
         renderItem={renderMessageItem}
+        ListFooterComponent={historyBoundary}
         style={styles.messageList}
         contentContainerStyle={messageListContentStyle}
         maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
@@ -401,8 +445,10 @@ function areChatTranscriptViewPropsEqual(previous: ChatTranscriptViewProps, next
     previous.onScrollInteractionStart === next.onScrollInteractionStart &&
     previous.autoScrollStateRef === next.autoScrollStateRef &&
     previous.bottomInset === next.bottomInset &&
-    previous.liveAssistantText === next.liveAssistantText
+    previous.liveAssistantMessages === next.liveAssistantMessages
     && previous.onOpenSubAgentThread === next.onOpenSubAgentThread
+    && previous.continuationState === next.continuationState
+    && previous.onLoadEarlier === next.onLoadEarlier
   );
 }
 
@@ -420,7 +466,7 @@ function areChatsEquivalentForTranscript(
   return (
     previous.id === next.id &&
     previous.parentThreadId === next.parentThreadId &&
-    previous.engine === next.engine &&
+    previous.agentId === next.agentId &&
     previous.status === next.status &&
     previous.messages === next.messages
   );

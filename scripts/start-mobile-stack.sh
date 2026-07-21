@@ -29,7 +29,7 @@ Options:
 
 Notes:
   - Existing bridge token is preserved.
-  - Existing engine selection is preserved.
+  - Existing ACP agent manifest is preserved.
   - 'local' is the LAN/VLAN path.
 EOF
 }
@@ -48,29 +48,21 @@ trim_value() {
 }
 
 run_secure_setup() {
-  local active_engine="$1"
-  local enabled_engines="$2"
-  local bridge_port="$3"
-  local preview_port="$4"
-  local bridge_token="$5"
-  local opencode_cli_bin="$6"
-  local cursor_app_server_bin="$7"
-  local cursor_api_key="$8"
-  local cursor_model="$9"
+  local bridge_port="$1"
+  local preview_port="$2"
+  local bridge_token="$3"
+  local agent_ids="$4"
+  local preferred_agent="$5"
 
   info "Refreshing secure config for network mode: $NETWORK_MODE"
   (
     cd "$ROOT_DIR"
     BRIDGE_NETWORK_MODE="$NETWORK_MODE" \
-    BRIDGE_ACTIVE_ENGINE="$active_engine" \
-    BRIDGE_ENABLED_ENGINES="$enabled_engines" \
     BRIDGE_PORT_OVERRIDE="$bridge_port" \
     BRIDGE_PREVIEW_PORT_OVERRIDE="$preview_port" \
     BRIDGE_AUTH_TOKEN="$bridge_token" \
-    OPENCODE_CLI_BIN="$opencode_cli_bin" \
-    CURSOR_APP_SERVER_BIN="$cursor_app_server_bin" \
-    CURSOR_API_KEY="$cursor_api_key" \
-    CURSOR_MODEL="$cursor_model" \
+    ACP_AGENT_IDS="$agent_ids" \
+    ACP_PREFERRED_AGENT="$preferred_agent" \
     npm run secure:setup
   )
 }
@@ -132,24 +124,18 @@ case "$EXPO_MODE" in
     ;;
 esac
 
-EXISTING_ACTIVE_ENGINE="$(trim_value "$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_ACTIVE_ENGINE")")"
-EXISTING_ENABLED_ENGINES="$(trim_value "$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_ENABLED_ENGINES")")"
 EXISTING_BRIDGE_PORT="$(trim_value "$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_PORT")")"
 EXISTING_PREVIEW_PORT="$(trim_value "$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_PREVIEW_PORT")")"
 EXISTING_TOKEN="$(trim_value "$(extract_env_value "$SECURE_ENV_FILE" "BRIDGE_AUTH_TOKEN")")"
-EXISTING_OPENCODE_CLI_BIN="$(trim_value "$(extract_env_value "$SECURE_ENV_FILE" "OPENCODE_CLI_BIN")")"
-EXISTING_CURSOR_APP_SERVER_BIN="$(trim_value "$(extract_env_value "$SECURE_ENV_FILE" "CURSOR_APP_SERVER_BIN")")"
-EXISTING_CURSOR_API_KEY="$(trim_value "$(extract_env_value "$SECURE_ENV_FILE" "CURSOR_API_KEY")")"
-EXISTING_CURSOR_MODEL="$(trim_value "$(extract_env_value "$SECURE_ENV_FILE" "CURSOR_MODEL")")"
-
-ACTIVE_ENGINE="${EXISTING_ACTIVE_ENGINE:-codex}"
-ENABLED_ENGINES="${EXISTING_ENABLED_ENGINES:-$ACTIVE_ENGINE}"
 BRIDGE_PORT="${EXISTING_BRIDGE_PORT:-8787}"
 PREVIEW_PORT="${EXISTING_PREVIEW_PORT:-$((BRIDGE_PORT + 1))}"
-OPENCODE_CLI_BIN="${EXISTING_OPENCODE_CLI_BIN:-opencode}"
-CURSOR_APP_SERVER_BIN="${EXISTING_CURSOR_APP_SERVER_BIN:-cursor-app-server}"
-CURSOR_API_KEY="${EXISTING_CURSOR_API_KEY:-}"
-CURSOR_MODEL="${EXISTING_CURSOR_MODEL:-}"
+AGENT_MANIFEST="$ROOT_DIR/.clawdex/agents.json"
+if [[ ! -f "$AGENT_MANIFEST" ]]; then
+  fail "ACP agent manifest is missing. Run: clawdex init"
+  exit 1
+fi
+AGENT_IDS="$(node -e 'const m=require(process.argv[1]); process.stdout.write(m.agents.map((a) => a.agentId).join(","))' "$AGENT_MANIFEST")"
+PREFERRED_AGENT="$(node -e 'const m=require(process.argv[1]); process.stdout.write(m.preferredAgentId)' "$AGENT_MANIFEST")"
 
 if [[ "$SKIP_STOP" != "true" ]]; then
   info "Stopping existing Clawdex services for a clean restart"
@@ -159,7 +145,7 @@ if [[ "$SKIP_STOP" != "true" ]]; then
   )
 fi
 
-run_secure_setup "$ACTIVE_ENGINE" "$ENABLED_ENGINES" "$BRIDGE_PORT" "$PREVIEW_PORT" "$EXISTING_TOKEN" "$OPENCODE_CLI_BIN" "$CURSOR_APP_SERVER_BIN" "$CURSOR_API_KEY" "$CURSOR_MODEL"
+run_secure_setup "$BRIDGE_PORT" "$PREVIEW_PORT" "$EXISTING_TOKEN" "$AGENT_IDS" "$PREFERRED_AGENT"
 
 info "Starting secure bridge in background"
 (

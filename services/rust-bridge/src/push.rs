@@ -5,7 +5,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{
-    now_iso, read_bool, read_string,
+    now_iso, read_bool,
     resource_limits::{
         PUSH_DEVICE_NAME_MAX_BYTES, PUSH_ID_MAX_BYTES, PUSH_PLATFORM_MAX_BYTES,
         PUSH_REGISTRY_MAX_BYTES, PUSH_REGISTRY_MAX_DEVICES, PUSH_TOKEN_MAX_BYTES,
@@ -226,54 +226,6 @@ pub(crate) fn parse_push_event_preferences(value: Option<&Value>) -> PushEventPr
     }
 }
 
-pub(crate) fn push_thread_is_top_level(thread_read_result: &Value) -> bool {
-    let thread = thread_read_result
-        .get("thread")
-        .unwrap_or(thread_read_result);
-    let Some(source) = thread.get("source") else {
-        return false;
-    };
-
-    if let Some(source) = source.as_str() {
-        return push_source_kind_is_top_level(source);
-    }
-
-    let Some(source) = source.as_object() else {
-        return false;
-    };
-    if source.contains_key("subAgent")
-        || source.contains_key("subagent")
-        || value_contains_thread_parent(&Value::Object(source.clone()))
-    {
-        return false;
-    }
-
-    read_string(source.get("kind"))
-        .or_else(|| read_string(source.get("type")))
-        .is_some_and(|kind| push_source_kind_is_top_level(&kind))
-}
-
-fn push_source_kind_is_top_level(source: &str) -> bool {
-    matches!(
-        source.trim().to_ascii_lowercase().as_str(),
-        "cli" | "vscode" | "exec" | "appserver" | "unknown" | "cursorsdk"
-    )
-}
-
-fn value_contains_thread_parent(value: &Value) -> bool {
-    match value {
-        Value::Object(object) => object.iter().any(|(key, value)| {
-            (matches!(
-                key.as_str(),
-                "parentThreadId" | "parent_thread_id" | "parentID"
-            ) && read_string(Some(value)).is_some_and(|parent| !parent.trim().is_empty()))
-                || value_contains_thread_parent(value)
-        }),
-        Value::Array(values) => values.iter().any(value_contains_thread_parent),
-        _ => false,
-    }
-}
-
 pub(crate) fn truncate_chars(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();
@@ -481,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn preferences_sources_and_parent_detection_cover_supported_shapes() {
+    fn preferences_use_defaults_for_missing_or_invalid_values() {
         let defaults = parse_push_event_preferences(None);
         assert!(defaults.turn_completed && defaults.approval_requested);
         let parsed = parse_push_event_preferences(Some(&json!({
@@ -489,38 +441,6 @@ mod tests {
             "approvalRequested": "invalid"
         })));
         assert!(!parsed.turn_completed && parsed.approval_requested);
-
-        for source in [
-            "cli",
-            " VSCODE ",
-            "exec",
-            "appserver",
-            "unknown",
-            "cursorsdk",
-        ] {
-            assert!(push_thread_is_top_level(&json!({ "source": source })));
-        }
-        assert!(push_thread_is_top_level(&json!({
-            "thread": { "source": { "type": "cli" } }
-        })));
-        assert!(push_thread_is_top_level(
-            &json!({ "source": { "kind": "exec" } })
-        ));
-        assert!(!push_thread_is_top_level(&json!({})));
-        assert!(!push_thread_is_top_level(&json!({ "source": 3 })));
-        assert!(!push_thread_is_top_level(&json!({ "source": "subAgent" })));
-        assert!(!push_thread_is_top_level(&json!({
-            "source": { "subAgent": "child", "kind": "cli" }
-        })));
-        assert!(!push_thread_is_top_level(&json!({
-            "source": { "subagent": {}, "kind": "cli" }
-        })));
-        assert!(!push_thread_is_top_level(&json!({
-            "source": { "nested": [{ "parent_thread_id": "parent" }], "kind": "cli" }
-        })));
-        assert!(push_thread_is_top_level(&json!({
-            "source": { "parentID": "  ", "kind": "cli" }
-        })));
     }
 
     #[test]

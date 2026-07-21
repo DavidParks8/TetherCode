@@ -1,0 +1,274 @@
+{
+  "fixtureFormatVersion": 1,
+  "protocolVersion": 2,
+  "bridgeMethods": [
+    "bridge/approvals/list", "bridge/approvals/resolve",
+    "bridge/browser/session/close", "bridge/browser/session/create", "bridge/browser/sessions/list",
+    "bridge/browser/targets/discover", "bridge/capabilities/read", "bridge/events/replay",
+    "bridge/fs/list", "bridge/git/branches", "bridge/git/clone", "bridge/git/commit",
+    "bridge/git/diff", "bridge/git/history", "bridge/git/push", "bridge/git/stage",
+    "bridge/git/stageAll", "bridge/git/status", "bridge/git/switch", "bridge/git/unstage",
+    "bridge/git/unstageAll", "bridge/github/auth/install", "bridge/health/read", "bridge/push/list",
+    "bridge/push/register", "bridge/push/unregister", "bridge/restart/start", "bridge/runtime/read",
+    "bridge/status/read", "bridge/terminal/exec", "bridge/thread/create",
+    "bridge/thread/list/stream/cancel", "bridge/thread/list/stream/start",
+    "bridge/thread/queue/cancel", "bridge/thread/queue/read", "bridge/thread/queue/send",
+    "bridge/thread/queue/steer", "bridge/ui/dismiss", "bridge/ui/present",
+    "bridge/ui/resolve", "bridge/ui/update", "bridge/update/start", "bridge/userInput/list",
+    "bridge/userInput/resolve",
+    "bridge/workspaces/list"
+  ],
+  "httpEndpoints": [
+    { "method": "POST", "path": "/attachments", "auth": "bearer", "contentType": "multipart/form-data", "maxFileBytes": 20971520 }
+  ],
+  "mobileForwardedMethods": [
+    "thread/list", "thread/loaded/list", "thread/read", "thread/resume", "thread/snapshot/page",
+    "thread/start", "turn/interrupt", "turn/start", "turn/steer"
+  ],
+  "notifications": [
+    "bridge/agui.event", "bridge/approval.requested", "bridge/approval.resolved", "bridge/connection/state",
+    "bridge/git/updated", "bridge/notification.truncated", "bridge/terminal/completed", "bridge/thread/list/stream/batch",
+    "bridge/thread/list/stream/error", "bridge/thread/queue/updated", "bridge/ui.dismiss",
+    "bridge/ui.present", "bridge/ui.resolved", "bridge/ui.update", "bridge/userInput.requested",
+    "bridge/userInput.resolved"
+  ],
+  "errors": [
+    { "code": -32700, "name": "parseError" },
+    { "code": -32600, "name": "invalidRequest" },
+    { "code": -32601, "name": "methodNotFound" },
+    { "code": -32602, "name": "invalidParams" },
+    { "code": -32000, "name": "serverError" },
+    { "code": -32003, "name": "forbidden" },
+    { "code": -32004, "name": "notFound" },
+    { "code": -32005, "name": "overloaded" }
+  ],
+  "fixtures": {
+    "capabilities": {
+      "protocolVersion": 2,
+      "streamId": "00000000-0000-4000-8000-000000000001",
+      "preferredAgentId": "local-primary",
+      "activeAgentId": "local-primary",
+      "agents": [{
+        "agentId": "local-primary",
+        "displayName": "Local Primary",
+        "version": "1.0.0",
+        "provenance": "local manifest",
+        "lifecycle": "ready",
+        "capabilities": { "sessionList": true, "sessionLoad": true, "sessionResume": true }
+      }],
+      "agUiEvents": true
+    },
+    "operationalStatus": {
+      "requests": { "total": 12, "completed": 10, "failed": 2, "timedOut": 1, "pending": 0 },
+      "replay": { "entries": 42, "capacity": 2000, "evicted": 0, "clientQueueDrops": 0 },
+      "queue": { "trackedThreads": 2, "depth": 1, "busyThreads": 1 },
+      "push": { "attempted": 4, "accepted": 3, "failed": 1 },
+      "terminal": { "maxConcurrent": 4, "running": 1, "waiting": 0, "saturationCount": 0 },
+      "recentErrors": [{ "method": "thread/read", "backend": "acp", "kind": "request_timeout" }]
+    },
+    "notification": {
+      "method": "bridge/approval.requested",
+      "protocolVersion": 2,
+      "streamId": "00000000-0000-4000-8000-000000000001",
+      "eventId": 7,
+      "params": {
+        "requestId": "approval-1", "agentId": "agent-alpha", "kind": "commandExecution",
+        "threadId": "thread-1", "turnId": "turn-1", "itemId": "tool-1",
+        "title": "Run tests", "message": "Run tests", "requestedAt": "2026-07-20T00:00:00+00:00",
+        "reason": "Run tests", "command": null, "cwd": null, "grantRoot": null,
+        "proposedExecpolicyAmendment": null,
+        "options": [{ "id": "allow-once", "label": "Allow once", "kind": "AllowOnce" }]
+      }
+    },
+    "pendingUserInput": {
+      "requestId": "input-1", "agentId": "agent-alpha", "threadId": "thread-1",
+      "turnId": "turn-1", "itemId": "tool-1", "message": "Deployment settings",
+      "requestedAt": "2026-07-20T00:00:01+00:00",
+      "questions": [{
+        "id": "environment", "header": "Environment", "question": "Choose an environment",
+        "isOther": false, "isSecret": true, "required": true, "fieldType": "string",
+        "defaultValue": null,
+        "options": [{ "value": "production", "label": "Production", "description": "" }]
+      }]
+    },
+    "agUiNotification": {
+      "method": "bridge/agui.event",
+      "protocolVersion": 2,
+      "streamId": "00000000-0000-4000-8000-000000000001",
+      "eventId": 8,
+      "params": {
+        "threadId": "agent-alpha:thread-1",
+        "runId": "agent-alpha:thread-1::turn::turn-1",
+        "sourceTurnId": "turn-1",
+        "event": {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "agent-alpha:thread-1::turn::turn-1::item::message-1",
+          "delta": "Hello",
+          "timestamp": 1784371200000
+        }
+      }
+    },
+    "agUiEvents": [
+      { "type": "RUN_STARTED", "threadId": "thread-1", "runId": "run-1", "timestamp": 1784371200000 },
+      { "type": "TEXT_MESSAGE_START", "messageId": "message-1", "role": "assistant", "timestamp": 1784371200000 },
+      { "type": "TEXT_MESSAGE_CONTENT", "messageId": "message-1", "delta": "Hello", "timestamp": 1784371200000 },
+      { "type": "TEXT_MESSAGE_END", "messageId": "message-1", "timestamp": 1784371200000 },
+      { "type": "REASONING_MESSAGE_START", "messageId": "reasoning-1", "role": "reasoning", "timestamp": 1784371200001 },
+      { "type": "REASONING_MESSAGE_CONTENT", "messageId": "reasoning-1", "delta": "Checking the workspace", "timestamp": 1784371200002 },
+      { "type": "REASONING_MESSAGE_END", "messageId": "reasoning-1", "timestamp": 1784371200003 },
+      { "type": "TOOL_CALL_START", "toolCallId": "tool-1", "toolCallName": "Read file", "timestamp": 1784371200004 },
+      { "type": "TOOL_CALL_ARGS", "toolCallId": "tool-1", "delta": "{}", "timestamp": 1784371200005 },
+      { "type": "TOOL_CALL_END", "toolCallId": "tool-1", "timestamp": 1784371200006 },
+      { "type": "TOOL_CALL_RESULT", "messageId": "tool-result-1", "toolCallId": "tool-1", "role": "tool", "content": "done", "timestamp": 1784371200007 },
+      { "type": "CUSTOM", "name": "clawdex.dev/plan", "value": { "entries": [] }, "timestamp": 1784371200008 },
+      { "type": "RUN_FINISHED", "threadId": "thread-1", "runId": "run-1", "timestamp": 1784371200009 },
+      { "type": "RUN_ERROR", "message": "failed", "code": "acp_run_failed", "timestamp": 1784371200010 }
+    ],
+    "toolRevisionEvents": [
+      { "type": "TOOL_CALL_START", "toolCallId": "tool-revision", "toolCallName": "Terminal" },
+      { "type": "TOOL_CALL_ARGS", "toolCallId": "tool-revision", "delta": "{}" },
+      { "type": "CUSTOM", "name": "clawdex.dev/tool-text", "value": { "toolCallId": "tool-revision", "revision": "sha256:text-first", "content": "first" } },
+      { "type": "CUSTOM", "name": "clawdex.dev/tool-content", "value": { "toolCallId": "tool-revision", "revision": "sha256:structured-one", "content": [{ "type": "terminal", "terminalId": "terminal-1" }], "locations": [] } },
+      { "type": "CUSTOM", "name": "clawdex.dev/tool-text", "value": { "toolCallId": "tool-revision", "revision": "sha256:text-second", "content": "second" } },
+      { "type": "CUSTOM", "name": "clawdex.dev/tool-content", "value": { "toolCallId": "tool-revision", "revision": "sha256:structured-two", "content": [{ "type": "terminal", "terminalId": "terminal-2" }], "locations": [] } },
+      { "type": "TOOL_CALL_END", "toolCallId": "tool-revision" },
+      { "type": "TOOL_CALL_RESULT", "messageId": "tool-result-revision", "toolCallId": "tool-revision", "role": "tool", "content": "!" },
+      { "type": "CUSTOM", "name": "clawdex.dev/tool-text", "value": { "toolCallId": "tool-revision", "revision": "sha256:text-second", "content": "second" } }
+    ],
+    "threadSnapshot": {
+      "id": "agent-alpha:thread-snapshot",
+      "agentId": "agent-alpha",
+      "cwd": "/workspace",
+      "name": "Typed ACP snapshot",
+      "acpSnapshot": {
+        "version": 2,
+        "timeline": [
+          { "sequence": 0, "kind": "message", "canonicalId": "message-1" },
+          { "sequence": 1, "kind": "tool", "canonicalId": "tool-1" },
+          { "sequence": 2, "kind": "reasoning", "canonicalId": "reasoning-1" }
+        ],
+        "messages": [
+          { "id": "message-1", "role": "agent", "parts": [
+            { "type": "text", "text": "Snapshot A" },
+            { "type": "image", "data": "aW1hZ2U=", "mimeType": "image/png" },
+            { "type": "text", "text": "Snapshot B" },
+            { "type": "resource", "resource": { "uri": "file:///tmp/result.txt", "text": "embedded result", "mimeType": "text/plain" } },
+            { "type": "audio", "data": "YXVkaW8=", "mimeType": "audio/wav" }
+          ], "truncated": false },
+          { "id": "reasoning-1", "role": "thought", "parts": [{ "type": "text", "text": "Snapshot reasoning" }], "truncated": false }
+        ],
+        "tools": [{
+          "id": "tool-1", "generation": 7, "kind": "read", "status": "completed",
+          "title": "Read file", "content": "done",
+          "structuredContent": [
+            { "type": "content", "content": { "type": "text", "text": "structured" } },
+            { "type": "diff", "path": "src/file.ts", "oldText": "old", "newText": "new" },
+            { "type": "terminal", "terminalId": "terminal-1" }
+          ],
+          "locations": [{ "path": "src/file.ts", "line": 7 }],
+          "truncated": false
+        }],
+        "messageCollection": {
+          "truncated": false, "omittedCount": 0, "oldestAvailableSequence": 0,
+          "newestSequence": 0, "beforeCursor": "eyJ0aHJlYWRJZCI6ImFnZW50LWFscGhhOnRocmVhZC1zbmFwc2hvdCIsInNlcXVlbmNlIjowLCJyZXZpc2lvbiI6M30", "revision": 3
+        },
+        "reasoningCollection": {
+          "truncated": false, "omittedCount": 0, "oldestAvailableSequence": 2,
+          "newestSequence": 2, "beforeCursor": "eyJ0aHJlYWRJZCI6ImFnZW50LWFscGhhOnRocmVhZC1zbmFwc2hvdCIsInNlcXVlbmNlIjoyLCJyZXZpc2lvbiI6M30", "revision": 3
+        },
+        "toolCollection": {
+          "truncated": false, "omittedCount": 0, "oldestAvailableSequence": 1,
+          "newestSequence": 1, "beforeCursor": "eyJ0aHJlYWRJZCI6ImFnZW50LWFscGhhOnRocmVhZC1zbmFwc2hvdCIsInNlcXVlbmNlIjoxLCJyZXZpc2lvbiI6M30", "revision": 3
+        },
+        "continuation": {
+          "revision": 3, "unavailableCount": 0, "earliestAvailableSequence": 0,
+          "latestAvailableSequence": 2, "maxPageSize": 100,
+          "maxHistoryEntries": 1024, "maxHistoryBytes": 4194304
+        },
+        "plan": [{ "content": "Inspect state", "priority": "high", "status": "completed" }],
+        "usage": { "used": 120, "size": 4096, "cost": "$0.01" },
+        "mode": "plan",
+        "config": [{ "id": "model", "value": "example-model" }],
+        "commands": [{ "name": "test", "description": "Run tests" }],
+        "session": {
+          "agentId": "agent-alpha", "threadId": "agent-alpha:thread-snapshot",
+          "title": "Typed ACP snapshot", "updatedAt": "2026-07-19T00:00:00Z",
+          "historyReconstruction": false
+        },
+        "active": {
+          "runId": "run-7", "sourceTurnId": "turn-7", "generation": 7,
+          "toolIds": ["tool-live"]
+        }
+      }
+    },
+    "overloadError": {
+      "id": "fixture-1",
+      "error": {
+        "code": -32005,
+        "message": "Bridge request capacity is exhausted",
+        "data": { "error": "overloaded", "resource": "global_in_flight_requests", "limit": 128, "retryable": true }
+      }
+    },
+    "resourceLimitError": {
+      "id": "fixture-2",
+      "error": {
+        "code": -32602,
+        "message": "attachment_bytes exceeds limit of 20971520",
+        "data": { "error": "resource_limit_exceeded", "resource": "attachment_bytes", "limit": 20971520, "actual": 20971521 }
+      }
+    },
+    "browserPreviewSession": {
+      "sessionId": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV",
+      "targetUrl": "http://127.0.0.1:3000/",
+      "previewPort": 8788,
+      "bootstrapPath": "/?sid=VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV&st=qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqo",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "lastAccessedAt": "2026-01-01T00:00:00Z",
+      "expiresAt": "2026-01-01T00:30:00Z"
+    },
+    "truncatedGitDiff": {
+      "diff": "diff --git a/a b/a\n",
+      "cwd": "/workspace",
+      "truncated": true,
+      "originalBytes": 3000000,
+      "returnedBytes": 2097152,
+      "maxBytes": 2097152
+    },
+    "truncatedFilesystemList": {
+      "bridgeRoot": "/workspace",
+      "path": "/workspace",
+      "parentPath": null,
+      "entries": [],
+      "truncated": true,
+      "totalEntries": 1001,
+      "omittedEntries": 1,
+      "maxEntries": 1000
+    },
+    "submission": {
+      "submissionId": "submission-00000000-0000-4000-8000-000000000001",
+      "threadId": "thread-1",
+      "disposition": "queued"
+    },
+    "pushRegistration": {
+      "profileId": "bridge-profile-1",
+      "registrationId": "push-registration-1",
+      "token": "ExponentPushToken[fixture]",
+      "platform": "ios",
+      "deviceName": "iPhone",
+      "events": { "turnCompleted": true, "approvalRequested": true }
+    },
+    "pushNotificationData": {
+      "notificationId": "push-notification-1",
+      "profileId": "bridge-profile-1",
+      "registrationId": "push-registration-1",
+      "type": "approval_requested",
+      "threadId": "thread-1",
+      "approvalId": "approval-1"
+    },
+    "approvalResolution": {
+      "id": "approval-1",
+      "decision": "accept",
+      "resolutionId": "push-notification-1:approve"
+    }
+  }
+}

@@ -5,6 +5,7 @@ import type {
   BridgeSnapshotRequiredReason,
   RpcNotification,
 } from './types';
+import { parseAgUiEventNotification } from './agUi';
 
 type EventListener = (event: RpcNotification) => void;
 type StatusListener = (connected: boolean) => void;
@@ -82,8 +83,9 @@ interface ReplayEventsResponse {
 }
 
 export class HostBridgeWsClient {
-  static readonly PROTOCOL_VERSION = 1;
+  static readonly PROTOCOL_VERSION = 2;
   private static readonly TURN_COMPLETION_TTL_MS = 5 * 60 * 1000;
+  private static readonly MAX_RECOVERY_BUFFERED_EVENTS = 2_048;
   private socket: WebSocket | null = null;
   private pendingSocket: WebSocket | null = null;
   private connected = false;
@@ -106,6 +108,8 @@ export class HostBridgeWsClient {
   private replaySupported = true;
   private replayInFlight: Promise<void> | null = null;
   private replayGeneration = 0;
+  private recoveryWatermark: number | null = null;
+  private awaitingFreshRecoveryBaseline = false;
   private requestCounter = 0;
   private streamId: string | null = null;
   private protocolError: BridgeProtocolVersionError | null = null;
@@ -125,12 +129,69 @@ export class HostBridgeWsClient {
     return this.protocolError;
   }
 
+  acknowledgeSnapshotRecovery(resumeAfterEventId: number): boolean {
+    if (this.recoveryWatermark !== resumeAfterEventId) {
+      return false;
+    }
+    this.recoveryWatermark = null;
+    this.awaitingFreshRecoveryBaseline = false;
+    this.drainPendingEvents();
+    if (this.hasPendingGap()) {
+      this.scheduleReplay();
+    }
+    return true;
+  }
+
   connect(): void {
     if (this.protocolError) {
       return;
     }
     this.shouldReconnect = true;
     this.startConnect();
+  }
+
+  resetRecoveryEpoch(): void {
+    const lastDeliveredEventId = this.lastSeenEventId;
+    const previousStreamId = this.streamId;
+    const socket = this.socket;
+    const pendingSocket = this.pendingSocket;
+    this.connectGeneration += 1;
+    this.replayGeneration += 1;
+    this.replayInFlight = null;
+    this.pendingEvents.clear();
+    this.recoveryWatermark = 0;
+    this.awaitingFreshRecoveryBaseline = true;
+    this.lastSeenEventId = 0;
+    this.streamId = null;
+    this.socket = null;
+    this.pendingSocket = null;
+    this.connectPromise = null;
+    this.reconnectAttempts = 0;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (pendingSocket && pendingSocket !== socket) {
+      pendingSocket.close();
+    }
+    socket?.close();
+    this.emitStatus(false);
+    this.rejectAllPending(new Error('Bridge websocket recovery epoch reset'));
+    this.emitEvent({
+      method: 'bridge/events/snapshotRequired',
+      protocolVersion: HostBridgeWsClient.PROTOCOL_VERSION,
+      params: {
+        reason: 'recoveryOverflow',
+        previousStreamId,
+        lastDeliveredEventId,
+        resumeAfterEventId: 0,
+        earliestEventId: null,
+        latestEventId: null,
+      },
+    });
+    if (this.shouldReconnect) {
+      this.startConnect();
+    }
   }
 
   private startConnect(): void {
@@ -263,12 +324,8 @@ export class HostBridgeWsClient {
       }, timeoutMs);
 
       const unsubscribe = this.onEvent((event) => {
-          if (event.method !== 'turn/completed') {
-            return;
-          }
-
           let normalizedCompletion: TurnCompletionSnapshot | null = null;
-          const completion = toTurnCompletionSnapshot(event.params);
+          const completion = toAgUiTurnCompletionSnapshot(event);
           if (completion) {
             if (completion.threadId !== threadId) {
               return;
@@ -539,11 +596,9 @@ export class HostBridgeWsClient {
     }
 
     if (eventId === null) {
-      if (event.method === 'turn/completed') {
-        const completion = toTurnCompletionSnapshot(event.params);
-        if (completion?.turnId) {
-          this.rememberTurnCompletion(completion);
-        }
+      const completion = toAgUiTurnCompletionSnapshot(event);
+      if (completion?.turnId) {
+        this.rememberTurnCompletion(completion);
       }
       this.emitEvent(event);
     } else {
@@ -554,10 +609,17 @@ export class HostBridgeWsClient {
         return;
       }
 
-      if (this.lastSeenEventId === 0) {
+      if (this.lastSeenEventId === 0 && !this.awaitingFreshRecoveryBaseline) {
         this.emitNumberedEvent(event);
       } else {
         this.pendingEvents.set(eventId, event);
+        if (
+          this.recoveryWatermark !== null &&
+          this.pendingEvents.size > HostBridgeWsClient.MAX_RECOVERY_BUFFERED_EVENTS
+        ) {
+          this.handleRecoveryBufferOverflow();
+          return;
+        }
         if (options?.source === 'replay') {
           this.drainPendingEvents();
         } else if (!this.replayInFlight) {
@@ -572,7 +634,7 @@ export class HostBridgeWsClient {
     if (
       method === 'bridge/connection/state' &&
       (identityResult === 'same' || identityResult === 'missing') &&
-      this.lastSeenEventId > 0
+      (this.lastSeenEventId > 0 || this.recoveryWatermark !== null)
     ) {
       this.scheduleReplay();
     }
@@ -615,7 +677,7 @@ export class HostBridgeWsClient {
   }
 
   private async replayMissedEvents(generation: number): Promise<void> {
-    if (!this.replaySupported || this.lastSeenEventId <= 0) {
+    if (!this.replaySupported) {
       return;
     }
 
@@ -701,6 +763,9 @@ export class HostBridgeWsClient {
   }
 
   private drainPendingEvents(): void {
+    if (this.recoveryWatermark !== null) {
+      return;
+    }
     let nextEventId = this.lastSeenEventId + 1;
     while (this.pendingEvents.has(nextEventId)) {
       const event = this.pendingEvents.get(nextEventId);
@@ -724,11 +789,9 @@ export class HostBridgeWsClient {
       return;
     }
     this.lastSeenEventId = event.eventId;
-    if (event.method === 'turn/completed') {
-      const completion = toTurnCompletionSnapshot(event.params);
-      if (completion?.turnId) {
-        this.rememberTurnCompletion(completion);
-      }
+    const completion = toAgUiTurnCompletionSnapshot(event);
+    if (completion?.turnId) {
+      this.rememberTurnCompletion(completion);
     }
     this.emitEvent(event);
   }
@@ -752,6 +815,7 @@ export class HostBridgeWsClient {
       }
     }
     this.lastSeenEventId = resumeAfterEventId;
+    this.recoveryWatermark = resumeAfterEventId;
     this.replayInFlight = null;
     const params: BridgeSnapshotRequiredParams = {
       reason,
@@ -767,7 +831,10 @@ export class HostBridgeWsClient {
       streamId: this.streamId ?? undefined,
       params: params as unknown as Record<string, unknown>,
     });
-    this.drainPendingEvents();
+  }
+
+  private handleRecoveryBufferOverflow(): void {
+    this.resetRecoveryEpoch();
   }
 
   private applyStreamIdentity(
@@ -913,82 +980,32 @@ function turnCompletionKey(threadId: string, turnId: string): string {
   return `${threadId}::${turnId}`;
 }
 
-function toTurnCompletionSnapshot(value: unknown): TurnCompletionSnapshot | null {
-  const params = toRecord(value);
-  if (!params) {
+function toAgUiTurnCompletionSnapshot(
+  event: RpcNotification
+): TurnCompletionSnapshot | null {
+  const envelope = parseAgUiEventNotification(event);
+  if (!envelope?.sourceTurnId) {
     return null;
   }
-
-  const turn = toRecord(params.turn);
-  const threadId = extractNotificationThreadId(params, turn);
-  const turnId =
-    readString(turn?.id) ?? readString(params.turnId) ?? readString(params.turn_id);
-  if (!threadId) {
-    return null;
+  if (envelope.event.type === 'RUN_FINISHED') {
+    return {
+      threadId: envelope.threadId,
+      turnId: envelope.sourceTurnId,
+      status: 'completed',
+      errorMessage: null,
+      completedAt: Date.now(),
+    };
   }
-
-  const turnError = toRecord(turn?.error) ?? toRecord(params.error);
-
-  return {
-    threadId,
-    turnId,
-    status: readString(turn?.status) ?? readString(params.status),
-    errorMessage: readString(turnError?.message),
-    completedAt: Date.now(),
-  };
-}
-
-function extractNotificationThreadId(
-  params: Record<string, unknown> | null,
-  msgArg?: Record<string, unknown> | null
-): string | null {
-  if (!params && !msgArg) {
-    return null;
+  if (envelope.event.type === 'RUN_ERROR') {
+    return {
+      threadId: envelope.threadId,
+      turnId: envelope.sourceTurnId,
+      status: 'failed',
+      errorMessage: envelope.event.message,
+      completedAt: Date.now(),
+    };
   }
-
-  const msg = msgArg ?? toRecord(params?.msg);
-  const threadRecord =
-    toRecord(params?.thread) ??
-    toRecord(params?.threadState) ??
-    toRecord(params?.thread_state) ??
-    toRecord(msg?.thread);
-  const threadSourceRecord = toRecord(threadRecord?.source);
-  const sourceRecord = toRecord(params?.source) ?? toRecord(msg?.source);
-  const subagentThreadSpawnRecord = toRecord(
-    toRecord(sourceRecord?.subagent ?? sourceRecord?.subAgent)?.thread_spawn
-  );
-  const threadSubagentThreadSpawnRecord = toRecord(
-    toRecord(threadSourceRecord?.subagent ?? threadSourceRecord?.subAgent)?.thread_spawn
-  );
-
-  return (
-    readString(msg?.thread_id) ??
-    readString(msg?.threadId) ??
-    readString(msg?.conversation_id) ??
-    readString(msg?.conversationId) ??
-    readString(params?.thread_id) ??
-    readString(params?.threadId) ??
-    readString(params?.conversation_id) ??
-    readString(params?.conversationId) ??
-    readString(threadRecord?.id) ??
-    readString(threadRecord?.thread_id) ??
-    readString(threadRecord?.threadId) ??
-    readString(threadRecord?.conversation_id) ??
-    readString(threadRecord?.conversationId) ??
-    readString(sourceRecord?.thread_id) ??
-    readString(sourceRecord?.threadId) ??
-    readString(sourceRecord?.conversation_id) ??
-    readString(sourceRecord?.conversationId) ??
-    readString(sourceRecord?.parent_thread_id) ??
-    readString(sourceRecord?.parentThreadId) ??
-    readString(subagentThreadSpawnRecord?.parent_thread_id) ??
-    readString(subagentThreadSpawnRecord?.parentThreadId) ??
-    readString(threadSourceRecord?.parent_thread_id) ??
-    readString(threadSourceRecord?.parentThreadId) ??
-    readString(threadSubagentThreadSpawnRecord?.parent_thread_id) ??
-    readString(threadSubagentThreadSpawnRecord?.parentThreadId) ??
-    null
-  );
+  return null;
 }
 
 function isFailedTurnStatus(status: string | null): boolean {

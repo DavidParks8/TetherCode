@@ -5,10 +5,7 @@ use serde::Serialize;
 use tokio::{fs, io::AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::{
-    decode_engine_qualified_id, path_policy::PathPolicy, resource_limits::ATTACHMENT_MAX_BYTES,
-    BridgeError,
-};
+use crate::{path_policy::PathPolicy, resource_limits::ATTACHMENT_MAX_BYTES, BridgeError};
 
 const MOBILE_ATTACHMENTS_DIR: &str = ".clawdex-mobile-attachments";
 pub(crate) const ATTACHMENT_MULTIPART_MAX_BYTES: usize = ATTACHMENT_MAX_BYTES + 64 * 1024;
@@ -29,9 +26,8 @@ pub(crate) async fn save_multipart_attachment(
     path_policy: &PathPolicy,
 ) -> Result<AttachmentUploadResponse, BridgeError> {
     let temporary_dir = path_policy
-        .resolve_root_owned_directory(&PathBuf::from(MOBILE_ATTACHMENTS_DIR).join(".tmp"))?;
-    secure_directory(&temporary_dir).await?;
-    let temporary_path = temporary_dir.join(format!("{}.upload", Uuid::new_v4()));
+        .secure_root_owned_directory(&PathBuf::from(MOBILE_ATTACHMENTS_DIR).join(".tmp"))?;
+    let temporary_name = format!("{}.upload", Uuid::new_v4());
     let mut temporary_file: Option<fs::File> = None;
     let mut uploaded_size = 0usize;
     let mut field_file_name = None;
@@ -53,7 +49,7 @@ pub(crate) async fn save_multipart_attachment(
                 }
                 field_file_name = field.file_name().map(str::to_string);
                 mime_type = field.content_type().map(str::to_string);
-                let mut file = private_new_file(&temporary_path).await?;
+                let mut file = fs::File::from_std(temporary_dir.create_file(&temporary_name)?);
                 while let Some(chunk) = field.chunk().await.map_err(|error| {
                     BridgeError::invalid_params(&format!("invalid file field: {error}"))
                 })? {
@@ -92,18 +88,19 @@ pub(crate) async fn save_multipart_attachment(
         );
         let mut attachment_relative = PathBuf::from(MOBILE_ATTACHMENTS_DIR);
         if let Some(thread_id) = thread_id.as_deref() {
-            let normalized_thread = sanitize_path_segment(&decode_engine_qualified_id(thread_id));
+            let normalized_thread = sanitize_path_segment(thread_id);
             if !normalized_thread.is_empty() {
                 attachment_relative = attachment_relative.join(normalized_thread);
             }
         }
-        let attachment_dir = path_policy.resolve_root_owned_directory(&attachment_relative)?;
-        let target_path = attachment_dir.join(format!("{}-{final_file_name}", Uuid::new_v4()));
-        fs::rename(&temporary_path, &target_path)
-            .await
-            .map_err(|error| {
-                BridgeError::server(&format!("failed to finalize attachment: {error}"))
-            })?;
+        path_policy.secure_root_owned_directory(&attachment_relative)?;
+        let target_name = format!("{}-{final_file_name}", Uuid::new_v4());
+        let target_path = path_policy.rename_root_owned_file(
+            &temporary_dir,
+            &temporary_name,
+            &attachment_relative,
+            &target_name,
+        )?;
 
         Ok(AttachmentUploadResponse {
             path: target_path.to_string_lossy().to_string(),
@@ -117,11 +114,12 @@ pub(crate) async fn save_multipart_attachment(
 
     if result.is_err() {
         drop(temporary_file);
-        let _ = fs::remove_file(&temporary_path).await;
+        temporary_dir.remove_file(&temporary_name);
     }
     result
 }
 
+#[cfg(test)]
 async fn private_new_file(path: &Path) -> Result<fs::File, BridgeError> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -154,6 +152,7 @@ async fn append_bounded_chunk(
     Ok(())
 }
 
+#[cfg(test)]
 async fn secure_directory(path: &Path) -> Result<(), BridgeError> {
     #[cfg(unix)]
     fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
@@ -483,6 +482,24 @@ mod tests {
         assert_eq!(uploaded.kind, "image");
         assert!(PathBuf::from(&uploaded.path).is_file());
         assert!(uploaded.path.contains("thread_one"));
+
+        let body = multipart_body(
+            boundary,
+            &[
+                ("threadId", None, None, b"___"),
+                ("file", None, None, b"plain"),
+            ],
+        );
+        let uploaded = save_multipart_attachment(multipart(body, boundary).await, &policy)
+            .await
+            .expect("save attachment without optional metadata");
+        assert_eq!(uploaded.file_name, "attachment");
+        assert_eq!(uploaded.mime_type, None);
+        assert_eq!(uploaded.kind, "file");
+        assert_eq!(
+            PathBuf::from(uploaded.path).parent(),
+            Some(policy.root().join(MOBILE_ATTACHMENTS_DIR).as_path())
+        );
     }
 
     #[tokio::test]

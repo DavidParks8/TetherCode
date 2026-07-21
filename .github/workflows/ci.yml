@@ -63,17 +63,10 @@ jobs:
       - name: Validate RPC contract
         run: npm run contract:check
 
-  js-workspaces:
-    name: JS - ${{ matrix.workspace }}
+  mobile:
+    name: Mobile
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        workspace:
-          - "@codex/mac-bridge"
-          - "@clawdex/cursor-app-server"
-          - "clawdex-mobile"
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -90,16 +83,15 @@ jobs:
         run: npm ci
 
       - name: Lint
-        run: npm run lint -w "${{ matrix.workspace }}"
+        run: npm run lint -w clawdex-mobile
 
       - name: Typecheck
-        run: npm run typecheck -w "${{ matrix.workspace }}"
+        run: npm run typecheck -w clawdex-mobile
 
       - name: Test
-        run: npm run test -w "${{ matrix.workspace }}"
+        run: npm run test -w clawdex-mobile
 
       - name: Branch coverage
-        if: matrix.workspace == 'clawdex-mobile'
         run: npm run test:coverage -w clawdex-mobile
 
   rust-bridge:
@@ -137,8 +129,8 @@ jobs:
         working-directory: services/rust-bridge
         run: cargo test --locked -- --test-threads=1
 
-      - name: Boundary integration suite
-        run: npm run test:boundary
+      - name: ACP integration suite
+        run: npm run test:acp
 
   rust-bridge-coverage:
     name: Rust Branch Coverage

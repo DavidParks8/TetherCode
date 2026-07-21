@@ -9,7 +9,7 @@
     "typecheck": "cargo check --locked",
     "lint": "cargo fmt --check && cargo clippy --locked --all-targets --all-features -- -D warnings",
     "test": "cargo test --locked -- --test-threads=1",
-    "test:boundary": "cargo test --locked boundary_integration -- --test-threads=1",
+    "test:acp": "cargo test --locked 'acp::' -- --test-threads=1",
     "test:coverage": "../../scripts/run-rust-coverage.sh",
     "test:contract": "cargo test contract_fixture_manifest"
   }

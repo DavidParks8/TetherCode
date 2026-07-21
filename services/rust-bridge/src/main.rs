@@ -6,12 +6,11 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     env,
     future::Future,
-    io::{SeekFrom, Write},
+    io::Write,
     path::{Component, Path, PathBuf},
-    process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, OnceLock, RwLock as StdRwLock,
+        Arc,
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -34,19 +33,18 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose, Engine as _};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client as HttpClient, Method as HttpMethod, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use services::{GitService, TerminalService, UpdateService};
+#[cfg(test)]
+use tokio::sync::oneshot;
 use tokio::{
     fs,
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, ChildStdout, Command},
-    sync::{
-        broadcast, mpsc, oneshot, watch, Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore,
-    },
+    io::AsyncReadExt,
+    sync::{mpsc, watch, Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore},
     time::{sleep, timeout},
 };
 use tokio_tungstenite::{
@@ -55,11 +53,13 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
+mod acp;
+mod agui;
+#[allow(clippy::all)]
+mod agui_generated;
 mod attachments;
-mod backend_runtime;
 mod config;
 mod health;
-mod live_sync;
 mod observability;
 mod path_policy;
 mod preview;
@@ -71,62 +71,22 @@ mod rpc;
 mod services;
 mod storage;
 
-#[cfg(all(test, unix))]
-mod boundary_integration;
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod coverage_main_backends;
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod coverage_main_mappings;
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod coverage_main_orchestration;
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod coverage_main_surfaces;
-
-#[cfg(test)]
-use attachments::{
-    build_attachment_file_name, infer_extension_from_mime, normalize_attachment_kind,
-    sanitize_filename, sanitize_path_segment,
-};
 use attachments::{
     infer_image_content_type_from_path, save_multipart_attachment, ATTACHMENT_MULTIPART_MAX_BYTES,
 };
-use backend_runtime::{BackendLifecycleState, BackendRuntimeSnapshot, BackendRuntimeStatus};
-#[cfg(test)]
-use config::{
-    constant_time_eq, legacy_default_enabled_engines, parse_enabled_bridge_engines_csv,
-    resolve_bridge_workdir, WebSocketResourceLimits, DEFAULT_WS_GLOBAL_IN_FLIGHT,
-    DEFAULT_WS_MAX_FRAME_BYTES, DEFAULT_WS_MAX_MESSAGE_BYTES, DEFAULT_WS_PER_CLIENT_IN_FLIGHT,
-};
-use config::{parse_bridge_runtime_engine, BridgeConfig};
+use config::BridgeConfig;
 use health::{
-    bridge_status, BridgeDeviceConnection, BridgeEngineStatus, BridgeOperationalStatus,
-    BridgeStatus, QueueStatus,
+    bridge_status, BridgeDeviceConnection, BridgeOperationalStatus, BridgeStatus, QueueStatus,
 };
-use live_sync::{
-    discover_recent_rollout_files, hash_rollout_line, resolve_codex_sessions_root,
-    rollout_originator_allowed, should_run_rollout_discovery_tick, ROLLOUT_LIVE_SYNC_MAX_FILE_AGE,
-};
-use observability::{OperationalMetrics, RequestTrace};
+use observability::OperationalMetrics;
 use path_policy::{PathKind, PathPolicy};
-#[cfg(test)]
-use preview::{browser_preview_label_for_port, parse_listening_socket_port};
 use preview::{
     normalize_browser_preview_target_url, BrowserPreviewResolvedSession, BrowserPreviewService,
     BROWSER_PREVIEW_SESSION_TTL,
 };
-#[cfg(test)]
-use push::PushRegistry;
 use push::{
-    parse_push_event_preferences, push_thread_is_top_level, token_suffix, truncate_chars,
-    PushEventPreferences, PushRegistryStore,
+    parse_push_event_preferences, token_suffix, truncate_chars, PushEventPreferences,
+    PushRegistryStore,
 };
 use replay::NotificationReplay;
 use resource_limits::{
@@ -140,49 +100,34 @@ use resource_limits::{
 };
 use rpc::{is_forwarded_method, parse_client_request_id, parse_request, RpcRequestParseError};
 
-mod app_server;
 mod app_state;
 mod bridge_protocol;
 mod client_hub;
-mod cursor_auth;
-mod engine_normalization;
 mod github_auth;
 mod http_routes;
 mod interaction_validation;
-mod opencode_backend;
-mod opencode_mappings;
 mod pairing;
 mod preview_proxy;
 mod push_delivery;
 mod queue_service;
-mod rollout_sync;
 mod runtime_backend;
 mod websocket_transport;
 mod workspace_auth;
 
-use app_server::*;
+use agui::*;
 use app_state::*;
 use bridge_protocol::*;
 use client_hub::*;
-use cursor_auth::*;
-use engine_normalization::*;
 use github_auth::*;
 use http_routes::*;
 use interaction_validation::*;
-use opencode_backend::*;
-use opencode_mappings::*;
 use pairing::*;
 use preview_proxy::*;
 use protocol_constants::*;
 use push_delivery::*;
-use rollout_sync::*;
 use runtime_backend::*;
 use websocket_transport::*;
 use workspace_auth::*;
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod main_tests;
 
 #[tokio::main]
 async fn main() {

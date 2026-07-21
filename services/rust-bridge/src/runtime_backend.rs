@@ -1,443 +1,354 @@
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex as StdMutex,
+    },
+};
+
+use agent_client_protocol::schema::v1::{
+    ContentBlock, ElicitationContentValue, NewSessionRequest, ResourceLink,
+};
+use futures_util::future::BoxFuture;
+
+use crate::acp::interactions::ElicitationFieldKind;
+use crate::acp::manager::{AgentLifecycle, AgentManager, LocalAgentManifestSet};
+use crate::acp::runtime::RequestCancellation;
 use crate::*;
 
-#[derive(Clone)]
 pub(super) struct RuntimeBackend {
-    pub(super) preferred_engine: BridgeRuntimeEngine,
-    pub(super) codex: Arc<StdRwLock<Option<Arc<AppServerBridge>>>>,
-    pub(super) opencode: Option<Arc<OpencodeBackend>>,
-    pub(super) cursor: Arc<StdRwLock<Option<Arc<AppServerBridge>>>>,
-    pub(super) metrics: Arc<OperationalMetrics>,
+    manager: Arc<AgentManager>,
+    hub: Arc<ClientHub>,
+    event_pump: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    client_requests: ClientRequestTracker,
 }
 
-impl RuntimeBackend {
-    pub(super) async fn engine_statuses(
+const MAX_TRACKED_CLIENT_REQUESTS: usize = 4096;
+
+struct ClientRequestOwner {
+    client_id: u64,
+    cancellation: RequestCancellation,
+}
+
+#[derive(Default)]
+struct ClientRequestRegistry {
+    requests: HashMap<u64, ClientRequestOwner>,
+    active_clients: HashSet<u64>,
+}
+
+struct ClientRequestGuard {
+    request_id: u64,
+    requests: Arc<StdMutex<ClientRequestRegistry>>,
+}
+
+#[derive(Default)]
+struct ClientRequestTracker {
+    registry: Arc<StdMutex<ClientRequestRegistry>>,
+    next_request_id: AtomicU64,
+}
+
+impl Drop for ClientRequestGuard {
+    fn drop(&mut self) {
+        self.requests
+            .lock()
+            .expect("client request registry poisoned")
+            .requests
+            .remove(&self.request_id);
+    }
+}
+
+impl ClientRequestTracker {
+    fn register_client(&self, client_id: u64) {
+        self.registry
+            .lock()
+            .expect("client request registry poisoned")
+            .active_clients
+            .insert(client_id);
+    }
+
+    fn cancel_client(&self, client_id: u64) {
+        let cancelled = {
+            let mut registry = self
+                .registry
+                .lock()
+                .expect("client request registry poisoned");
+            registry.active_clients.remove(&client_id);
+            let request_ids = registry
+                .requests
+                .iter()
+                .filter_map(|(request_id, owner)| {
+                    (owner.client_id == client_id).then_some(*request_id)
+                })
+                .collect::<Vec<_>>();
+            request_ids
+                .into_iter()
+                .filter_map(|request_id| registry.requests.remove(&request_id))
+                .collect::<Vec<_>>()
+        };
+        for owner in cancelled {
+            owner.cancellation.cancel();
+        }
+    }
+
+    #[cfg(test)]
+    async fn run<T>(
         &self,
-        configured_engines: &[BridgeRuntimeEngine],
-    ) -> HashMap<BridgeRuntimeEngine, BridgeEngineStatus> {
-        let mut statuses = HashMap::new();
-        for engine in [
-            BridgeRuntimeEngine::Codex,
-            BridgeRuntimeEngine::Opencode,
-            BridgeRuntimeEngine::Cursor,
-        ] {
-            let configured = configured_engines.contains(&engine);
-            let (runtime, pending_requests, timed_out_requests) = match engine {
-                BridgeRuntimeEngine::Codex => match self.codex_backend() {
-                    Some(backend) => (
-                        backend.lifecycle.snapshot().await,
-                        backend.pending_requests.lock().await.len(),
-                        backend.timed_out_requests.load(Ordering::Relaxed),
-                    ),
-                    None => (dead_backend_snapshot("backend not started"), 0, 0),
-                },
-                BridgeRuntimeEngine::Opencode => match self.opencode.as_ref() {
-                    Some(backend) => (backend.lifecycle.snapshot().await, 0, 0),
-                    None => (dead_backend_snapshot("backend not started"), 0, 0),
-                },
-                BridgeRuntimeEngine::Cursor => match self.cursor_backend() {
-                    Some(backend) => (
-                        backend.lifecycle.snapshot().await,
-                        backend.pending_requests.lock().await.len(),
-                        backend.timed_out_requests.load(Ordering::Relaxed),
-                    ),
-                    None => (dead_backend_snapshot("backend not started"), 0, 0),
-                },
-            };
-            statuses.insert(
-                engine,
-                BridgeEngineStatus {
-                    configured,
-                    lifecycle: runtime.state,
-                    available: configured && runtime.state == BackendLifecycleState::Ready,
-                    restart_count: runtime.restart_count,
-                    pending_requests,
-                    timed_out_requests,
-                    last_error: runtime
-                        .last_error
-                        .map(|_| "backend lifecycle error (details redacted)".to_string()),
+        client_id: u64,
+        future: impl Future<Output = T>,
+    ) -> Result<T, &'static str> {
+        self.run_with(client_id, |_| future).await
+    }
+
+    async fn run_with<T, F, Fut>(&self, client_id: u64, make: F) -> Result<T, &'static str>
+    where
+        F: FnOnce(RequestCancellation) -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let cancellation = RequestCancellation::default();
+        {
+            let mut registry = self
+                .registry
+                .lock()
+                .expect("client request registry poisoned");
+            if !registry.active_clients.contains(&client_id) {
+                return Err("client disconnected");
+            }
+            if registry.requests.len() >= MAX_TRACKED_CLIENT_REQUESTS {
+                return Err("client request tracking capacity reached");
+            }
+            registry.requests.insert(
+                request_id,
+                ClientRequestOwner {
+                    client_id,
+                    cancellation: cancellation.clone(),
                 },
             );
         }
-        statuses
+        let request_guard = ClientRequestGuard {
+            request_id,
+            requests: self.registry.clone(),
+        };
+        let future = make(cancellation.clone());
+        tokio::pin!(future);
+        let result = tokio::select! {
+            result = &mut future => Some(result),
+            _ = cancellation.cancelled() => None,
+        };
+        drop(request_guard);
+        if cancellation.is_cancelled() || result.is_none() {
+            return Err("client request cancelled");
+        }
+        Ok(result.expect("completed client request result"))
     }
 
+    #[cfg(test)]
+    fn request_count(&self) -> usize {
+        self.registry
+            .lock()
+            .expect("client request registry poisoned")
+            .requests
+            .len()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct QueueRuntimeSnapshot {
+    pub(super) session: crate::acp::snapshot::SessionSnapshot,
+    pub(super) pending_approval_ids: HashSet<String>,
+    pub(super) pending_user_input_ids: HashSet<String>,
+}
+
+pub(super) trait QueueRuntimeDispatcher: Send + Sync {
+    fn read_snapshot<'a>(
+        &'a self,
+        thread_id: &'a str,
+    ) -> BoxFuture<'a, Result<QueueRuntimeSnapshot, String>>;
+    fn supports_steer(&self, thread_id: &str) -> Result<bool, String>;
+    fn prepare_steer<'a>(&'a self, thread_id: &'a str) -> BoxFuture<'a, Result<u64, String>>;
+    fn verify_steer_epoch<'a>(
+        &'a self,
+        thread_id: &'a str,
+        epoch: u64,
+    ) -> BoxFuture<'a, Result<bool, String>>;
+    fn steer<'a>(
+        &'a self,
+        thread_id: &'a str,
+        expected_run_id: String,
+        expected_source_turn_id: String,
+        prompt_generation: u64,
+        interaction_epoch: u64,
+        prompt: Vec<ContentBlock>,
+    ) -> BoxFuture<'a, Result<(), String>>;
+    fn turn_start<'a>(
+        &'a self,
+        thread_id: &'a str,
+        turn_start: &'a Value,
+    ) -> BoxFuture<'a, Result<String, String>>;
+}
+
+impl RuntimeBackend {
     pub(super) async fn start(
         config: &Arc<BridgeConfig>,
         hub: Arc<ClientHub>,
-        metrics: Arc<OperationalMetrics>,
+        _metrics: Arc<OperationalMetrics>,
     ) -> Result<Arc<Self>, String> {
-        let preferred_engine = config.active_engine;
-        let codex_enabled = config.enabled_engines.contains(&BridgeRuntimeEngine::Codex);
-        let opencode_enabled = config
-            .enabled_engines
-            .contains(&BridgeRuntimeEngine::Opencode);
-        let cursor_enabled = config
-            .enabled_engines
-            .contains(&BridgeRuntimeEngine::Cursor);
-        let codex = Arc::new(StdRwLock::new(None));
-        let mut opencode = None;
-        let cursor = Arc::new(StdRwLock::new(None));
-
-        match preferred_engine {
-            BridgeRuntimeEngine::Codex => {
-                if codex_enabled {
-                    let app_server =
-                        AppServerBridge::start_codex(&config.cli_bin, hub.clone(), metrics.clone())
-                            .await?;
-                    spawn_rollout_live_sync(hub.clone(), metrics.clone());
-                    Self::store_codex_backend(&codex, app_server);
-                }
-
-                if opencode_enabled {
-                    match OpencodeBackend::start(config, hub.clone()).await {
-                        Ok(backend) => opencode = Some(backend),
-                        Err(error) => eprintln!(
-                            "opencode backend unavailable; continuing with selected harnesses only: {error}"
-                        ),
-                    }
-                }
-
-                if cursor_enabled {
-                    match start_cursor_app_server_from_config(config, hub.clone(), metrics.clone()).await {
-                        Ok(app_server) => Self::store_cursor_backend(&cursor, app_server),
-                        Err(error) => eprintln!(
-                            "cursor backend unavailable; continuing with selected harnesses only: {error}"
-                        ),
-                    }
-                }
+        let manifests = LocalAgentManifestSet::load(
+            &config.acp_manifest_path,
+            &config.acp_approved_executable_roots,
+        )
+        .map_err(|error| error.to_string())?;
+        let host_environment = [
+            "CODEX_PATH",
+            "HOME",
+            "PATH",
+            "TMPDIR",
+            "LANG",
+            "XDG_CONFIG_HOME",
+        ]
+        .into_iter()
+        .filter_map(|name| env::var(name).ok().map(|value| (name.to_string(), value)))
+        .collect::<BTreeMap<_, _>>();
+        let manager = Arc::new(
+            AgentManager::start(
+                manifests,
+                &config.acp_approved_executable_roots,
+                &host_environment,
+                config.acp_initialize_timeout,
+                &config.workdir,
+                config.allow_outside_root_cwd,
+            )
+            .await
+            .map_err(|error| error.to_string())?,
+        );
+        let mut events = manager
+            .take_events()
+            .await
+            .ok_or_else(|| "ACP canonical event receiver already taken".to_string())?;
+        let event_hub = hub.clone();
+        let event_pump = tokio::spawn(async move {
+            while let Some(event) = events.recv().await {
+                event_hub.broadcast_canonical_event(&event).await;
             }
-            BridgeRuntimeEngine::Opencode => {
-                if opencode_enabled {
-                    let backend = OpencodeBackend::start(config, hub.clone()).await?;
-                    opencode = Some(backend);
-                }
-
-                if codex_enabled {
-                    match AppServerBridge::start_codex(
-                        &config.cli_bin,
-                        hub.clone(),
-                        metrics.clone(),
-                    )
-                    .await
-                    {
-                        Ok(app_server) => {
-                            spawn_rollout_live_sync(hub.clone(), metrics.clone());
-                            Self::store_codex_backend(&codex, app_server);
-                        }
-                        Err(error) => eprintln!(
-                            "codex backend unavailable; continuing with selected harnesses only: {error}"
-                        ),
-                    }
-                }
-
-                if cursor_enabled {
-                    match start_cursor_app_server_from_config(config, hub.clone(), metrics.clone()).await {
-                        Ok(app_server) => Self::store_cursor_backend(&cursor, app_server),
-                        Err(error) => eprintln!(
-                            "cursor backend unavailable; continuing with selected harnesses only: {error}"
-                        ),
-                    }
-                }
-            }
-            BridgeRuntimeEngine::Cursor => {
-                if cursor_enabled {
-                    let app_server =
-                        start_cursor_app_server_from_config(config, hub.clone(), metrics.clone())
-                            .await?;
-                    Self::store_cursor_backend(&cursor, app_server);
-                }
-
-                if codex_enabled {
-                    match AppServerBridge::start_codex(&config.cli_bin, hub.clone(), metrics.clone()).await {
-                        Ok(app_server) => {
-                            spawn_rollout_live_sync(hub.clone(), metrics.clone());
-                            Self::store_codex_backend(&codex, app_server);
-                        }
-                        Err(error) => eprintln!(
-                            "codex backend unavailable; continuing with selected harnesses only: {error}"
-                        ),
-                    }
-                }
-
-                if opencode_enabled {
-                    match OpencodeBackend::start(config, hub.clone()).await {
-                        Ok(backend) => opencode = Some(backend),
-                        Err(error) => eprintln!(
-                            "opencode backend unavailable; continuing with selected harnesses only: {error}"
-                        ),
-                    }
-                }
-            }
-        }
-
+        });
         Ok(Arc::new(Self {
-            preferred_engine,
-            codex,
-            opencode,
-            cursor,
-            metrics,
+            manager,
+            hub,
+            event_pump: Mutex::new(Some(event_pump)),
+            client_requests: ClientRequestTracker::default(),
         }))
     }
 
-    pub(super) fn cursor_backend(&self) -> Option<Arc<AppServerBridge>> {
-        self.cursor.read().ok().and_then(|guard| guard.clone())
-    }
-
-    pub(super) fn codex_backend(&self) -> Option<Arc<AppServerBridge>> {
-        self.codex.read().ok().and_then(|guard| guard.clone())
-    }
-
-    pub(super) fn store_codex_backend(
-        codex_slot: &Arc<StdRwLock<Option<Arc<AppServerBridge>>>>,
-        bridge: Arc<AppServerBridge>,
-    ) {
-        if let Ok(mut guard) = codex_slot.write() {
-            *guard = Some(bridge);
-        }
-    }
-
-    pub(super) fn store_cursor_backend(
-        cursor_slot: &Arc<StdRwLock<Option<Arc<AppServerBridge>>>>,
-        bridge: Arc<AppServerBridge>,
-    ) {
-        if let Ok(mut guard) = cursor_slot.write() {
-            *guard = Some(bridge);
-        }
-    }
-
-    pub(super) async fn restart_codex_app_server(
-        &self,
-        config: &Arc<BridgeConfig>,
-        hub: Arc<ClientHub>,
-    ) -> Result<(), String> {
-        if !config.enabled_engines.contains(&BridgeRuntimeEngine::Codex) {
-            return Err("codex backend is not enabled".to_string());
-        }
-
-        let next_backend =
-            AppServerBridge::start_codex(&config.cli_bin, hub, self.metrics.clone()).await?;
-        let previous_backend = self
-            .codex
-            .write()
-            .map(|mut guard| guard.replace(next_backend))
-            .map_err(|_| "codex backend lock is unavailable".to_string())?;
-
-        if let Some(previous_backend) = previous_backend {
-            previous_backend.request_shutdown().await;
-        }
-
-        Ok(())
-    }
-
     pub(super) async fn shutdown(&self) {
-        if let Some(codex) = self.codex_backend() {
-            codex.request_shutdown().await;
+        self.manager.shutdown().await;
+        self.manager.flush_events().await;
+        if let Some(pump) = self.event_pump.lock().await.take() {
+            pump.abort();
+            let _ = pump.await;
         }
-        if let Some(opencode) = &self.opencode {
-            opencode.request_shutdown().await;
-        }
-        if let Some(cursor) = self.cursor_backend() {
-            cursor.request_shutdown().await;
-        }
+    }
+
+    pub(super) fn register_client(&self, client_id: u64) {
+        self.client_requests.register_client(client_id);
     }
 
     pub(super) async fn cancel_client_requests(&self, client_id: u64) {
-        if let Some(bridge) = self.codex_backend() {
-            bridge.cancel_client_requests(client_id).await;
-        }
-        if let Some(bridge) = self.cursor_backend() {
-            bridge.cancel_client_requests(client_id).await;
-        }
+        self.client_requests.cancel_client(client_id);
     }
 
-    pub(super) fn engine(&self) -> BridgeRuntimeEngine {
-        self.preferred_engine
+    pub(super) async fn session_snapshot(
+        &self,
+        thread_id: &str,
+    ) -> Result<crate::acp::snapshot::SessionSnapshot, String> {
+        self.manager
+            .read_session(thread_id)
+            .await
+            .map(|session| session.snapshot)
+            .map_err(|error| error.to_string())
     }
 
-    pub(super) fn available_engines(&self) -> Vec<BridgeRuntimeEngine> {
-        let mut engines = Vec::new();
-        if self
-            .codex_backend()
-            .is_some_and(|backend| backend.lifecycle.is_ready())
-        {
-            engines.push(BridgeRuntimeEngine::Codex);
-        }
-        if self
-            .opencode
-            .as_ref()
-            .is_some_and(|backend| backend.lifecycle.is_ready())
-        {
-            engines.push(BridgeRuntimeEngine::Opencode);
-        }
-        if self
-            .cursor_backend()
-            .is_some_and(|backend| backend.lifecycle.is_ready())
-        {
-            engines.push(BridgeRuntimeEngine::Cursor);
-        }
-        engines
+    pub(super) async fn prepare_steer(&self, thread_id: &str) -> Result<u64, String> {
+        self.manager
+            .prepare_steer(thread_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub(super) async fn verify_steer_epoch(
+        &self,
+        thread_id: &str,
+        epoch: u64,
+    ) -> Result<bool, String> {
+        self.manager
+            .verify_steer_epoch(thread_id, epoch)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub(super) fn supports_steer(&self, thread_id: &str) -> Result<bool, String> {
+        self.manager
+            .supports_steer(thread_id)
+            .map_err(|error| error.to_string())
+    }
+
+    pub(super) async fn steer(
+        &self,
+        thread_id: &str,
+        expected_run_id: String,
+        expected_source_turn_id: String,
+        prompt_generation: u64,
+        interaction_epoch: u64,
+        prompt: Vec<ContentBlock>,
+    ) -> Result<(), String> {
+        self.manager
+            .steer(
+                thread_id,
+                expected_run_id,
+                expected_source_turn_id,
+                prompt_generation,
+                interaction_epoch,
+                prompt,
+            )
+            .await
+            .map_err(|error| error.to_string())
     }
 
     pub(super) fn capabilities(&self, stream_id: &str) -> BridgeCapabilities {
-        let preferred_engine = self.engine();
-        let supports_for_engine = |engine| match engine {
-            BridgeRuntimeEngine::Codex => BridgeCapabilitySupport {
-                review_start: true,
-                compact_start: true,
-                goal_slash: true,
-                plan_mode: true,
-                agent_list: false,
-                turn_steer: true,
-                command_output_delta: true,
-                fast_mode: true,
-                account: true,
-                account_rate_limits: true,
-                self_update: false,
-                browser_preview: false,
-                generic_ui_surface: true,
-            },
-            BridgeRuntimeEngine::Opencode => BridgeCapabilitySupport {
-                review_start: false,
-                compact_start: true,
-                goal_slash: false,
-                plan_mode: true,
-                agent_list: true,
-                turn_steer: false,
-                command_output_delta: false,
-                fast_mode: false,
-                account: false,
-                account_rate_limits: false,
-                self_update: false,
-                browser_preview: false,
-                generic_ui_surface: true,
-            },
-            BridgeRuntimeEngine::Cursor => BridgeCapabilitySupport {
-                review_start: false,
-                compact_start: false,
-                goal_slash: false,
-                plan_mode: true,
-                agent_list: false,
-                turn_steer: false,
-                command_output_delta: false,
-                fast_mode: false,
-                account: false,
-                account_rate_limits: false,
-                self_update: false,
-                browser_preview: false,
-                generic_ui_surface: true,
-            },
-        };
-        let available_engines = self.available_engines();
-        let active_engine = if available_engines.contains(&preferred_engine) {
-            preferred_engine
-        } else {
-            available_engines
-                .first()
-                .copied()
-                .unwrap_or(preferred_engine)
-        };
-        let supports = supports_for_engine(active_engine);
-        let supports_by_engine = [
-            BridgeRuntimeEngine::Codex,
-            BridgeRuntimeEngine::Opencode,
-            BridgeRuntimeEngine::Cursor,
-        ]
-        .iter()
-        .copied()
-        .map(|engine| (engine, supports_for_engine(engine)))
-        .collect();
-
+        let agents = self.manager.list_agents();
+        let preferred_agent_id = self.manager.preferred_agent_id().to_string();
+        let active_agent_id = agents
+            .iter()
+            .find(|agent| {
+                agent.agent_id == preferred_agent_id && agent.lifecycle == AgentLifecycle::Ready
+            })
+            .or_else(|| {
+                agents
+                    .iter()
+                    .find(|agent| agent.lifecycle == AgentLifecycle::Ready)
+            })
+            .map(|agent| agent.agent_id.clone());
+        let supports_by_agent = agents
+            .iter()
+            .map(|agent| {
+                (
+                    agent.agent_id.clone(),
+                    BridgeCapabilitySupport::from_agent(agent),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let supports = active_agent_id
+            .as_ref()
+            .and_then(|id| supports_by_agent.get(id).copied())
+            .unwrap_or_default();
         BridgeCapabilities {
             protocol_version: BRIDGE_PROTOCOL_VERSION,
             stream_id: stream_id.to_string(),
-            active_engine,
-            preferred_engine,
-            configured_engines: available_engines.clone(),
-            unified_chat_list: available_engines.len() > 1,
-            available_engines,
+            preferred_agent_id,
+            active_agent_id,
+            agents,
+            ag_ui_events: true,
             supports,
-            supports_by_engine,
-        }
-    }
-
-    pub(super) fn backend_for_engine(
-        &self,
-        engine: BridgeRuntimeEngine,
-    ) -> Result<RuntimeBackendRef<'_>, String> {
-        match engine {
-            BridgeRuntimeEngine::Codex => self
-                .codex_backend()
-                .map(RuntimeBackendRef::Codex)
-                .ok_or_else(|| "codex backend is unavailable".to_string()),
-            BridgeRuntimeEngine::Opencode => self
-                .opencode
-                .as_ref()
-                .map(RuntimeBackendRef::Opencode)
-                .ok_or_else(|| "opencode backend is unavailable".to_string()),
-            BridgeRuntimeEngine::Cursor => self
-                .cursor_backend()
-                .map(RuntimeBackendRef::Cursor)
-                .ok_or_else(|| "cursor backend is unavailable".to_string()),
-        }
-    }
-
-    pub(super) fn route_engine_for_method(
-        &self,
-        method: &str,
-        raw_params: Option<&Value>,
-    ) -> BridgeRuntimeEngine {
-        if is_dual_engine_aggregate_method(method) {
-            return self.preferred_engine;
-        }
-
-        route_engine_from_params(raw_params).unwrap_or_else(|| self.engine())
-    }
-
-    #[allow(dead_code)]
-    pub(super) async fn forward_request(
-        self: &Arc<Self>,
-        client_id: u64,
-        client_request_id: Value,
-        method: &str,
-        raw_params: Option<Value>,
-        permits: Option<InFlightRequestPermits>,
-    ) -> Result<(), String> {
-        if is_dual_engine_aggregate_method(method) {
-            let result = self.request_internal(method, raw_params).await?;
-            self.send_client_result(client_id, client_request_id, result)
-                .await;
-            return Ok(());
-        }
-
-        let target_engine = self.route_engine_for_method(method, raw_params.as_ref());
-        let normalized_params = raw_params.map(normalize_forwarded_params);
-        match self.backend_for_engine(target_engine)? {
-            RuntimeBackendRef::Codex(bridge) => {
-                bridge
-                    .forward_request_with_permits(
-                        client_id,
-                        client_request_id,
-                        method,
-                        normalized_params,
-                        permits,
-                    )
-                    .await
-            }
-            RuntimeBackendRef::Opencode(backend) => backend
-                .forward_request(client_id, client_request_id, method, normalized_params)
-                .await
-                .map(|()| drop(permits)),
-            RuntimeBackendRef::Cursor(bridge) => {
-                bridge
-                    .forward_request_with_permits(
-                        client_id,
-                        client_request_id,
-                        method,
-                        normalized_params,
-                        permits,
-                    )
-                    .await
-            }
+            supports_by_agent,
         }
     }
 
@@ -446,325 +357,476 @@ impl RuntimeBackend {
         method: &str,
         params: Option<Value>,
     ) -> Result<Value, String> {
-        if method == "thread/list" {
-            return self.aggregate_thread_list(params).await;
-        }
-        if method == "thread/loaded/list" {
-            return self.aggregate_loaded_thread_ids().await;
-        }
-        if method == "model/list" {
-            let target_engine =
-                route_engine_from_params(params.as_ref()).unwrap_or_else(|| self.engine());
-            let normalized_params = params.map(normalize_forwarded_params);
-            return match self.backend_for_engine(target_engine)? {
-                RuntimeBackendRef::Codex(bridge) => {
-                    bridge.request_internal(method, normalized_params).await
-                }
-                RuntimeBackendRef::Opencode(backend) => {
-                    backend.request_internal(method, normalized_params).await
-                }
-                RuntimeBackendRef::Cursor(bridge) => {
-                    bridge.request_internal(method, normalized_params).await
-                }
-            };
-        }
-
-        let target_engine = self.route_engine_for_method(method, params.as_ref());
-        let normalized_params = params.map(normalize_forwarded_params);
-        match self.backend_for_engine(target_engine)? {
-            RuntimeBackendRef::Codex(bridge) => {
-                bridge.request_internal(method, normalized_params).await
+        let params = params.unwrap_or_else(|| json!({}));
+        match method {
+            "thread/start" => {
+                let agent_id = read_string(params.get("agentId"))
+                    .unwrap_or_else(|| self.manager.preferred_agent_id().to_string());
+                let cwd = read_string(params.get("cwd")).unwrap_or_else(|| ".".to_string());
+                let session = self
+                    .manager
+                    .new_session(&agent_id, NewSessionRequest::new(cwd))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(json!({ "thread": session_to_thread_value(session)? }))
             }
-            RuntimeBackendRef::Opencode(backend) => {
-                backend.request_internal(method, normalized_params).await
+            "thread/list" => {
+                let cursor = read_string(params.get("cursor"));
+                let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
+                let agent_id = read_string(params.get("agentId"));
+                let page = self
+                    .manager
+                    .list_sessions_for(cursor.as_deref(), limit, agent_id.as_deref())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let data = page
+                    .sessions
+                    .into_iter()
+                    .map(session_to_thread_value)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(json!({
+                    "data": data,
+                    "nextCursor": page.next_cursor,
+                    "partial": page.partial,
+                    "diagnostics": page.diagnostics,
+                }))
             }
-            RuntimeBackendRef::Cursor(bridge) => {
-                bridge.request_internal(method, normalized_params).await
+            "thread/loaded/list" => Ok(json!({
+                "data": self.manager.loaded_session_ids().await
+            })),
+            "thread/read" => {
+                let thread_id = required_string(&params, "threadId")?;
+                let session = self
+                    .manager
+                    .read_session(&thread_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(json!({ "thread": session_to_thread_value(session)? }))
             }
+            "thread/snapshot/page" => {
+                let thread_id = required_string(&params, "threadId")?;
+                let before = read_string(params.get("beforeCursor"));
+                let after = read_string(params.get("afterCursor"));
+                let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
+                let page = self
+                    .manager
+                    .snapshot_page(&thread_id, before.as_deref(), after.as_deref(), limit)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                serde_json::to_value(page).map_err(|error| error.to_string())
+            }
+            "thread/resume" => {
+                let thread_id = required_string(&params, "threadId")?;
+                let cwd = required_string(&params, "cwd")?;
+                let session = self
+                    .manager
+                    .resume_session(&thread_id, cwd)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(json!({ "thread": session_to_thread_value(session)? }))
+            }
+            "turn/start" => {
+                let thread_id = required_string(&params, "threadId")?;
+                let prompt = bridge_prompt(&params)?;
+                let source_turn_id = Uuid::new_v4().to_string();
+                let run_id = format!("{thread_id}::turn::{source_turn_id}");
+                let admission = self
+                    .manager
+                    .prompt(&thread_id, prompt, run_id, source_turn_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(json!({
+                    "turn": { "id": admission.source_turn_id, "status": "inProgress" }
+                }))
+            }
+            "turn/interrupt" => {
+                let thread_id = required_string(&params, "threadId")?;
+                let turn_id = required_string(&params, "turnId")?;
+                self.manager
+                    .cancel_turn(&thread_id, &turn_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(json!({ "ok": true }))
+            }
+            "model/list" => Ok(json!({
+                "data": [],
+                "unsupported": true,
+                "source": "acpSessionConfig"
+            })),
+            _ => Err(format!("method not supported by ACP runtime: {method}")),
         }
     }
 
-    pub(super) async fn aggregate_thread_list(
+    pub(super) async fn request_for_client(
         &self,
+        client_id: u64,
+        method: &str,
         params: Option<Value>,
     ) -> Result<Value, String> {
-        let mut results = Vec::new();
-        let mut errors = Vec::new();
-        let mut attempted = 0usize;
-        let bridge_cursor = extract_thread_list_cursor(params.as_ref())
-            .and_then(|cursor| decode_bridge_thread_list_cursor(&cursor));
-
-        if let Some(codex) = self
-            .codex_backend()
-            .filter(|backend| backend.lifecycle.is_ready())
-        {
-            let request_params = match bridge_cursor.as_ref() {
-                Some(cursor_map) => cursor_map
-                    .get(&BridgeRuntimeEngine::Codex)
-                    .map(|cursor| thread_list_params_with_cursor(params.as_ref(), Some(cursor))),
-                None => params.clone(),
-            };
-            if bridge_cursor.is_none() || request_params.is_some() {
-                attempted += 1;
-                match codex.request_internal("thread/list", request_params).await {
-                    Ok(result) => results.push((BridgeRuntimeEngine::Codex, result)),
-                    Err(error) => errors.push(format!("codex: {error}")),
+        self.client_requests
+            .run_with(client_id, |cancellation| async move {
+                if method == "thread/start" {
+                    let params = params.unwrap_or_else(|| json!({}));
+                    let agent_id = read_string(params.get("agentId"))
+                        .unwrap_or_else(|| self.manager.preferred_agent_id().to_string());
+                    let cwd = read_string(params.get("cwd")).unwrap_or_else(|| ".".to_string());
+                    let session = self
+                        .manager
+                        .new_session_with_cancellation(
+                            &agent_id,
+                            NewSessionRequest::new(cwd),
+                            cancellation,
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    return Ok(json!({ "thread": session_to_thread_value(session)? }));
                 }
-            }
-        }
-
-        if let Some(opencode) = self
-            .opencode
-            .as_ref()
-            .filter(|backend| backend.lifecycle.is_ready())
-        {
-            let request_params = match bridge_cursor.as_ref() {
-                Some(cursor_map) => cursor_map
-                    .get(&BridgeRuntimeEngine::Opencode)
-                    .map(|cursor| thread_list_params_with_cursor(params.as_ref(), Some(cursor))),
-                None => params.clone(),
-            };
-            if bridge_cursor.is_none() || request_params.is_some() {
-                attempted += 1;
-                match opencode
-                    .request_internal("thread/list", request_params)
-                    .await
-                {
-                    Ok(result) => results.push((BridgeRuntimeEngine::Opencode, result)),
-                    Err(error) => errors.push(format!("opencode: {error}")),
-                }
-            }
-        }
-
-        if let Some(cursor_backend) = self
-            .cursor_backend()
-            .filter(|backend| backend.lifecycle.is_ready())
-        {
-            let request_params = match bridge_cursor.as_ref() {
-                Some(cursor_map) => cursor_map
-                    .get(&BridgeRuntimeEngine::Cursor)
-                    .map(|cursor| thread_list_params_with_cursor(params.as_ref(), Some(cursor))),
-                None => params.clone(),
-            };
-            if bridge_cursor.is_none() || request_params.is_some() {
-                attempted += 1;
-                match cursor_backend
-                    .request_internal("thread/list", request_params)
-                    .await
-                {
-                    Ok(result) => results.push((BridgeRuntimeEngine::Cursor, result)),
-                    Err(error) => errors.push(format!("cursor: {error}")),
-                }
-            }
-        }
-
-        if results.is_empty() && attempted > 0 {
-            return Err(format!(
-                "thread/list failed for every ready backend: {}",
-                errors.join("; ")
-            ));
-        }
-        Ok(merge_thread_list_results(results))
+                self.request_internal(method, params).await
+            })
+            .await
+            .map_err(str::to_string)?
     }
 
-    pub(super) async fn aggregate_loaded_thread_ids(&self) -> Result<Value, String> {
-        let mut results = Vec::new();
-        let mut errors = Vec::new();
-        let mut attempted = 0usize;
-
-        if let Some(codex) = self
-            .codex_backend()
-            .filter(|backend| backend.lifecycle.is_ready())
+    pub(super) async fn forward_request(
+        self: &Arc<Self>,
+        client_id: u64,
+        client_request_id: Value,
+        method: &str,
+        params: Option<Value>,
+        permits: Option<InFlightRequestPermits>,
+    ) -> Result<(), String> {
+        let result = self.request_for_client(client_id, method, params).await;
+        drop(permits);
+        if result.as_ref().map_err(String::as_str) == Err("client request cancelled")
+            || result.as_ref().map_err(String::as_str) == Err("client disconnected")
         {
-            attempted += 1;
-            match codex.request_internal("thread/loaded/list", None).await {
-                Ok(result) => results.push((BridgeRuntimeEngine::Codex, result)),
-                Err(error) => errors.push(format!("codex: {error}")),
-            }
+            return Ok(());
         }
-
-        if let Some(opencode) = self
-            .opencode
-            .as_ref()
-            .filter(|backend| backend.lifecycle.is_ready())
-        {
-            attempted += 1;
-            match opencode.request_internal("thread/loaded/list", None).await {
-                Ok(result) => results.push((BridgeRuntimeEngine::Opencode, result)),
-                Err(error) => errors.push(format!("opencode: {error}")),
-            }
-        }
-
-        if let Some(cursor) = self
-            .cursor_backend()
-            .filter(|backend| backend.lifecycle.is_ready())
-        {
-            attempted += 1;
-            match cursor.request_internal("thread/loaded/list", None).await {
-                Ok(result) => results.push((BridgeRuntimeEngine::Cursor, result)),
-                Err(error) => errors.push(format!("cursor: {error}")),
-            }
-        }
-
-        if results.is_empty() && attempted > 0 {
-            return Err(format!(
-                "thread/loaded/list failed for every ready backend: {}",
-                errors.join("; ")
-            ));
-        }
-        Ok(merge_loaded_thread_ids_results(results))
+        let payload = match result {
+            Ok(result) => json!({ "id": client_request_id, "result": result }),
+            Err(message) => json!({
+                "id": client_request_id,
+                "error": { "code": -32601, "message": message }
+            }),
+        };
+        self.hub.send_json(client_id, payload).await;
+        Ok(())
     }
 
     pub(super) async fn list_pending_approvals(&self) -> Vec<PendingApproval> {
-        let mut approvals = Vec::new();
-        if let Some(codex) = self.codex_backend() {
-            approvals.extend(codex.list_pending_approvals().await);
-        }
-        if let Some(opencode) = &self.opencode {
-            approvals.extend(opencode.list_pending_approvals().await);
-        }
-        if let Some(cursor) = self.cursor_backend() {
-            approvals.extend(cursor.list_pending_approvals().await);
-        }
-        approvals.sort_by(|a, b| b.requested_at.cmp(&a.requested_at));
-        approvals
+        self.manager
+            .pending_permissions()
+            .await
+            .into_iter()
+            .map(PendingApproval::from)
+            .collect()
     }
 
     pub(super) async fn list_pending_user_inputs(&self) -> Vec<PendingUserInputRequest> {
-        let mut requests = Vec::new();
-        if let Some(codex) = self.codex_backend() {
-            requests.extend(codex.list_pending_user_inputs().await);
-        }
-        if let Some(opencode) = &self.opencode {
-            requests.extend(opencode.list_pending_user_inputs().await);
-        }
-        if let Some(cursor) = self.cursor_backend() {
-            requests.extend(cursor.list_pending_user_inputs().await);
-        }
-        requests.sort_by(|a, b| b.requested_at.cmp(&a.requested_at));
-        requests
+        self.manager
+            .pending_elicitations()
+            .await
+            .into_iter()
+            .map(PendingUserInputRequest::from)
+            .collect()
     }
 
     pub(super) async fn resolve_approval(
         &self,
         approval_id: &str,
-        decision: &Value,
+        decision: &str,
     ) -> Result<Option<PendingApproval>, String> {
-        if let Some(codex) = self.codex_backend() {
-            if let Some(approval) = codex.resolve_approval(approval_id, decision).await? {
-                return Ok(Some(approval));
-            }
+        let Some(pending) = self
+            .manager
+            .pending_permissions()
+            .await
+            .into_iter()
+            .find(|entry| entry.request_id == approval_id)
+        else {
+            return Ok(None);
+        };
+        if decision == "cancel" {
+            self.manager
+                .cancel_permission(&pending.thread_id, approval_id)
+                .await
+                .map_err(|error| error.to_string())?;
+        } else {
+            self.manager
+                .resolve_permission(&pending.thread_id, approval_id, decision)
+                .await
+                .map_err(|error| error.to_string())?;
         }
-
-        if let Some(opencode) = &self.opencode {
-            if let Some(approval) = opencode.resolve_approval(approval_id, decision).await? {
-                return Ok(Some(approval));
-            }
-        }
-
-        if let Some(cursor) = self.cursor_backend() {
-            if let Some(approval) = cursor.resolve_approval(approval_id, decision).await? {
-                return Ok(Some(approval));
-            }
-        }
-
-        Ok(None)
+        Ok(Some(pending.into()))
     }
 
     pub(super) async fn resolve_user_input(
         &self,
         request_id: &str,
-        answers: &HashMap<String, UserInputAnswerPayload>,
+        answers: &HashMap<String, Value>,
+        action: Option<&str>,
     ) -> Result<Option<PendingUserInputRequest>, String> {
-        if let Some(codex) = self.codex_backend() {
-            if let Some(request) = codex.resolve_user_input(request_id, answers).await? {
-                return Ok(Some(request));
-            }
-        }
-
-        if let Some(opencode) = &self.opencode {
-            if let Some(request) = opencode.resolve_user_input(request_id, answers).await? {
-                return Ok(Some(request));
-            }
-        }
-
-        if let Some(cursor) = self.cursor_backend() {
-            if let Some(request) = cursor.resolve_user_input(request_id, answers).await? {
-                return Ok(Some(request));
-            }
-        }
-
-        Ok(None)
-    }
-
-    pub(super) async fn send_client_result(
-        &self,
-        client_id: u64,
-        client_request_id: Value,
-        result: Value,
-    ) {
-        self.send_client_result_error(client_id, client_request_id, Ok(result))
-            .await;
-    }
-
-    pub(super) async fn send_client_result_error(
-        &self,
-        client_id: u64,
-        client_request_id: Value,
-        result: Result<Value, String>,
-    ) {
-        let payload = match result {
-            Ok(result) => json!({
-                "id": client_request_id,
-                "result": result,
-            }),
-            Err(error) => json!({
-                "id": client_request_id,
-                "error": {
-                    "code": -32000,
-                    "message": error,
-                }
-            }),
+        let Some(pending) = self
+            .manager
+            .pending_elicitations()
+            .await
+            .into_iter()
+            .find(|entry| entry.request_id == request_id)
+        else {
+            return Ok(None);
         };
-        if let Some(codex) = self.codex_backend() {
-            codex.hub.send_json(client_id, payload).await;
-        } else if let Some(opencode) = &self.opencode {
-            opencode.hub.send_json(client_id, payload).await;
-        } else if let Some(cursor) = self.cursor_backend() {
-            cursor.hub.send_json(client_id, payload).await;
+        let thread_id = pending.thread_id.as_str();
+        match action.unwrap_or("submit") {
+            "decline" => {
+                self.manager
+                    .decline_elicitation(thread_id, request_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                return Ok(Some(pending.into()));
+            }
+            "cancel" => {
+                self.manager
+                    .cancel_elicitation(thread_id, request_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                return Ok(Some(pending.into()));
+            }
+            "submit" => {}
+            _ => return Err("invalid elicitation action".to_string()),
+        }
+        let mut values = BTreeMap::new();
+        for field in &pending.fields {
+            let Some(answer) = answers.get(&field.name) else {
+                if field.required {
+                    return Err(format!("missing required answer: {}", field.name));
+                }
+                continue;
+            };
+            values.insert(field.name.clone(), elicitation_value(field.kind, answer)?);
+        }
+        self.manager
+            .accept_elicitation(thread_id, request_id, values)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(Some(pending.into()))
+    }
+}
+
+impl QueueRuntimeDispatcher for RuntimeBackend {
+    fn read_snapshot<'a>(
+        &'a self,
+        thread_id: &'a str,
+    ) -> BoxFuture<'a, Result<QueueRuntimeSnapshot, String>> {
+        Box::pin(async move {
+            let session = self.session_snapshot(thread_id).await?;
+            let pending_approval_ids = self
+                .list_pending_approvals()
+                .await
+                .into_iter()
+                .filter(|entry| entry.thread_id == thread_id)
+                .map(|entry| entry.request_id)
+                .collect();
+            let pending_user_input_ids = self
+                .list_pending_user_inputs()
+                .await
+                .into_iter()
+                .filter(|entry| entry.thread_id == thread_id)
+                .map(|entry| entry.request_id)
+                .collect();
+            Ok(QueueRuntimeSnapshot {
+                session,
+                pending_approval_ids,
+                pending_user_input_ids,
+            })
+        })
+    }
+
+    fn supports_steer(&self, thread_id: &str) -> Result<bool, String> {
+        RuntimeBackend::supports_steer(self, thread_id)
+    }
+
+    fn prepare_steer<'a>(&'a self, thread_id: &'a str) -> BoxFuture<'a, Result<u64, String>> {
+        Box::pin(RuntimeBackend::prepare_steer(self, thread_id))
+    }
+
+    fn verify_steer_epoch<'a>(
+        &'a self,
+        thread_id: &'a str,
+        epoch: u64,
+    ) -> BoxFuture<'a, Result<bool, String>> {
+        Box::pin(RuntimeBackend::verify_steer_epoch(self, thread_id, epoch))
+    }
+
+    fn steer<'a>(
+        &'a self,
+        thread_id: &'a str,
+        expected_run_id: String,
+        expected_source_turn_id: String,
+        prompt_generation: u64,
+        interaction_epoch: u64,
+        prompt: Vec<ContentBlock>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(RuntimeBackend::steer(
+            self,
+            thread_id,
+            expected_run_id,
+            expected_source_turn_id,
+            prompt_generation,
+            interaction_epoch,
+            prompt,
+        ))
+    }
+
+    fn turn_start<'a>(
+        &'a self,
+        thread_id: &'a str,
+        turn_start: &'a Value,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            let mut params = turn_start.clone();
+            let params_object = params
+                .as_object_mut()
+                .ok_or_else(|| "turnStart payload must be an object".to_string())?;
+            params_object.insert("threadId".to_string(), Value::String(thread_id.to_string()));
+            let response = self
+                .request_internal("turn/start", Some(Value::Object(params_object.clone())))
+                .await?;
+            read_string(
+                response
+                    .as_object()
+                    .and_then(|object| object.get("turn"))
+                    .and_then(Value::as_object)
+                    .and_then(|turn| turn.get("id")),
+            )
+            .ok_or_else(|| "turn/start did not return turn id".to_string())
+        })
+    }
+}
+
+fn elicitation_value(
+    kind: ElicitationFieldKind,
+    answer: &Value,
+) -> Result<ElicitationContentValue, String> {
+    match kind {
+        ElicitationFieldKind::String => answer
+            .as_str()
+            .map(|value| ElicitationContentValue::String(value.to_string()))
+            .ok_or_else(|| "answer must be a string".to_string()),
+        ElicitationFieldKind::Integer => answer
+            .as_i64()
+            .map(ElicitationContentValue::Integer)
+            .ok_or_else(|| "answer must be an integer".to_string()),
+        ElicitationFieldKind::Number => answer
+            .as_f64()
+            .map(ElicitationContentValue::Number)
+            .ok_or_else(|| "answer must be a number".to_string()),
+        ElicitationFieldKind::Boolean => answer
+            .as_bool()
+            .map(ElicitationContentValue::Boolean)
+            .ok_or_else(|| "answer must be a boolean".to_string()),
+        ElicitationFieldKind::StringArray => answer
+            .as_array()
+            .and_then(|values| {
+                values
+                    .iter()
+                    .map(|value| value.as_str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .map(ElicitationContentValue::StringArray)
+            .ok_or_else(|| "answer must be a string array".to_string()),
+        ElicitationFieldKind::Unsupported => Err("elicitation field is unsupported".to_string()),
+    }
+}
+
+fn required_string(params: &Value, name: &str) -> Result<String, String> {
+    read_string(params.get(name))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{name} must not be empty"))
+}
+
+fn session_to_thread_value(session: crate::acp::manager::ManagedSession) -> Result<Value, String> {
+    let snapshot = crate::acp::snapshot::BridgeThreadSnapshot::from(session.snapshot);
+    Ok(json!({
+        "id": session.thread_id,
+        "agentId": session.agent_id,
+        "cwd": session.cwd,
+        "name": snapshot.session.title,
+        "acpSnapshot": snapshot,
+    }))
+}
+
+pub(super) fn bridge_prompt(params: &Value) -> Result<Vec<ContentBlock>, String> {
+    let input = params
+        .get("input")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "input must be an array".to_string())?;
+    let mut prompt = Vec::with_capacity(input.len());
+    for block in input {
+        if let Some(text) = block.as_str() {
+            prompt.push(ContentBlock::from(text));
+            continue;
+        }
+        if let Ok(content) = serde_json::from_value::<ContentBlock>(block.clone()) {
+            prompt.push(content);
+            continue;
+        }
+        let block_type = block.get("type").and_then(Value::as_str);
+        match block_type {
+            Some("text") => {
+                let text = block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "text input block requires text".to_string())?;
+                prompt.push(ContentBlock::from(text));
+            }
+            Some("mention") => {
+                let path = block
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .filter(|path| !path.trim().is_empty())
+                    .ok_or_else(|| "mention input block requires path".to_string())?;
+                let name = block
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or(path);
+                prompt.push(ContentBlock::ResourceLink(ResourceLink::new(name, path)));
+            }
+            Some("localImage") => {
+                let path = block
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .filter(|path| !path.trim().is_empty())
+                    .ok_or_else(|| "localImage input block requires path".to_string())?;
+                let name = Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(path);
+                let mime_type = match Path::new(path)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .as_deref()
+                {
+                    Some("jpg" | "jpeg") => Some("image/jpeg"),
+                    Some("png") => Some("image/png"),
+                    Some("gif") => Some("image/gif"),
+                    Some("webp") => Some("image/webp"),
+                    _ => None,
+                };
+                let mut resource = ResourceLink::new(name, path);
+                if let Some(mime_type) = mime_type {
+                    resource = resource.mime_type(mime_type.to_string());
+                }
+                prompt.push(ContentBlock::ResourceLink(resource));
+            }
+            Some(other) => return Err(format!("unsupported input block type: {other}")),
+            None => return Err("input block requires type".to_string()),
         }
     }
-}
-
-pub(super) fn dead_backend_snapshot(error: &str) -> BackendRuntimeSnapshot {
-    BackendRuntimeSnapshot {
-        state: BackendLifecycleState::Dead,
-        restart_count: 0,
-        last_error: Some(error.to_string()),
+    if prompt.is_empty() {
+        return Err("ACP prompt requires at least one content block".to_string());
     }
-}
-
-pub(super) fn configure_managed_child_command(command: &mut Command) {
-    command.kill_on_drop(true);
-    #[cfg(unix)]
-    command.process_group(0);
-}
-
-pub(super) async fn terminate_managed_child(pid: u32, label: &str) {
-    #[cfg(unix)]
-    {
-        terminate_process_group_unix(pid, label).await;
-        return;
-    }
-
-    #[cfg(windows)]
-    {
-        terminate_process_tree_windows(pid, label).await;
-        return;
-    }
-
-    #[allow(unreachable_code)]
-    let _ = (pid, label);
+    Ok(prompt)
 }
 
 #[cfg(unix)]
@@ -773,7 +835,6 @@ pub(super) async fn wait_for_shutdown_signal() -> &'static str {
         .expect("failed to install SIGINT handler");
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("failed to install SIGTERM handler");
-
     tokio::select! {
         _ = sigint.recv() => "SIGINT",
         _ = sigterm.recv() => "SIGTERM",
@@ -786,49 +847,142 @@ pub(super) async fn wait_for_shutdown_signal() -> &'static str {
     "Ctrl+C"
 }
 
-#[cfg(unix)]
-pub(super) async fn terminate_process_group_unix(pid: u32, label: &str) {
-    let process_group = pid as i32;
-    if process_group <= 0 {
-        return;
-    }
+#[cfg(test)]
+mod client_request_tests {
+    use super::*;
+    use tokio::{
+        sync::{oneshot, Semaphore},
+        time::{timeout, Duration},
+    };
 
-    let terminate_result = unsafe { libc::killpg(process_group, libc::SIGTERM) };
-    if terminate_result != 0 {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ESRCH) {
-            eprintln!("failed to terminate {label} process group {process_group}: {error}");
+    #[tokio::test]
+    async fn disconnect_cancels_blocked_permit_and_acp_futures_and_cleans_map() {
+        let tracker = Arc::new(ClientRequestTracker::default());
+        tracker.register_client(7);
+        let semaphore = Arc::new(Semaphore::new(0));
+        let permit_wait = {
+            let tracker = tracker.clone();
+            let semaphore = semaphore.clone();
+            tokio::spawn(async move {
+                tracker
+                    .run(7, async move { semaphore.acquire_owned().await })
+                    .await
+            })
+        };
+        let (_acp_tx, acp_rx) = oneshot::channel::<()>();
+        let acp_wait = {
+            let tracker = tracker.clone();
+            tokio::spawn(async move { tracker.run(7, acp_rx).await })
+        };
+        while tracker.request_count() != 2 {
+            tokio::task::yield_now().await;
         }
-        return;
+
+        tracker.cancel_client(7);
+        assert_eq!(
+            timeout(Duration::from_secs(1), permit_wait)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err(),
+            "client request cancelled"
+        );
+        assert_eq!(
+            timeout(Duration::from_secs(1), acp_wait)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err(),
+            "client request cancelled"
+        );
+        assert_eq!(tracker.request_count(), 0);
+        assert_eq!(tracker.run(7, async {}).await, Err("client disconnected"));
     }
 
-    tokio::time::sleep(Duration::from_millis(400)).await;
-
-    let kill_result = unsafe { libc::killpg(process_group, 0) };
-    if kill_result == 0 {
-        let force_result = unsafe { libc::killpg(process_group, libc::SIGKILL) };
-        if force_result != 0 {
-            let error = std::io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                eprintln!("failed to force-kill {label} process group {process_group}: {error}");
+    #[tokio::test]
+    async fn tracker_rejects_capacity_and_completes_after_capacity_is_released() {
+        let tracker = ClientRequestTracker::default();
+        tracker.register_client(9);
+        {
+            let mut registry = tracker
+                .registry
+                .lock()
+                .expect("client request registry lock");
+            for request_id in 0..MAX_TRACKED_CLIENT_REQUESTS as u64 {
+                registry.requests.insert(
+                    request_id,
+                    ClientRequestOwner {
+                        client_id: 9,
+                        cancellation: RequestCancellation::default(),
+                    },
+                );
             }
         }
+        assert_eq!(
+            tracker.run(9, async { 1 }).await,
+            Err("client request tracking capacity reached")
+        );
+
+        tracker
+            .registry
+            .lock()
+            .expect("client request registry lock")
+            .requests
+            .clear();
+        assert_eq!(tracker.run(9, async { 2 }).await, Ok(2));
+        assert_eq!(tracker.request_count(), 0);
+
+        tracker.cancel_client(9);
+        tracker.cancel_client(999);
+        assert_eq!(
+            tracker.run(9, async { 3 }).await,
+            Err("client disconnected")
+        );
     }
-}
 
-#[cfg(windows)]
-pub(super) async fn terminate_process_tree_windows(pid: u32, label: &str) {
-    let status = Command::new("taskkill")
-        .arg("/PID")
-        .arg(pid.to_string())
-        .arg("/T")
-        .arg("/F")
-        .status()
-        .await;
+    #[tokio::test]
+    async fn disconnect_is_owner_scoped_and_completion_races_cleanup_once() {
+        let tracker = Arc::new(ClientRequestTracker::default());
+        tracker.register_client(1);
+        tracker.register_client(2);
+        let (one_tx, one_rx) = oneshot::channel::<u8>();
+        let (two_tx, two_rx) = oneshot::channel::<u8>();
+        let one = {
+            let tracker = tracker.clone();
+            tokio::spawn(async move { tracker.run(1, one_rx).await })
+        };
+        let two = {
+            let tracker = tracker.clone();
+            tokio::spawn(async move { tracker.run(2, two_rx).await })
+        };
+        while tracker.request_count() != 2 {
+            tokio::task::yield_now().await;
+        }
+        tracker.cancel_client(1);
+        two_tx.send(2).unwrap();
+        assert_eq!(one.await.unwrap(), Err("client request cancelled"));
+        assert_eq!(two.await.unwrap().unwrap().unwrap(), 2);
+        drop(one_tx);
+        assert_eq!(tracker.request_count(), 0);
 
-    match status {
-        Ok(result) if result.success() => {}
-        Ok(result) => eprintln!("failed to terminate {label} process tree {pid}: {result}"),
-        Err(error) => eprintln!("failed to terminate {label} process tree {pid}: {error}"),
+        for client_id in 10..110 {
+            tracker.register_client(client_id);
+            let (complete_tx, complete_rx) = oneshot::channel::<()>();
+            let request = {
+                let tracker = tracker.clone();
+                tokio::spawn(async move { tracker.run(client_id, complete_rx).await })
+            };
+            while tracker.request_count() != 1 {
+                tokio::task::yield_now().await;
+            }
+            let _ = complete_tx.send(());
+            tracker.cancel_client(client_id);
+            let result = request.await.unwrap();
+            assert!(matches!(
+                result,
+                Ok(Ok(())) | Err("client request cancelled")
+            ));
+            assert_eq!(tracker.request_count(), 0);
+        }
     }
 }

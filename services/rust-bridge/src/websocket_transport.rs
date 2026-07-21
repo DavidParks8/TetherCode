@@ -45,6 +45,7 @@ pub(super) async fn handle_socket(
         .hub
         .add_client_with_metadata(tx, client_metadata)
         .await;
+    state.backend.register_client(client_id);
 
     let mut writer_task = tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
@@ -158,6 +159,7 @@ pub(super) async fn handle_socket(
         }
     }
 
+    cancel_client_thread_list_streams(&state, client_id).await;
     state.hub.remove_client(client_id).await;
     state.backend.cancel_client_requests(client_id).await;
     state.preview.revoke_owner(client_id).await;
@@ -337,10 +339,6 @@ pub(super) async fn handle_bridge_method(
             Ok(json!({ "ok": true, "removed": removed }))
         }
         "bridge/push/list" => Ok(json!({ "devices": state.push.list().await })),
-        "bridge/cursor/credentials/read" => {
-            let status = read_cursor_credential_status(state).await?;
-            serde_json::to_value(status).map_err(|error| BridgeError::server(&error.to_string()))
-        }
         "bridge/browser/session/create" => {
             let request: BrowserPreviewCreateRequest =
                 serde_json::from_value(params.unwrap_or_else(|| json!({})))
@@ -372,23 +370,6 @@ pub(super) async fn handle_bridge_method(
             let result = state.preview.discover_targets().await;
             serde_json::to_value(result).map_err(|error| BridgeError::server(&error.to_string()))
         }
-        "bridge/codex/auth/callback/forward" => {
-            let request: CodexAuthCallbackForwardRequest =
-                serde_json::from_value(params.unwrap_or_else(|| json!({})))
-                    .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
-            forward_codex_auth_callback(state, &request.callback_url).await
-        }
-        "bridge/codex/app-server/restart" => {
-            state
-                .backend
-                .restart_codex_app_server(&state.config, state.hub.clone())
-                .await
-                .map_err(|error| BridgeError::server(&error))?;
-            Ok(json!({
-                "ok": true,
-                "message": "Codex app-server restarted."
-            }))
-        }
         "bridge/update/start" => {
             let request: BridgeUpdateStartRequest =
                 serde_json::from_value(params.unwrap_or_else(|| json!({})))
@@ -416,19 +397,21 @@ pub(super) async fn handle_bridge_method(
                 .limit
                 .unwrap_or(200)
                 .clamp(1, NOTIFICATION_REPLAY_MAX_LIMIT);
-            let (events, has_more, returned_bytes) =
-                state.hub.replay_since(request.after_event_id, limit).await;
+            let replay = state
+                .hub
+                .replay_snapshot(request.after_event_id, limit)
+                .await;
 
             Ok(json!({
                 "protocolVersion": BRIDGE_PROTOCOL_VERSION,
                 "streamId": state.hub.stream_id(),
-                "events": events,
-                "hasMore": has_more,
-                "truncatedByBytes": has_more && events.len() < limit,
-                "returnedBytes": returned_bytes,
+                "events": replay.events,
+                "hasMore": replay.has_more,
+                "truncatedByBytes": replay.has_more && replay.events.len() < limit,
+                "returnedBytes": replay.returned_bytes,
                 "maxBytes": REPLAY_RESPONSE_MAX_BYTES,
-                "earliestEventId": state.hub.earliest_event_id().await,
-                "latestEventId": state.hub.latest_event_id(),
+                "earliestEventId": replay.earliest_event_id,
+                "latestEventId": replay.latest_event_id,
             }))
         }
         "bridge/ui/present" | "bridge/ui/update" => {
@@ -548,15 +531,11 @@ pub(super) async fn handle_bridge_method(
                     .ok_or_else(|| {
                         BridgeError::invalid_params("threadStart payload is required")
                     })?;
-            let target_engine = state
-                .backend
-                .route_engine_for_method("thread/start", Some(&request.thread_start));
             let started = state
                 .backend
-                .request_internal("thread/start", Some(request.thread_start))
+                .request_for_client(client_id, "thread/start", Some(request.thread_start))
                 .await
                 .map_err(|error| BridgeError::server(&error))?;
-            let started = normalize_forwarded_result("thread/start", started, target_engine);
             let response = BridgeThreadCreateResponse {
                 submission_id: request.submission_id.clone(),
                 thread: started
@@ -906,6 +885,10 @@ pub(super) async fn handle_bridge_method(
             let list = state.backend.list_pending_approvals().await;
             serde_json::to_value(list).map_err(|error| BridgeError::server(&error.to_string()))
         }
+        "bridge/userInput/list" => {
+            let list = state.backend.list_pending_user_inputs().await;
+            serde_json::to_value(list).map_err(|error| BridgeError::server(&error.to_string()))
+        }
         "bridge/approvals/resolve" => {
             let mut request: ResolveApprovalRequest =
                 serde_json::from_value(params.unwrap_or_else(|| json!({})))
@@ -917,7 +900,7 @@ pub(super) async fn handle_bridge_method(
                 ));
             }
 
-            if !is_valid_approval_decision(&request.decision) {
+            if request.decision.trim().is_empty() {
                 return Err(BridgeError::invalid_params(
                     "decision must be one of: accept/approved, acceptForSession/approved_for_session, decline/denied, cancel/abort, or an execpolicy amendment object",
                 ));
@@ -931,9 +914,15 @@ pub(super) async fn handle_bridge_method(
                 .get(&request.resolution_id)
                 .cloned()
             {
-                if read_string(result.get("approval").and_then(|value| value.get("id"))).as_deref()
+                if read_string(
+                    result
+                        .get("approval")
+                        .and_then(|value| value.get("requestId")),
+                )
+                .as_deref()
                     != Some(request.id.as_str())
-                    || result.get("decision") != Some(&request.decision)
+                    || result.get("decision").and_then(Value::as_str)
+                        != Some(request.decision.as_str())
                 {
                     return Err(BridgeError::invalid_params(
                         "resolutionId is already bound to another approval decision",
@@ -977,21 +966,17 @@ pub(super) async fn handle_bridge_method(
                 serde_json::from_value(params.unwrap_or_else(|| json!({})))
                     .map_err(|error| BridgeError::invalid_params(&error.to_string()))?;
 
-            if request.answers.is_empty() {
+            if request.action.as_deref().unwrap_or("submit") == "submit"
+                && request.answers.is_empty()
+            {
                 return Err(BridgeError::invalid_params(
                     "answers must contain at least one question response",
                 ));
             }
 
-            if !is_valid_user_input_answers(&request.answers) {
-                return Err(BridgeError::invalid_params(
-                    "answers must map question ids to non-empty answers arrays",
-                ));
-            }
-
             let resolved = state
                 .backend
-                .resolve_user_input(&request.id, &request.answers)
+                .resolve_user_input(&request.id, &request.answers, request.action.as_deref())
                 .await
                 .map_err(|error| BridgeError::server(&error))?;
 
@@ -1014,50 +999,6 @@ pub(super) async fn handle_bridge_method(
     }
 }
 
-pub(super) async fn forward_codex_auth_callback(
-    state: &Arc<AppState>,
-    callback_url: &str,
-) -> Result<Value, BridgeError> {
-    let callback = Url::parse(callback_url)
-        .map_err(|error| BridgeError::invalid_params(&format!("invalid callbackUrl: {error}")))?;
-    if callback.scheme() != "http"
-        || !matches!(callback.host_str(), Some("localhost") | Some("127.0.0.1"))
-        || callback.port_or_known_default() != Some(1455)
-        || callback.path() != "/auth/callback"
-    {
-        return Err(BridgeError::invalid_params(
-            "callbackUrl must be the Codex loopback auth callback",
-        ));
-    }
-
-    let mut upstream = Url::parse("http://127.0.0.1:1455/auth/callback")
-        .map_err(|error| BridgeError::server(&format!("invalid Codex callback URL: {error}")))?;
-    upstream.set_query(callback.query());
-
-    let response = state
-        .preview
-        .http
-        .get(upstream)
-        .send()
-        .await
-        .map_err(|error| {
-            BridgeError::server(&format!("failed to forward Codex auth callback: {error}"))
-        })?;
-    let status = response.status();
-    if status.as_u16() >= 400 {
-        let body = response.text().await.unwrap_or_default();
-        return Err(BridgeError::server(&format!(
-            "Codex auth callback returned HTTP {status}: {}",
-            body.trim().chars().take(300).collect::<String>()
-        )));
-    }
-
-    Ok(json!({
-        "forwarded": true,
-        "status": status.as_u16(),
-    }))
-}
-
 pub(super) async fn start_thread_list_stream(
     state: &Arc<AppState>,
     client_id: u64,
@@ -1072,12 +1013,12 @@ pub(super) async fn start_thread_list_stream(
         .unwrap_or(THREAD_LIST_STREAM_DEFAULT_DELAY_MS)
         .min(THREAD_LIST_STREAM_MAX_DELAY_MS);
     let include_sub_agents = request.include_sub_agents.unwrap_or(false);
-    let cancellation = Arc::new(AtomicBool::new(false));
+    let cancellation = Arc::new(ThreadListStreamCancellation::default());
 
     {
         let mut streams = state.thread_list_streams.lock().await;
         if let Some(previous) = streams.insert(stream_key.clone(), cancellation.clone()) {
-            previous.store(true, Ordering::Relaxed);
+            previous.cancel();
         }
     }
 
@@ -1121,7 +1062,7 @@ pub(super) async fn cancel_thread_list_stream(
         streams
             .remove(&stream_key)
             .map(|cancellation| {
-                cancellation.store(true, Ordering::Relaxed);
+                cancellation.cancel();
                 true
             })
             .unwrap_or(false)
@@ -1133,6 +1074,59 @@ pub(super) async fn cancel_thread_list_stream(
     }))
 }
 
+#[derive(Debug, Default)]
+pub(super) struct ThreadListStreamCancellation {
+    cancelled: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl ThreadListStreamCancellation {
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        let notified = self.notify.notified();
+        if self.is_cancelled() {
+            return;
+        }
+        notified.await;
+    }
+}
+
+pub(super) async fn cancel_client_thread_list_streams(state: &Arc<AppState>, client_id: u64) {
+    let owned = {
+        let mut streams = state.thread_list_streams.lock().await;
+        take_client_thread_list_streams(&mut streams, client_id)
+    };
+    for cancellation in owned {
+        cancellation.cancel();
+    }
+}
+
+fn take_client_thread_list_streams(
+    streams: &mut HashMap<String, Arc<ThreadListStreamCancellation>>,
+    client_id: u64,
+) -> Vec<Arc<ThreadListStreamCancellation>> {
+    let prefix = format!("{client_id}:");
+    let keys = streams
+        .keys()
+        .filter(|key| key.starts_with(&prefix))
+        .cloned()
+        .collect::<Vec<_>>();
+    keys.into_iter()
+        .filter_map(|key| streams.remove(&key))
+        .collect()
+}
+
 pub(super) struct ThreadListStreamTask {
     pub(super) state: Arc<AppState>,
     pub(super) client_id: u64,
@@ -1141,7 +1135,7 @@ pub(super) struct ThreadListStreamTask {
     pub(super) include_sub_agents: bool,
     pub(super) limits: Vec<usize>,
     pub(super) delay_ms: u64,
-    pub(super) cancellation: Arc<AtomicBool>,
+    pub(super) cancellation: Arc<ThreadListStreamCancellation>,
 }
 
 pub(super) async fn run_thread_list_stream(task: ThreadListStreamTask) {
@@ -1156,27 +1150,28 @@ pub(super) async fn run_thread_list_stream(task: ThreadListStreamTask) {
         cancellation,
     } = task;
     for (index, limit) in limits.iter().copied().enumerate() {
-        if cancellation.load(Ordering::Relaxed) {
+        if cancellation.is_cancelled() {
             break;
         }
 
         if index > 0 && delay_ms > 0 {
-            sleep(Duration::from_millis(delay_ms)).await;
-            if cancellation.load(Ordering::Relaxed) {
-                break;
+            tokio::select! {
+                _ = sleep(Duration::from_millis(delay_ms)) => {}
+                _ = cancellation.cancelled() => break,
             }
         }
 
         let started_at = Instant::now();
-        let result = state
-            .backend
-            .request_internal(
-                "thread/list",
-                Some(thread_list_stream_request_params(include_sub_agents, limit)),
-            )
-            .await;
+        let request = state.backend.request_internal(
+            "thread/list",
+            Some(thread_list_stream_request_params(include_sub_agents, limit)),
+        );
+        let result = tokio::select! {
+            result = request => result,
+            _ = cancellation.cancelled() => break,
+        };
 
-        if cancellation.load(Ordering::Relaxed) {
+        if cancellation.is_cancelled() {
             break;
         }
 
@@ -1251,31 +1246,10 @@ pub(super) async fn send_thread_list_stream_notification(
 }
 
 pub(super) fn thread_list_stream_request_params(include_sub_agents: bool, limit: usize) -> Value {
-    let source_kinds = if include_sub_agents {
-        json!([
-            "cli",
-            "vscode",
-            "exec",
-            "appServer",
-            "unknown",
-            "subAgent",
-            "subAgentReview",
-            "subAgentCompact",
-            "subAgentThreadSpawn",
-            "subAgentOther",
-        ])
-    } else {
-        json!(["cli", "vscode", "exec", "appServer", "unknown"])
-    };
-
     json!({
         "cursor": Value::Null,
         "limit": limit,
-        "sortKey": "updated_at",
-        "modelProviders": Value::Null,
-        "sourceKinds": source_kinds,
-        "archived": false,
-        "cwd": Value::Null,
+        "includeSubAgents": include_sub_agents,
     })
 }
 
@@ -1313,4 +1287,110 @@ pub(super) fn next_thread_list_stream_id(client_id: u64) -> String {
 
 pub(super) fn thread_list_stream_key(client_id: u64, stream_id: &str) -> String {
     format!("{client_id}:{}", stream_id.trim())
+}
+
+pub(super) fn normalize_forwarded_path_params(
+    params: Option<Value>,
+    path_policy: &PathPolicy,
+) -> Result<Option<Value>, BridgeError> {
+    params
+        .map(|value| normalize_forwarded_value_paths(value, path_policy, path_policy.root()))
+        .transpose()
+}
+
+fn normalize_forwarded_value_paths(
+    value: Value,
+    path_policy: &PathPolicy,
+    inherited_base: &Path,
+) -> Result<Value, BridgeError> {
+    match value {
+        Value::Object(mut object) => {
+            let base = match object.get("cwd").and_then(Value::as_str) {
+                Some(raw) if !raw.trim().is_empty() => {
+                    let cwd = path_policy.resolve_existing_from(
+                        inherited_base,
+                        raw,
+                        PathKind::Directory,
+                    )?;
+                    object.insert("cwd".to_string(), Value::String(path_to_string(&cwd)));
+                    cwd
+                }
+                _ => inherited_base.to_path_buf(),
+            };
+            let input_kind =
+                object
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .and_then(|kind| match kind {
+                        "mention" => Some(PathKind::Any),
+                        "localImage" => Some(PathKind::File),
+                        _ => None,
+                    });
+            if let Some(kind) = input_kind {
+                let raw_path = object
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| BridgeError::invalid_params("input path is required"))?;
+                let path = path_policy.resolve_existing_from(&base, raw_path, kind)?;
+                object.insert("path".to_string(), Value::String(path_to_string(&path)));
+            }
+            object
+                .into_iter()
+                .map(|(key, child)| {
+                    normalize_forwarded_value_paths(child, path_policy, &base)
+                        .map(|child| (key, child))
+                })
+                .collect::<Result<serde_json::Map<String, Value>, BridgeError>>()
+                .map(Value::Object)
+        }
+        Value::Array(values) => values
+            .into_iter()
+            .map(|item| normalize_forwarded_value_paths(item, path_policy, inherited_base))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        other => Ok(other),
+    }
+}
+
+#[cfg(test)]
+mod thread_list_stream_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disconnect_cancels_only_owned_streams_and_wakes_blocked_requests() {
+        let client_one_a = Arc::new(ThreadListStreamCancellation::default());
+        let client_one_b = Arc::new(ThreadListStreamCancellation::default());
+        let client_two = Arc::new(ThreadListStreamCancellation::default());
+        let mut streams = HashMap::from([
+            ("1:a".to_string(), client_one_a.clone()),
+            ("1:b".to_string(), client_one_b.clone()),
+            ("2:a".to_string(), client_two.clone()),
+        ]);
+        let blocked = {
+            let cancellation = client_one_a.clone();
+            tokio::spawn(async move { cancellation.cancelled().await })
+        };
+
+        let owned = take_client_thread_list_streams(&mut streams, 1);
+        assert_eq!(owned.len(), 2);
+        for cancellation in owned {
+            cancellation.cancel();
+        }
+        tokio::time::timeout(Duration::from_secs(1), blocked)
+            .await
+            .expect("blocked request wakes")
+            .expect("waiter completes");
+        assert!(client_one_a.is_cancelled());
+        assert!(client_one_b.is_cancelled());
+        assert!(!client_two.is_cancelled());
+        assert_eq!(streams.len(), 1);
+        assert!(streams.contains_key("2:a"));
+        client_one_b.cancelled().await;
+
+        let remaining = take_client_thread_list_streams(&mut streams, 2);
+        assert_eq!(remaining.len(), 1);
+        remaining[0].cancel();
+        assert!(streams.is_empty());
+        assert!(take_client_thread_list_streams(&mut streams, 99).is_empty());
+    }
 }

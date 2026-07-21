@@ -37,27 +37,16 @@ describe('appStateReducer', () => {
     expect(toolsChanged.settings.approvalMode).toBe('normal');
   });
 
-  it('merges remembered engine settings without replacing other engines', () => {
+  it('remembers agent collaboration settings without replacing other agents', () => {
     const state = appStateReducer(createDefaultAppStateData(), {
       type: 'settings/remember-thread',
-      engine: 'cursor',
-      modelId: 'cursor-small',
-      effort: 'high',
-      serviceTier: 'fast',
-      collaborationMode: 'ask',
+      agentId: 'opencode',
+      collaborationMode: 'plan',
     });
 
-    expect(state.settings.defaultChatEngine).toBe('cursor');
-    expect(state.settings.defaultEngineSettings.cursor).toEqual({
-      modelId: 'cursor-small',
-      effort: 'high',
-      serviceTier: 'fast',
-      collaborationMode: 'ask',
-    });
-    expect(state.settings.defaultEngineSettings.codex).toMatchObject({
-      modelId: null,
-      effort: null,
-    });
+    expect(state.settings.preferredAgentId).toBe('opencode');
+    expect(state.settings.agentSettings.opencode).toEqual({ collaborationMode: 'plan' });
+    expect(state.settings.agentSettings.codex).toBeUndefined();
   });
 
   it('keeps push registration identity immutable per profile', () => {
@@ -154,30 +143,23 @@ describe('appStateReducer', () => {
     expect(edited.push).toBe(state.push);
   });
 
-  it('normalizes remembered settings for each engine', () => {
+  it('normalizes remembered settings for each agent', () => {
     const state = appStateReducer(createDefaultAppStateData(), {
       type: 'settings/remember-thread',
-      engine: 'opencode',
-      modelId: ' ',
-      effort: 'invalid' as never,
-      serviceTier: null,
-      collaborationMode: 'ask',
+      agentId: ' opencode ',
+      collaborationMode: 'ask' as never,
     });
-    expect(state.settings.defaultEngineSettings.opencode).toEqual({
-      modelId: null,
-      effort: null,
-      serviceTier: null,
-      collaborationMode: 'default',
-    });
+    expect(state.settings.agentSettings.opencode).toEqual({ collaborationMode: 'default' });
     const fallback = appStateReducer(state, {
       type: 'settings/remember-thread',
-      engine: 'invalid' as never,
-      modelId: ' model ',
-      effort: 'none',
-      serviceTier: 'fast',
+      agentId: 'codex',
       collaborationMode: 'plan',
     });
-    expect(fallback.settings.defaultChatEngine).toBe('codex');
+    expect(fallback.settings.preferredAgentId).toBe('codex');
+    expect(fallback.settings.agentSettings).toEqual({
+      opencode: { collaborationMode: 'default' },
+      codex: { collaborationMode: 'plan' },
+    });
   });
 
   it('manages push registrations and ignores stale updates', () => {
@@ -296,7 +278,7 @@ describe('app-state persistence format', () => {
   it('imports the currently persisted settings and bridge credentials', () => {
     const imported = importLegacyAppState({
       settingsRaw: JSON.stringify({
-        version: 11,
+        version: 13,
         bridgeUrl: 'http://10.0.0.4:8787',
         bridgeToken: 'secret',
         approvalMode: 'normal',

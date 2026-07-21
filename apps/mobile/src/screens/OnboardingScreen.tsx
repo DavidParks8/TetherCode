@@ -8,7 +8,6 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
-  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -37,9 +36,6 @@ import {
   useAccessibilityAnnouncement,
   useModalAccessibilityFocus,
 } from '../accessibility';
-import codexMarkPng from '../../assets/brand/engine-codex.png';
-import cursorMarkPng from '../../assets/brand/engine-cursor.png';
-import opencodeMarkPng from '../../assets/brand/engine-opencode.png';
 
 export type OnboardingMode = 'initial' | 'edit' | 'add' | 'reconnect';
 
@@ -78,13 +74,11 @@ const SETUP_STAGES = [
     title: 'Verify',
   },
 ] as const;
-const INTRO_ENGINE_MARKS = [
-  { label: 'Codex', logo: codexMarkPng },
-  { label: 'Cursor', logo: cursorMarkPng },
-  { label: 'OpenCode', logo: opencodeMarkPng },
+const INTRO_AGENT_MARKS = [
+  { label: 'ACP agents' },
 ] as const;
-const INTRO_ENGINE_ROTATION_MS = 1450;
-const INTRO_ENGINE_FADE_MS = 120;
+const INTRO_AGENT_ROTATION_MS = 1450;
+const INTRO_AGENT_FADE_MS = 120;
 const CONNECTION_CHECK_TIMEOUT_MS = 7_000;
 
 export function OnboardingScreen({
@@ -110,10 +104,10 @@ export function OnboardingScreen({
   const [scannerVisible, setScannerVisible] = useState(false);
   const [scannerError, setScannerError] = useState<string | null>(null);
   const [scannerLocked, setScannerLocked] = useState(false);
-  const [introEngineIndex, setIntroEngineIndex] = useState(0);
+  const [introAgentIndex, setIntroAgentIndex] = useState(0);
   const introHeroMotion = useRef(new Animated.Value(mode === 'initial' ? 0 : 1)).current;
   const introActionsMotion = useRef(new Animated.Value(mode === 'initial' ? 0 : 1)).current;
-  const introEngineMotion = useRef(new Animated.Value(1)).current;
+  const introAgentMotion = useRef(new Animated.Value(1)).current;
   const styles = useMemo(() => createStyles(theme), [theme]);
   const onboardingBackgroundGradient = theme.isDark
     ? (['#020304', '#05070C', '#0A0E16'] as const)
@@ -198,26 +192,26 @@ export function OnboardingScreen({
     }),
     [introActionsMotion]
   );
-  const introEngineAnimatedStyle = useMemo(
+  const introAgentAnimatedStyle = useMemo(
     () => ({
-      opacity: introEngineMotion,
+      opacity: introAgentMotion,
       transform: [
         {
-          translateY: introEngineMotion.interpolate({
+          translateY: introAgentMotion.interpolate({
             inputRange: [0, 1],
             outputRange: [6, 0],
           }),
         },
       ],
     }),
-    [introEngineMotion]
+    [introAgentMotion]
   );
 
   useEffect(() => {
     if (!showIntroStep) {
-      introEngineMotion.stopAnimation();
-      introEngineMotion.setValue(1);
-      setIntroEngineIndex(0);
+      introAgentMotion.stopAnimation();
+      introAgentMotion.setValue(1);
+      setIntroAgentIndex(0);
       return;
     }
 
@@ -225,19 +219,19 @@ export function OnboardingScreen({
     let timer: ReturnType<typeof setTimeout> | null = null;
     const scheduleNext = () => {
       timer = setTimeout(() => {
-        Animated.timing(introEngineMotion, {
+        Animated.timing(introAgentMotion, {
           toValue: 0,
-          duration: INTRO_ENGINE_FADE_MS,
+          duration: INTRO_AGENT_FADE_MS,
           easing: Easing.in(Easing.cubic),
           useNativeDriver: true,
         }).start(({ finished }) => {
           if (!active || !finished) {
             return;
           }
-          setIntroEngineIndex((previous) => (previous + 1) % INTRO_ENGINE_MARKS.length);
-          Animated.timing(introEngineMotion, {
+          setIntroAgentIndex((previous) => (previous + 1) % INTRO_AGENT_MARKS.length);
+          Animated.timing(introAgentMotion, {
             toValue: 1,
-            duration: INTRO_ENGINE_FADE_MS + 60,
+            duration: INTRO_AGENT_FADE_MS + 60,
             easing: Easing.out(Easing.cubic),
             useNativeDriver: true,
           }).start(({ finished: fadeInFinished }) => {
@@ -246,10 +240,10 @@ export function OnboardingScreen({
             }
           });
         });
-      }, INTRO_ENGINE_ROTATION_MS);
+      }, INTRO_AGENT_ROTATION_MS);
     };
 
-    introEngineMotion.setValue(1);
+    introAgentMotion.setValue(1);
     scheduleNext();
 
     return () => {
@@ -257,11 +251,11 @@ export function OnboardingScreen({
       if (timer) {
         clearTimeout(timer);
       }
-      introEngineMotion.stopAnimation();
+      introAgentMotion.stopAnimation();
     };
-  }, [introEngineMotion, showIntroStep]);
+  }, [introAgentMotion, showIntroStep]);
 
-  const introEngineMark = INTRO_ENGINE_MARKS[introEngineIndex];
+  const introAgentMark = INTRO_AGENT_MARKS[introAgentIndex];
   const normalizedBridgeUrl = useMemo(
     () => normalizeBridgeUrlInput(urlInput),
     [urlInput]
@@ -552,51 +546,22 @@ export function OnboardingScreen({
                 <Animated.View style={introHeroAnimatedStyle}>
                   <View style={styles.introHero}>
                     <View style={styles.introHeroArt}>
-                      <View
-                        style={styles.introHeroEngineCloud}
-                        accessibilityLabel="Codex, Cursor, and OpenCode"
-                      >
-                        <View style={[styles.introHeroEngineCard, styles.introHeroEngineCardCodex]}>
-                          <Image
-                            {...decorativeAccessibilityProps}
-                            source={codexMarkPng}
-                            resizeMode="contain"
-                            style={styles.introHeroEngineCardLogo}
-                          />
-                        </View>
-                        <View style={[styles.introHeroEngineCard, styles.introHeroEngineCardCursor]}>
-                          <Image
-                            {...decorativeAccessibilityProps}
-                            source={cursorMarkPng}
-                            resizeMode="contain"
-                            style={styles.introHeroEngineCardLogo}
-                          />
-                        </View>
-                        <View
-                          style={[styles.introHeroEngineCard, styles.introHeroEngineCardOpenCode]}
-                        >
-                          <Image
-                            {...decorativeAccessibilityProps}
-                            source={opencodeMarkPng}
-                            resizeMode="contain"
-                            style={[
-                              styles.introHeroEngineCardLogo,
-                              styles.introHeroEngineCardLogoWide,
-                            ]}
-                          />
+                      <View style={styles.introHeroAgentCloud} accessibilityLabel="ACP agents">
+                        <View style={styles.introHeroAgentCard}>
+                          <Ionicons name="hardware-chip-outline" size={48} color={theme.colors.textPrimary} />
                         </View>
                       </View>
                     </View>
                     <View style={styles.introHeroTitleWrap}>
                       <Animated.View
-                        style={[styles.introHeroEngineWord, introEngineAnimatedStyle]}
+                        style={[styles.introHeroAgentWord, introAgentAnimatedStyle]}
                       >
                         <Text
-                          style={styles.introHeroEngineLabel}
+                          style={styles.introHeroAgentLabel}
                           numberOfLines={1}
                           adjustsFontSizeToFit
                         >
-                          {introEngineMark.label}
+                          {introAgentMark.label}
                         </Text>
                       </Animated.View>
                       <Text
@@ -1280,14 +1245,14 @@ const createStyles = (theme: AppTheme) => {
     alignItems: 'center',
     marginBottom: theme.spacing.sm,
   },
-  introHeroEngineCloud: {
+  introHeroAgentCloud: {
     width: 236,
     height: 158,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
   },
-  introHeroEngineCard: {
+  introHeroAgentCard: {
     position: 'absolute',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1298,7 +1263,7 @@ const createStyles = (theme: AppTheme) => {
       ? '0px 12px 24px rgba(0, 0, 0, 0.22)'
       : '0px 10px 20px rgba(15, 31, 54, 0.10)',
   },
-  introHeroEngineCardCodex: {
+  introHeroAgentCardPrimary: {
     top: 4,
     left: 82,
     width: 72,
@@ -1307,17 +1272,7 @@ const createStyles = (theme: AppTheme) => {
     borderColor: theme.colors.borderHighlight,
     backgroundColor: theme.isDark ? 'rgba(181, 189, 204, 0.16)' : 'rgba(255,255,255,0.86)',
   },
-  introHeroEngineCardCursor: {
-    left: 24,
-    top: 82,
-    width: 66,
-    height: 66,
-    borderRadius: 22,
-    borderColor: theme.isDark ? 'rgba(255,255,255,0.18)' : 'rgba(15, 23, 42, 0.16)',
-    backgroundColor: theme.isDark ? 'rgba(15, 23, 42, 0.96)' : '#111827',
-    transform: [{ rotate: '-8deg' }],
-  },
-  introHeroEngineCardOpenCode: {
+  introHeroAgentCardSecondary: {
     right: 12,
     top: 88,
     width: 94,
@@ -1325,11 +1280,11 @@ const createStyles = (theme: AppTheme) => {
     borderRadius: 20,
     transform: [{ rotate: '7deg' }],
   },
-  introHeroEngineCardLogo: {
+  introHeroAgentCardLogo: {
     width: 38,
     height: 38,
   },
-  introHeroEngineCardLogoWide: {
+  introHeroAgentCardLogoWide: {
     width: 64,
     height: 36,
   },
@@ -1342,14 +1297,14 @@ const createStyles = (theme: AppTheme) => {
     justifyContent: 'center',
     gap: theme.spacing.xs,
   },
-  introHeroEngineWord: {
+  introHeroAgentWord: {
     minWidth: 160,
     maxWidth: 260,
     height: 42,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  introHeroEngineLabel: {
+  introHeroAgentLabel: {
     ...theme.typography.largeTitle,
     flexShrink: 1,
     fontSize: 28,
