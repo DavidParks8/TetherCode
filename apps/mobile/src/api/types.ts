@@ -97,6 +97,7 @@ export interface CreateChatRequest {
   serviceTier?: ServiceTier;
   approvalPolicy?: ApprovalPolicy;
   collaborationMode?: CollaborationMode;
+  agentMode?: string | null;
 }
 
 export interface AcpConfigOptionValue {

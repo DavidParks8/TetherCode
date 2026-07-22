@@ -973,7 +973,9 @@ export class HostBridgeApiClient {
     const requestedCwd = normalizeCwd(body.cwd);
     const requestedModel = normalizeModel(body.model);
     const requestedEffort = normalizeEffort(body.effort);
-    const requestedMode = body.collaborationMode === 'plan' ? 'plan' : 'build';
+    const requestedMode = normalizeAcpMode(body.agentMode) ?? (
+      body.collaborationMode === 'plan' ? 'plan' : 'build'
+    );
     const requestedServiceTier = normalizeServiceTier(body.serviceTier);
     const requestedApprovalPolicy = normalizeApprovalPolicy(body.approvalPolicy) ?? 'untrusted';
     const started = await this.ws.request<AppServerStartResponse>('thread/start', {
@@ -1023,7 +1025,9 @@ export class HostBridgeApiClient {
     const requestedCwd = normalizeCwd(body.cwd);
     const requestedModel = normalizeModel(body.model);
     const requestedEffort = normalizeEffort(body.effort);
-    const requestedMode = body.collaborationMode === 'plan' ? 'plan' : 'build';
+    const requestedMode = normalizeAcpMode(body.agentMode) ?? (
+      body.collaborationMode === 'plan' ? 'plan' : 'build'
+    );
     const requestedServiceTier = normalizeServiceTier(body.serviceTier);
     const requestedApprovalPolicy = normalizeApprovalPolicy(body.approvalPolicy) ?? 'untrusted';
     const started = await this.ws.request<BridgeThreadCreateResponse>('bridge/thread/create', {
@@ -2168,6 +2172,14 @@ function normalizeModel(model: string | null | undefined): string | null {
 
   const trimmed = model.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeAcpMode(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const mode = value.trim();
+  return /^[A-Za-z0-9_-]{1,128}$/.test(mode) ? mode : null;
 }
 
 function readPositiveInteger(value: unknown): number | null {

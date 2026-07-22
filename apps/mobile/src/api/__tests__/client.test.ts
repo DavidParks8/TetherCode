@@ -1020,6 +1020,24 @@ describe('HostBridgeApiClient', () => {
     );
   });
 
+  it('createChat() forwards a custom ACP primary mode to thread/start', async () => {
+    const ws = createWsMock();
+    ws.request.mockResolvedValueOnce({
+      thread: {
+        id: 'thr_reviewer', preview: '', createdAt: 1700000000, updatedAt: 1700000000,
+        status: { type: 'idle' }, turns: [],
+      },
+    });
+
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+    await client.createChat({ agentMode: 'reviewer' });
+
+    expect(ws.request).toHaveBeenCalledWith(
+      'thread/start',
+      expect.objectContaining({ mode: 'reviewer' })
+    );
+  });
+
   it('createChat() forwards selected agent ID to thread/start', async () => {
     const ws = createWsMock();
     ws.request.mockResolvedValueOnce({

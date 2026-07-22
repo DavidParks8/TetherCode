@@ -429,6 +429,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [defaultServiceTier, setDefaultServiceTier] = useState<ServiceTier | null>(null);
     const [selectedCollaborationMode, setSelectedCollaborationMode] =
       useState<CollaborationMode>('default');
+    const [selectedAcpModeId, setSelectedAcpModeId] = useState<string | null>(null);
     const [keyboardVisible, setKeyboardVisible] = useState(false);
     const [androidKeyboardInset, setAndroidKeyboardInset] = useState(0);
     const [composerHeight, setComposerHeight] = useState(0);
@@ -1949,7 +1950,11 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const modelReasoningLabel = `${activeModelLabel} · ${activeEffortLabel}`;
     const collaborationModeLabel = modeConfig?.options?.find(
       (option) => option.value === modeConfig.value
-    )?.name ?? modeConfig?.value ?? formatCollaborationModeLabel(selectedCollaborationMode);
+    )?.name ?? modeConfig?.value ?? (
+      selectedAcpModeId && !['build', 'plan'].includes(selectedAcpModeId)
+        ? selectedAcpModeId
+        : formatCollaborationModeLabel(selectedCollaborationMode)
+    );
     const hasPendingServiceTierChange =
       Boolean(selectedChatId) && appliedServiceTierForSelectedChat !== activeServiceTier;
     const fastModeLabel = hasPendingServiceTierChange
@@ -2007,6 +2012,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           ? rememberedSettings.collaborationMode
           : 'default'
       );
+      setSelectedAcpModeId(null);
       openingChatStartedAtRef.current = 0;
       setOpeningChatId(null);
       setError(null);
@@ -2587,6 +2593,56 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       }
     }, [activeAgentId, api]);
 
+    const configurationSessionRef = useRef<Promise<Chat | null> | null>(null);
+    const ensureModeConfigurationSession = useCallback(async (): Promise<Chat | null> => {
+      if (selectedChatRef.current?.id) {
+        return selectedChatRef.current;
+      }
+      if (configurationSessionRef.current) {
+        return configurationSessionRef.current;
+      }
+      const request = api.createChat({
+        agentId: activeAgentId ?? undefined,
+        cwd: preferredStartCwd ?? undefined,
+        model: activeModelId ?? undefined,
+        effort: selectedEffort ?? undefined,
+        serviceTier: activeServiceTier ?? undefined,
+        approvalPolicy: activeApprovalPolicy,
+        collaborationMode: selectedCollaborationMode,
+        agentMode: selectedAcpModeId,
+      }).then((chat) => {
+        selectedChatIdRef.current = chat.id;
+        selectedChatRef.current = chat;
+        setSelectedChatId(chat.id);
+        setSelectedChat(chat);
+        const models = modelOptionsFromAcpConfig(chat.acpConfig ?? []);
+        if (chat.agentId && models.length > 0) {
+          setModelOptionsByAgent((previous) => ({
+            ...previous,
+            [chat.agentId!]: mergeModelOptions(previous[chat.agentId!] ?? EMPTY_MODEL_OPTIONS, models),
+          }));
+        }
+        return chat;
+      }).catch((err) => {
+        setError((err as Error).message);
+        return null;
+      }).finally(() => {
+        configurationSessionRef.current = null;
+      });
+      configurationSessionRef.current = request;
+      return request;
+    }, [
+      activeAgentId,
+      activeApprovalPolicy,
+      activeModelId,
+      activeServiceTier,
+      api,
+      preferredStartCwd,
+      selectedAcpModeId,
+      selectedCollaborationMode,
+      selectedEffort,
+    ]);
+
     const openModelModal = useCallback(() => {
       setModelModalVisible(true);
       void refreshModelOptions();
@@ -2637,6 +2693,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         }
         try {
           const updated = await api.setThreadConfigOption(selectedChatId, config.id, value);
+          selectedChatRef.current = updated;
           setSelectedChat(updated);
           return updated;
         } catch (err) {
@@ -2728,6 +2785,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       setSelectedModelId(null);
       setSelectedEffort(null);
       setSelectedServiceTier(undefined);
+      setSelectedAcpModeId(null);
       setSelectedCollaborationMode(
         rememberedSettings?.collaborationMode === 'plan'
           ? rememberedSettings.collaborationMode
@@ -2750,7 +2808,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
 
     const openCollaborationModeMenu = useCallback(() => {
       setCollaborationModeMenuVisible(true);
-    }, []);
+      if (!selectedChatId) {
+        void ensureModeConfigurationSession();
+      }
+    }, [ensureModeConfigurationSession, selectedChatId]);
 
     const toggleFastMode = useCallback(() => {
       if (!supportsFastMode) {
@@ -2845,6 +2906,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               return;
             }
           }
+          setSelectedAcpModeId(acpMode);
           setSelectedCollaborationMode(mode);
           setCollaborationModeMenuVisible(false);
           setError(null);
@@ -3115,6 +3177,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             serviceTier: activeServiceTier ?? undefined,
             approvalPolicy: activeApprovalPolicy,
             collaborationMode: selectedCollaborationMode,
+            agentMode: selectedAcpModeId,
           });
           const chatId = appendCommand(created);
           setError(null);
@@ -3551,6 +3614,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 serviceTier: activeServiceTier ?? undefined,
                 approvalPolicy: activeApprovalPolicy,
                 collaborationMode: 'plan',
+                agentMode: selectedAcpModeId,
               }, planSubmission.id);
               createdChatId = created.id;
               if (activeAgentId) onLastUsedThreadSettingsChange?.(
@@ -4463,6 +4527,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             serviceTier: activeServiceTier ?? undefined,
             approvalPolicy: activeApprovalPolicy,
             collaborationMode: selectedCollaborationMode,
+            agentMode: selectedAcpModeId,
           },
           message: (created) => ({
             content,
