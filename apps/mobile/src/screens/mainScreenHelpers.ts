@@ -1442,7 +1442,8 @@ export function normalizeReasoningEffort(
     normalized === 'low' ||
     normalized === 'medium' ||
     normalized === 'high' ||
-    normalized === 'xhigh'
+    normalized === 'xhigh' ||
+    normalized === 'max'
   ) {
     return normalized;
   }
@@ -2032,6 +2033,10 @@ export function isCompletedPlanTurnStatus(value: string | null | undefined): boo
 export function formatReasoningEffort(effort: ReasoningEffort): string {
   if (effort === 'xhigh') {
     return 'X-High';
+  }
+
+  if (effort === 'max') {
+    return 'Max';
   }
 
   if (effort === 'none') {

@@ -158,7 +158,7 @@ describe('ChatTranscriptView continuation', () => {
         <ChatTranscriptView {...baseProps} onLoadEarlier={onLoadEarlier} continuationState={{ loading: false, error: null, exhausted: true, unavailableCount: 0 }} />
       </AppThemeProvider>
     ));
-    expect(findText(tree.root as Queryable, 'Beginning of history')).toBeTruthy();
+    expect(tree.root.findAll((node) => node.children.includes('Beginning of history'))).toHaveLength(0);
 
     act(() => tree.update(
       <AppThemeProvider theme={theme}>

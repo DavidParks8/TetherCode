@@ -58,6 +58,7 @@ pub(crate) fn is_forwarded_method(method: &str) -> bool {
             | "model/list"
             | "review/start"
             | "thread/list"
+            | "thread/name/update"
             | "thread/snapshot/page"
             | "thread/loaded/list"
             | "thread/read"

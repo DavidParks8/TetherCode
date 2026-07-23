@@ -1153,7 +1153,7 @@ describe('CoverageClosure client branches and WS boundary', () => {
     const createWs = createWsMock();
     createWs.request.mockResolvedValue({ thread: { id: 'created' } });
     const createClient = new HostBridgeApiClient({ ws: createWs as unknown as HostBridgeWsClient });
-    for (const effort of ['none', 'minimal', 'low', 'medium', 'xhigh', 'invalid']) {
+    for (const effort of ['none', 'minimal', 'low', 'medium', 'xhigh', 'max', 'invalid']) {
       await createClient.createChat({ message: '', effort: effort as never, serviceTier: effort === 'none' ? 'flex' : undefined });
     }
     expect(createWs.request).toHaveBeenCalledWith('thread/start', expect.objectContaining({ config: { service_tier: 'flex' } }));

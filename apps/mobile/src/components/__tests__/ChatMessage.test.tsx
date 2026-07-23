@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Image, Linking, Modal, ScrollView, StyleSheet, Text } from 'react-native';
+import { ActivityIndicator, Image, Linking, Modal, ScrollView, StyleSheet, Text } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import renderer, {
   act,
@@ -446,6 +446,24 @@ describe('ChatMessage system timeline matrices', () => {
     expect(hasRenderedText(root, 'Workspace title')).toBe(true);
     expect(hasRenderedText(root, 'Open agent chat')).toBe(false);
     act(() => tree.unmount());
+  });
+
+  it('animates a running subagent card and stops after completion', () => {
+    const running = createActivityMessage('subagent-live', SUBAGENT_ACTIVITY_TYPE, {
+      text: '• Sub-agent working\n  Latest: Reading repository',
+      subAgent: { toolCallId: 'task-live', agentStatus: 'running', receiverThreadIds: [] },
+    }, '2026-04-17T00:00:00.000Z');
+    const tree = renderMessage(running);
+    expect(tree.root.findAllByType(ActivityIndicator)).toHaveLength(1);
+
+    const completed = createActivityMessage('subagent-live', SUBAGENT_ACTIVITY_TYPE, {
+      text: '• Sub-agent completed\n  Latest: Returned result',
+      subAgent: { toolCallId: 'task-live', agentStatus: 'completed', receiverThreadIds: [] },
+    }, '2026-04-17T00:00:01.000Z');
+    const completedTree = renderMessage(completed);
+    expect(completedTree.root.findAllByType(ActivityIndicator)).toHaveLength(0);
+    act(() => tree.unmount());
+    act(() => completedTree.unmount());
   });
 
   it('renders collapsed and expanded tool activity groups with error and overflow entries', () => {

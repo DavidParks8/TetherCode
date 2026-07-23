@@ -1086,6 +1086,24 @@ describe('HostBridgeApiClient', () => {
     );
   });
 
+  it('renameChat() updates a session title through the bridge', async () => {
+    const ws = createWsMock();
+    ws.request.mockResolvedValueOnce({
+      thread: {
+        id: 'thr_rename', name: 'Manual title', preview: '', createdAt: 1700000000,
+        updatedAt: 1700000001, status: { type: 'idle' }, turns: [],
+      },
+    });
+    const client = new HostBridgeApiClient({ ws: ws as unknown as HostBridgeWsClient });
+
+    await expect(client.renameChat(' thr_rename ', ' Manual title ')).resolves.toMatchObject({
+      id: 'thr_rename', title: 'Manual title',
+    });
+    expect(ws.request).toHaveBeenCalledWith('thread/name/update', {
+      threadId: 'thr_rename', title: 'Manual title',
+    });
+  });
+
   it('createChat() sends untrusted approval policy when none is selected', async () => {
     const ws = createWsMock();
     ws.request.mockResolvedValueOnce({

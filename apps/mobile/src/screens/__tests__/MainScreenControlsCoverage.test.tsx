@@ -431,8 +431,7 @@ describe('MainScreen control and modal coverage', () => {
     const { tree } = await renderMain({ api, selectedChat: configuredChat });
     const root = rootOf(tree);
 
-    await press(byLabelPrefix(root, 'Model controls, '));
-    await press(pressForText(root, 'Change model'));
+    await press(byLabelPrefix(root, 'Model, '));
     await act(async () => {
       await flush();
       await flush();
@@ -449,11 +448,28 @@ describe('MainScreen control and modal coverage', () => {
     await press(pressForText(root, 'plan'));
     expect(api.setThreadConfigOption).toHaveBeenCalledWith(configuredChat.id, 'mode', 'plan');
 
-    await press(byLabelPrefix(root, 'Model controls, '));
-    await press(pressForText(root, 'Thinking level'));
+    await press(byLabelPrefix(root, 'Thinking level, '));
     await press(pressForText(root, 'High'));
     expect(api.setThreadConfigOption).toHaveBeenCalledWith(configuredChat.id, 'effort', 'high');
 
+    act(() => tree.unmount());
+  });
+
+  it('renames the selected session from the chat header', async () => {
+    const api = createApi();
+    (api.renameChat as jest.Mock).mockResolvedValue({ ...rootChat, title: 'Manual title' });
+    const { tree } = await renderMain({ api, selectedChat: rootChat });
+    const root = rootOf(tree);
+
+    await press(byLabel(root, 'Root thread, chat options'));
+    expect(hasText(root, 'Rename session')).toBe(true);
+    await act(async () => {
+      textInput(root, 'Session title').props.onChangeText('Manual title');
+      await flush();
+    });
+    await press(byLabel(root, 'Save session title'));
+    expect(api.renameChat).toHaveBeenCalledWith(rootChat.id, 'Manual title');
+    expect(hasText(root, 'Manual title')).toBe(true);
     act(() => tree.unmount());
   });
 

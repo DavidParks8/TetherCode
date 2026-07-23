@@ -396,7 +396,7 @@ describe('mainScreenHelpers branch behavior', () => {
     expect(helpers.normalizeModelId(undefined)).toBeNull();
     expect(helpers.normalizeModelId(' ')).toBeNull();
     expect(helpers.normalizeModelId(' model ')).toBe('model');
-    for (const effort of ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']) {
+    for (const effort of ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
       expect(helpers.normalizeReasoningEffort(` ${effort.toUpperCase()} `)).toBe(effort);
     }
     expect(helpers.normalizeReasoningEffort(undefined)).toBeNull();
@@ -578,6 +578,7 @@ describe('mainScreenHelpers branch behavior', () => {
 
   it('formats effort and detects plan-mode assistant failures', () => {
     expect(helpers.formatReasoningEffort('xhigh')).toBe('X-High');
+    expect(helpers.formatReasoningEffort('max')).toBe('Max');
     expect(helpers.formatReasoningEffort('none')).toBe('None');
     expect(helpers.formatReasoningEffort('minimal')).toBe('Minimal');
     expect(helpers.formatReasoningEffort('high')).toBe('High');

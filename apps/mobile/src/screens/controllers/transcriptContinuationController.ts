@@ -26,7 +26,9 @@ export function getTranscriptContinuationState(chat: Chat): TranscriptContinuati
     snapshot?.reasoningCollection,
     snapshot?.toolCollection,
   ].filter((value) => value !== undefined);
-  const beforeCursor = collections.find((collection) => collection?.beforeCursor)?.beforeCursor;
+  const beforeCursor = collections.find(
+    (collection) => collection && collection.omittedCount > 0 && collection.beforeCursor
+  )?.beforeCursor;
   return {
     loading: false,
     error: null,
@@ -44,10 +46,11 @@ export class TranscriptContinuationController {
     const snapshot = chat.acpSnapshot;
     const revision = snapshot?.continuation?.revision;
     const beforeCursor = [
-      snapshot?.messageCollection?.beforeCursor,
-      snapshot?.reasoningCollection?.beforeCursor,
-      snapshot?.toolCollection?.beforeCursor,
-    ].find((value): value is string => Boolean(value));
+      snapshot?.messageCollection,
+      snapshot?.reasoningCollection,
+      snapshot?.toolCollection,
+    ].find((collection) => collection && collection.omittedCount > 0 && collection.beforeCursor)
+      ?.beforeCursor;
     const baseState = getTranscriptContinuationState(chat);
     if (!snapshot || revision === undefined || !beforeCursor) {
       return { kind: 'merged', chat, state: baseState };

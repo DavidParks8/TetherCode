@@ -997,14 +997,23 @@ function mapMessages(raw: RawThread, fallbackCreatedAt: string): ChatMessage[] {
           tool.content,
           raw.acpSnapshot?.session.agentId
         );
-        if (taskSubagent) {
+        if (taskSubagent || isSnapshotSubagentTool(tool)) {
+          const state = taskSubagent?.state ?? (
+            ['failed', 'error'].includes(tool.status.toLowerCase())
+              ? 'failed'
+              : ['completed', 'complete', 'succeeded'].includes(tool.status.toLowerCase())
+                ? 'completed'
+                : 'running'
+          );
           const text = [
-              taskSubagent.state === 'completed'
-                ? '• Spawned sub-agent'
-                : '• Spawning sub-agent',
-              `  Thread: ${taskSubagent.threadId}`,
-              `  Status: ${taskSubagent.state}`,
-              taskSubagent.result ? `  Result: ${taskSubagent.result}` : null,
+              state === 'completed'
+                ? '• Sub-agent completed'
+                : state === 'failed'
+                  ? '• Sub-agent failed'
+                  : '• Sub-agent working',
+              taskSubagent?.threadId ? `  Thread: ${taskSubagent.threadId}` : null,
+              `  Status: ${state}`,
+              taskSubagent?.result ? `  Latest: ${taskSubagent.result}` : null,
             ].filter(Boolean).join('\n');
           return [createActivityMessage(
             `subagent:${tool.id}`,
@@ -1012,11 +1021,12 @@ function mapMessages(raw: RawThread, fallbackCreatedAt: string): ChatMessage[] {
             {
               text,
               subAgent: {
+              toolCallId: tool.id,
               tool: 'spawnAgent',
               senderThreadId: raw.id,
-              receiverThreadIds: [taskSubagent.threadId],
-              agentStatus: taskSubagent.state,
-              navigable: false,
+              receiverThreadIds: taskSubagent?.threadId ? [taskSubagent.threadId] : [],
+              agentStatus: state,
+              navigable: Boolean(taskSubagent?.threadId),
             },
             },
             new Date(baseTs + index * 1000).toISOString()
@@ -1158,6 +1168,11 @@ function mapMessages(raw: RawThread, fallbackCreatedAt: string): ChatMessage[] {
   }
 
   return messages;
+}
+
+function isSnapshotSubagentTool(tool: RawAcpSnapshot['tools'][number]): boolean {
+  const title = tool.title.trim().toLowerCase().replace(/[-_ ]/g, '');
+  return title === 'task' || title === 'spawnagent' || title === 'subagent';
 }
 
 function parseSnapshotTaskSubagent(

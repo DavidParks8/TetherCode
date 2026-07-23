@@ -298,6 +298,8 @@ struct SessionIndexEntry {
     agent_id: AgentId,
     acp_session_id: String,
     cwd: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -361,8 +363,12 @@ impl DurableSessionIndex {
                 existing.agent_id == entry.agent_id
                     && existing.acp_session_id == entry.acp_session_id
             }) {
-                if *existing != entry {
-                    *existing = entry;
+                let mut merged = entry;
+                if merged.title.is_none() {
+                    merged.title = existing.title.clone();
+                }
+                if *existing != merged {
+                    *existing = merged;
                     changed = true;
                 }
             } else {
@@ -407,6 +413,10 @@ fn sanitize_index_entries(entries: Vec<SessionIndexEntry>) -> Vec<SessionIndexEn
             AgentSessionId::new(&entry.agent_id, &entry.acp_session_id).is_ok()
                 && entry.cwd.is_absolute()
                 && entry.cwd.as_os_str().len() <= MAX_SESSION_CWD_BYTES
+                && entry
+                    .title
+                    .as_ref()
+                    .is_none_or(|title| valid_session_title(title))
         })
         .collect::<Vec<_>>();
     entries.sort();
@@ -422,6 +432,7 @@ fn index_entry(identity: AgentSessionId, cwd: PathBuf) -> SessionIndexEntry {
         agent_id: identity.agent_id,
         acp_session_id: identity.acp_session_id,
         cwd,
+        title: None,
     }
 }
 
@@ -464,9 +475,12 @@ fn add_durable_sessions(
 ) {
     for entry in durable.iter().filter(|entry| entry.agent_id == agent_id) {
         if let Ok(identity) = AgentSessionId::new(&entry.agent_id, &entry.acp_session_id) {
-            sessions
+            let session = sessions
                 .entry(identity.encode())
                 .or_insert_with(|| empty_managed_session(&identity, entry.cwd.clone()));
+            if let Some(title) = &entry.title {
+                session.snapshot.title = Some(title.clone());
+            }
         }
     }
 }
@@ -795,9 +809,17 @@ impl AgentManager {
                                 discovered.push(index_entry(identity.clone(), cwd.clone()));
                                 let opencode_summary = opencode_summaries
                                     .get(&remote.session_id.to_string().to_ascii_lowercase());
-                                let title = remote.title.clone().or_else(|| {
-                                    opencode_summary.and_then(|summary| summary.title.clone())
-                                });
+                                let title = durable
+                                    .iter()
+                                    .find(|entry| {
+                                        entry.agent_id == identity.agent_id
+                                            && entry.acp_session_id == identity.acp_session_id
+                                    })
+                                    .and_then(|entry| entry.title.clone())
+                                    .or_else(|| remote.title.clone())
+                                    .or_else(|| {
+                                        opencode_summary.and_then(|summary| summary.title.clone())
+                                    });
                                 let updated_at = remote.updated_at.clone().or_else(|| {
                                     opencode_summary.and_then(|summary| summary.updated_at.clone())
                                 });
@@ -835,7 +857,23 @@ impl AgentManager {
                 }
             }
             for session in connection.loaded_sessions().await {
-                let snapshot = session.snapshot().await;
+                let mut snapshot = session.snapshot().await;
+                if let Some(summary) = sessions.get(&snapshot.thread_id) {
+                    if snapshot.title.is_none() {
+                        snapshot.title = summary.snapshot.title.clone();
+                    }
+                    if snapshot.updated_at.is_none() {
+                        snapshot.updated_at = summary.snapshot.updated_at.clone();
+                    }
+                }
+                if let Some(entry) = durable.iter().find(|entry| {
+                    AgentSessionId::new(&entry.agent_id, &entry.acp_session_id)
+                        .is_ok_and(|identity| identity.encode() == snapshot.thread_id)
+                }) {
+                    if let Some(title) = &entry.title {
+                        snapshot.title = Some(title.clone());
+                    }
+                }
                 if let Some(entry) = durable.iter().find(|entry| {
                     AgentSessionId::new(&entry.agent_id, &entry.acp_session_id)
                         .is_ok_and(|identity| identity.encode() == snapshot.thread_id)
@@ -957,6 +995,42 @@ impl AgentManager {
         self.apply_config_options(connection, &session_id, Some(response.config_options))
             .await?;
         self.read_known_session_from(connection, &session_id).await
+    }
+
+    pub async fn rename_session(
+        &self,
+        thread_id: &str,
+        title: &str,
+    ) -> Result<ManagedSession, AgentManagerError> {
+        let identity =
+            AgentSessionId::decode(thread_id).map_err(|_| AgentManagerError::InvalidThreadId)?;
+        let title = title.trim();
+        if !valid_session_title(title) {
+            return Err(AgentManagerError::SessionIndex(
+                "session title is empty or exceeds 256 bytes".to_string(),
+            ));
+        }
+        let current = self
+            .session_index
+            .lock()
+            .await
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.agent_id == identity.agent_id
+                    && entry.acp_session_id == identity.acp_session_id
+            })
+            .cloned()
+            .ok_or_else(|| AgentManagerError::SessionIndex("session is not indexed".to_string()))?;
+        self.session_index
+            .lock()
+            .await
+            .insert_all([SessionIndexEntry {
+                title: Some(title.to_string()),
+                ..current
+            }])
+            .await?;
+        self.read_session(thread_id).await
     }
 
     pub async fn read_session(&self, thread_id: &str) -> Result<ManagedSession, AgentManagerError> {
@@ -1434,10 +1508,10 @@ impl AgentManager {
             .session(session_id)
             .await
             .ok_or_else(|| AcpRuntimeError::UnknownSession(session_id.to_string()))?;
-        let snapshot = session.snapshot().await;
+        let mut snapshot = session.snapshot().await;
         let identity = AgentSessionId::decode(&snapshot.thread_id)
             .map_err(|_| AgentManagerError::InvalidThreadId)?;
-        let cwd = self
+        let entry = self
             .session_index
             .lock()
             .await
@@ -1447,19 +1521,40 @@ impl AgentManager {
                 entry.agent_id == identity.agent_id
                     && entry.acp_session_id == identity.acp_session_id
             })
-            .map(|entry| entry.cwd.clone())
+            .cloned()
             .ok_or_else(|| {
                 AgentManagerError::SessionIndex(
                     "session has no durable canonical workspace path".to_string(),
                 )
             })?;
+        if let Some(title) = entry.title {
+            snapshot.title = Some(title);
+        } else if snapshot.title.is_none() || snapshot.updated_at.is_none() {
+            if let Some(runtime) = self.agents.get(&identity.agent_id) {
+                let summaries = self.opencode_session_summaries(runtime).await;
+                if let Some(summary) = summaries.get(&identity.acp_session_id.to_ascii_lowercase())
+                {
+                    if snapshot.title.is_none() {
+                        snapshot.title = summary.title.clone();
+                    }
+                    if snapshot.updated_at.is_none() {
+                        snapshot.updated_at = summary.updated_at.clone();
+                    }
+                }
+            }
+        }
         Ok(ManagedSession {
             thread_id: snapshot.thread_id.clone(),
             agent_id: snapshot.agent_id.clone(),
-            cwd,
+            cwd: entry.cwd,
             snapshot,
         })
     }
+}
+
+fn valid_session_title(title: &str) -> bool {
+    let title = title.trim();
+    !title.is_empty() && title.len() <= 256 && !title.chars().any(char::is_control)
 }
 
 fn milliseconds_to_iso(milliseconds: u64) -> Option<String> {
@@ -1502,7 +1597,7 @@ fn parse_opencode_model_catalog(bytes: &[u8]) -> Vec<OpenCodeModelCatalogEntry> 
                     } else {
                         document.name
                     };
-                    let reasoning_effort = if document
+                    let mut reasoning_effort = if document
                         .capabilities
                         .as_ref()
                         .and_then(|capabilities| capabilities.reasoning)
@@ -1515,13 +1610,20 @@ fn parse_opencode_model_catalog(bytes: &[u8]) -> Vec<OpenCodeModelCatalogEntry> 
                             .filter(|value| {
                                 matches!(
                                     value.as_str(),
-                                    "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+                                    "none"
+                                        | "minimal"
+                                        | "low"
+                                        | "medium"
+                                        | "high"
+                                        | "xhigh"
+                                        | "max"
                                 )
                             })
                             .collect()
                     } else {
                         Vec::new()
                     };
+                    reasoning_effort.sort();
                     models.push(OpenCodeModelCatalogEntry {
                         id,
                         display_name,
@@ -1553,7 +1655,7 @@ mod catalog_tests {
   "name": "Demo Model",
   "limit": { "context": 200000 },
   "capabilities": { "reasoning": true },
-  "variants": { "high": { "reasoningEffort": "high" }, "max": {} }
+    "variants": { "high": { "reasoningEffort": "high" }, "max": {} }
 }
 "#,
         );
@@ -1561,7 +1663,7 @@ mod catalog_tests {
         assert_eq!(catalog[0].id, "opencode/demo");
         assert_eq!(catalog[0].display_name, "Demo Model");
         assert_eq!(catalog[0].context_window, Some(200000));
-        assert_eq!(catalog[0].reasoning_effort, vec!["high"]);
+        assert_eq!(catalog[0].reasoning_effort, vec!["high", "max"]);
     }
 }
 
@@ -2415,6 +2517,12 @@ mod tests {
                     .updated_at("2026-07-21T14:17:00Z")]))
                 },
                 agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |_request: NewSessionRequest, responder, _| {
+                    responder.respond(NewSessionResponse::new("summary-session"))
+                },
+                agent_client_protocol::on_receive_request!(),
             );
         let (connection, negotiated) =
             AcpConnection::start_transport("alpha".to_string(), agent, Duration::from_secs(1))
@@ -2427,6 +2535,10 @@ mod tests {
         .await
         .expect("manager starts");
 
+        let created = manager
+            .new_session("alpha", NewSessionRequest::new("/tmp"))
+            .await
+            .expect("session created");
         let page = manager
             .list_sessions(None, 10)
             .await
@@ -2434,6 +2546,21 @@ mod tests {
         let summary = &page.sessions[0].snapshot;
         assert_eq!(summary.title.as_deref(), Some("Real session title"));
         assert_eq!(summary.updated_at.as_deref(), Some("2026-07-21T14:17:00Z"));
+        assert_eq!(summary.thread_id, created.thread_id);
+
+        let renamed = manager
+            .rename_session(&created.thread_id, "Manual title")
+            .await
+            .expect("session renamed");
+        assert_eq!(renamed.snapshot.title.as_deref(), Some("Manual title"));
+        let refreshed = manager
+            .list_sessions(None, 10)
+            .await
+            .expect("list after rename");
+        assert_eq!(
+            refreshed.sessions[0].snapshot.title.as_deref(),
+            Some("Manual title")
+        );
         manager.shutdown().await;
     }
 
@@ -2777,16 +2904,19 @@ mod tests {
             agent_id: "alpha".into(),
             acp_session_id: "valid".into(),
             cwd: PathBuf::from("/tmp"),
+            title: None,
         };
         let other_session = SessionIndexEntry {
             agent_id: "alpha".into(),
             acp_session_id: "valid-two".into(),
             cwd: PathBuf::from("/tmp"),
+            title: None,
         };
         let other_agent = SessionIndexEntry {
             agent_id: "beta".into(),
             acp_session_id: "valid".into(),
             cwd: PathBuf::from("/tmp"),
+            title: None,
         };
         let entries = sanitize_index_entries(vec![
             valid.clone(),
@@ -2797,19 +2927,35 @@ mod tests {
                 agent_id: "bad/agent".into(),
                 acp_session_id: "invalid".into(),
                 cwd: PathBuf::from("/tmp"),
+                title: None,
             },
             SessionIndexEntry {
                 agent_id: "alpha".into(),
                 acp_session_id: "relative".into(),
                 cwd: PathBuf::from("relative"),
+                title: None,
             },
             SessionIndexEntry {
                 agent_id: "alpha".into(),
                 acp_session_id: "oversized-cwd".into(),
                 cwd: PathBuf::from(format!("/{}", "x".repeat(MAX_SESSION_CWD_BYTES))),
+                title: None,
             },
         ]);
         assert_eq!(entries, vec![valid, other_session, other_agent]);
+
+        let mut persisted = DurableSessionIndex::load(Some(path.clone())).await;
+        persisted
+            .insert_all([SessionIndexEntry {
+                agent_id: "alpha".into(),
+                acp_session_id: "titled".into(),
+                cwd: PathBuf::from("/tmp"),
+                title: Some("Manual title".into()),
+            }])
+            .await
+            .unwrap();
+        let reloaded = DurableSessionIndex::load(Some(path.clone())).await;
+        assert_eq!(reloaded.entries[0].title.as_deref(), Some("Manual title"));
 
         let mut memory_only = DurableSessionIndex::load(None).await;
         memory_only

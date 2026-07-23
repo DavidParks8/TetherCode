@@ -461,6 +461,25 @@ export class HostBridgeApiClient {
     return chat;
   }
 
+  async renameChat(threadId: string, title: string): Promise<Chat> {
+    const normalizedThreadId = threadId.trim();
+    const normalizedTitle = title.trim();
+    if (!normalizedThreadId || !normalizedTitle) {
+      throw new Error('thread and title are required');
+    }
+    const response = await this.ws.request<AppServerStartResponse>('thread/name/update', {
+      threadId: normalizedThreadId,
+      title: normalizedTitle,
+    });
+    if (!response.thread) {
+      throw new Error('thread/name/update did not return a chat');
+    }
+    const chat = this.mapChatWithCachedTitle(response.thread);
+    this.renamedTitles.set(chat.id, normalizedTitle);
+    this.rememberChat(chat);
+    return chat;
+  }
+
   registerPushDevice(input: {
     profileId: string;
     registrationId: string;
@@ -2205,7 +2224,8 @@ function normalizeEffort(effort: string | null | undefined): ReasoningEffort | n
     normalized === 'low' ||
     normalized === 'medium' ||
     normalized === 'high' ||
-    normalized === 'xhigh'
+    normalized === 'xhigh' ||
+    normalized === 'max'
   ) {
     return normalized;
   }

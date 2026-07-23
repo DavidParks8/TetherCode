@@ -411,8 +411,10 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
     const [gitCheckoutCloning, setGitCheckoutCloning] = useState(false);
     const [agentThreadMenuVisible, setAgentThreadMenuVisible] = useState(false);
     const [modelModalVisible, setModelModalVisible] = useState(false);
-    const [modelSettingsMenuVisible, setModelSettingsMenuVisible] = useState(false);
     const [agentModalVisible, setAgentModalVisible] = useState(false);
+    const [titleModalVisible, setTitleModalVisible] = useState(false);
+    const [titleDraft, setTitleDraft] = useState('');
+    const [titleSaving, setTitleSaving] = useState(false);
     const [bridgeCapabilities, setBridgeCapabilities] = useState<BridgeCapabilities | null>(
       null
     );
@@ -1947,7 +1949,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           : activeEffort
             ? formatReasoningEffort(activeEffort)
             : 'Model default';
-    const modelReasoningLabel = `${activeModelLabel} · ${activeEffortLabel}`;
     const collaborationModeLabel = modeConfig?.options?.find(
       (option) => option.value === modeConfig.value
     )?.name ?? modeConfig?.value ?? (
@@ -2031,7 +2032,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       setWorkspaceModalVisible(false);
       setAgentThreadMenuVisible(false);
       setModelModalVisible(false);
-      setModelSettingsMenuVisible(false);
       setCollaborationModeMenuVisible(false);
       setEffortModalVisible(false);
       setQueueActionItemId(null);
@@ -2057,6 +2057,35 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       // New chat should land on compose/home so user can pick workspace first.
       resetComposerState(requestedAgentId);
     }, [resetComposerState]);
+
+    const openTitleEditor = useCallback(() => {
+      if (!selectedChat) return;
+      setTitleDraft(selectedChat.title);
+      setTitleModalVisible(true);
+      setError(null);
+    }, [selectedChat]);
+
+    const closeTitleEditor = useCallback(() => {
+      if (!titleSaving) setTitleModalVisible(false);
+    }, [titleSaving]);
+
+    const saveTitle = useCallback(async () => {
+      const chat = selectedChatRef.current;
+      const title = titleDraft.trim();
+      if (!chat || !title || titleSaving) return;
+      try {
+        setTitleSaving(true);
+        const updated = await api.renameChat(chat.id, title);
+        selectedChatRef.current = updated;
+        setSelectedChat(updated);
+        setTitleModalVisible(false);
+        setError(null);
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setTitleSaving(false);
+      }
+    }, [api, titleDraft, titleSaving]);
 
     const refreshWorkspaceRoots = useCallback(async () => {
       setLoadingWorkspaceRoots(true);
@@ -2830,10 +2859,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       });
     }, [activeServiceTier, selectedChatId, supportsFastMode]);
 
-    const openModelReasoningMenu = useCallback(() => {
-      setModelSettingsMenuVisible(true);
-    }, []);
-
     const attachmentControlsDisabled = attachmentPickerBusy || uploadingAttachment;
 
     const attachmentMenuOptions = useMemo<SelectionSheetOption[]>(
@@ -2953,65 +2978,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         ];
       },
       [applyAcpConfigOption, modeConfig, selectedCollaborationMode]
-    );
-
-    const modelSettingsMenuOptions = useMemo<SelectionSheetOption[]>(
-      () => [
-        ...(modelOptions.length > 0
-          ? [
-              {
-                key: 'model',
-                title: 'Change model',
-                description: activeModelLabel,
-                icon: 'sparkles-outline' as const,
-                onPress: () => {
-                  setModelSettingsMenuVisible(false);
-                  openModelModal();
-                },
-              },
-              {
-                key: 'reasoning',
-                title: 'Thinking level',
-                description: activeEffortLabel,
-                icon: 'pulse-outline' as const,
-                disabled: activeModelEffortOptions.length === 0,
-                onPress: () => {
-                  setModelSettingsMenuVisible(false);
-                  openEffortModal();
-                },
-              },
-            ]
-          : []),
-        ...(!selectedChatId && readyAgents.length > 1
-          ? [
-              {
-                key: 'agent',
-                title: 'Change agent',
-                description: activeAgentLabel,
-                icon: 'layers-outline' as const,
-                onPress: () => {
-                  setModelSettingsMenuVisible(false);
-                  setAgentModalVisible(true);
-                },
-              },
-            ]
-          : []),
-      ],
-      [
-        activeEffortLabel,
-        activeModelLabel,
-        activeModelEffortOptions.length,
-        collaborationModeLabel,
-        fastModeEnabled,
-        openEffortModal,
-        openModelModal,
-        selectedChatId,
-        supportsFastMode,
-        toggleFastMode,
-        activeAgentLabel,
-        readyAgents.length,
-        openAgentModal,
-      ]
     );
 
     const agentPickerOptions = useMemo<SelectionSheetOption[]>(
@@ -6987,7 +6953,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       !attachmentMenuVisible &&
       !attachmentModalVisible &&
       !collaborationModeMenuVisible &&
-      !modelSettingsMenuVisible &&
       !workspaceModalVisible &&
       !modelModalVisible &&
       !effortModalVisible &&
@@ -7431,6 +7396,7 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           onOpenDrawer={onOpenDrawer}
           title={headerTitle}
           agent={activeAgent}
+          onOpenTitleMenu={selectedChat ? openTitleEditor : undefined}
           rightIconName={selectedChat ? 'git-branch-outline' : undefined}
           onRightActionPress={selectedChat ? handleOpenGit : undefined}
         />
@@ -7448,13 +7414,29 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                     styles.modelChip,
                     pressed && styles.modelChipPressed,
                   ]}
-                  onPress={openModelReasoningMenu}
+                  onPress={openModelModal}
                   accessibilityRole="button"
-                  accessibilityLabel={`Model controls, ${modelReasoningLabel}`}
+                  accessibilityLabel={`Model, ${activeModelLabel}`}
                 >
                   <Ionicons {...decorativeAccessibilityProps} name="sparkles-outline" size={12} color={theme.colors.textMuted} />
                   <Text style={styles.modelChipText} numberOfLines={1}>
-                    {modelReasoningLabel}
+                    {activeModelLabel}
+                  </Text>
+                </Pressable>
+              ) : null}
+              {activeModelEffortOptions.length > 0 ? (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.modelChip,
+                    pressed && styles.modelChipPressed,
+                  ]}
+                  onPress={() => openEffortModal()}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Thinking level, ${activeEffortLabel}`}
+                >
+                  <Ionicons {...decorativeAccessibilityProps} name="pulse-outline" size={12} color={theme.colors.textMuted} />
+                  <Text style={styles.modelChipText} numberOfLines={1}>
+                    {activeEffortLabel}
                   </Text>
                 </Pressable>
               ) : null}
@@ -7525,6 +7507,23 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
               ) : null}
             </ScrollView>
           </View>
+        ) : null}
+
+        {modelModalVisible ? (
+          <InlineOptionsGroup
+            title="Model"
+            options={modelPickerOptions}
+            loading={loadingModels}
+            loadingLabel="Refreshing available models..."
+            onClose={closeModelModal}
+          />
+        ) : null}
+        {effortModalVisible ? (
+          <InlineOptionsGroup
+            title="Thinking level"
+            options={effortPickerSheetOptions}
+            onClose={closeEffortModal}
+          />
         ) : null}
 
         {showTopCardsRow ? (
@@ -7615,7 +7614,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                   showAgentPicker={readyAgents.length > 1}
                   agentLabel={activeAgentLabel}
                   showModelControls={modelOptions.length > 0}
-                  modelReasoningLabel={modelReasoningLabel}
+                  modelLabel={activeModelLabel}
+                  showThinkingControls={activeModelEffortOptions.length > 0}
+                  thinkingLabel={activeEffortLabel}
                   collaborationModeLabel={collaborationModeLabel}
                   showFastMode={supportsFastMode}
                   fastModeEnabled={fastModeEnabled}
@@ -7625,7 +7626,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                   onSuggestion={(s) => setDraft(s)}
                   onOpenWorkspacePicker={openWorkspaceModal}
                   onOpenAgentPicker={openAgentModal}
-                  onOpenModelReasoningPicker={openModelReasoningMenu}
+                  onOpenModelPicker={openModelModal}
+                  onOpenThinkingPicker={() => openEffortModal()}
                   onOpenCollaborationModePicker={openCollaborationModeMenu}
                   onToggleFastMode={() => {
                     void toggleFastMode();
@@ -7675,7 +7677,9 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 showAgentPicker={readyAgents.length > 1}
                 agentLabel={activeAgentLabel}
                 showModelControls={modelOptions.length > 0}
-                modelReasoningLabel={modelReasoningLabel}
+                modelLabel={activeModelLabel}
+                showThinkingControls={activeModelEffortOptions.length > 0}
+                thinkingLabel={activeEffortLabel}
                 collaborationModeLabel={collaborationModeLabel}
                 showFastMode={supportsFastMode}
                 fastModeEnabled={fastModeEnabled}
@@ -7685,7 +7689,8 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 onSuggestion={(s) => setDraft(s)}
                 onOpenWorkspacePicker={openWorkspaceModal}
                 onOpenAgentPicker={openAgentModal}
-                onOpenModelReasoningPicker={openModelReasoningMenu}
+                onOpenModelPicker={openModelModal}
+                onOpenThinkingPicker={() => openEffortModal()}
                 onOpenCollaborationModePicker={openCollaborationModeMenu}
                 onToggleFastMode={() => {
                   void toggleFastMode();
@@ -7773,16 +7778,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
         />
 
         <SelectionSheet
-          visible={modelSettingsMenuVisible}
-          eyebrow="Model"
-          title="Model controls"
-          subtitle={modelReasoningLabel}
-          options={modelSettingsMenuOptions}
-          presentation="expanded"
-          onClose={() => setModelSettingsMenuVisible(false)}
-        />
-
-        <SelectionSheet
           visible={agentModalVisible}
           eyebrow="Agent"
           title="Select agent"
@@ -7790,6 +7785,61 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           options={agentPickerOptions}
           onClose={closeAgentModal}
         />
+
+        <Modal
+          visible={titleModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={closeTitleEditor}
+        >
+          <KeyboardAvoidingView
+            style={styles.renameModalKeyboardAvoider}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          >
+            <View style={styles.renameModalBackdrop}>
+              <View accessibilityViewIsModal importantForAccessibility="yes" style={styles.renameModalCard}>
+                <Text style={styles.renameModalTitle}>Rename session</Text>
+                <TextInput
+                  value={titleDraft}
+                  onChangeText={setTitleDraft}
+                  style={styles.renameModalInput}
+                  accessibilityLabel="Session title"
+                  autoFocus
+                  maxLength={256}
+                  editable={!titleSaving}
+                  returnKeyType="done"
+                  onSubmitEditing={() => { void saveTitle(); }}
+                />
+                <View style={styles.renameModalActions}>
+                  <Pressable
+                    onPress={closeTitleEditor}
+                    style={[styles.renameModalButton, styles.renameModalButtonSecondary]}
+                    disabled={titleSaving}
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel rename"
+                  >
+                    <Text style={styles.renameModalButtonSecondaryText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => { void saveTitle(); }}
+                    style={[
+                      styles.renameModalButton,
+                      styles.renameModalButtonPrimary,
+                      (!titleDraft.trim() || titleSaving) && styles.renameModalButtonDisabled,
+                    ]}
+                    disabled={!titleDraft.trim() || titleSaving}
+                    accessibilityRole="button"
+                    accessibilityLabel="Save session title"
+                  >
+                    <Text style={styles.renameModalButtonPrimaryText}>
+                      {titleSaving ? 'Saving...' : 'Save'}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
 
         <WorkspacePickerModal
           visible={workspaceModalVisible}
@@ -7953,32 +8003,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             </View>
           </KeyboardAvoidingView>
         </Modal>
-
-        <SelectionSheet
-          visible={modelModalVisible}
-          eyebrow="Model"
-          title="Select model"
-          subtitle="Choose an advertised model for this chat."
-          options={modelPickerOptions}
-          loading={loadingModels}
-          loadingLabel="Refreshing available models…"
-          presentation="expanded"
-          onClose={closeModelModal}
-        />
-
-        <SelectionSheet
-          visible={effortModalVisible}
-          eyebrow="Reasoning"
-          title="Reasoning level"
-          subtitle={
-            effortPickerModel
-              ? `Current model: ${formatModelOptionLabel(effortPickerModel)}`
-              : 'Select how much reasoning depth to use.'
-          }
-          options={effortPickerSheetOptions}
-          presentation="expanded"
-          onClose={closeEffortModal}
-        />
 
         <Modal
           visible={attachmentModalVisible}
@@ -8238,6 +8262,90 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
   }
 );
 
+function InlineOptionsGroup({
+  title,
+  options,
+  loading = false,
+  loadingLabel = 'Loading options...',
+  onClose,
+}: {
+  title: string;
+  options: SelectionSheetOption[];
+  loading?: boolean;
+  loadingLabel?: string;
+  onClose: () => void;
+}) {
+  const theme = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  return (
+    <View style={styles.inlineOptionsGroup} accessibilityRole="menu" accessibilityLabel={title}>
+      <View style={styles.inlineOptionsHeader}>
+        <Text style={styles.inlineOptionsTitle}>{title}</Text>
+        <Pressable
+          onPress={onClose}
+          style={styles.inlineOptionsClose}
+          accessibilityRole="button"
+          accessibilityLabel={`Close ${title}`}
+        >
+          <Ionicons {...decorativeAccessibilityProps} name="close" size={16} color={theme.colors.textMuted} />
+        </Pressable>
+      </View>
+      {loading ? (
+        <View style={styles.inlineOptionsLoading} accessibilityRole="progressbar">
+          <ActivityIndicator size="small" color={theme.colors.textPrimary} />
+          <Text style={styles.inlineOptionsDescription}>{loadingLabel}</Text>
+        </View>
+      ) : (
+        <ScrollView
+          style={styles.inlineOptionsScroll}
+          contentContainerStyle={styles.inlineOptionsContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {options.map((option) => (
+            <Pressable
+              key={option.key}
+              onPress={option.onPress}
+              disabled={option.disabled}
+              style={({ pressed }) => [
+                styles.inlineOption,
+                option.selected && styles.inlineOptionSelected,
+                option.disabled && styles.inlineOptionDisabled,
+                pressed && !option.disabled && styles.inlineOptionPressed,
+              ]}
+              accessibilityRole="menuitem"
+              accessibilityLabel={option.title}
+              accessibilityHint={option.description}
+              accessibilityState={controlAccessibilityState({
+                disabled: option.disabled,
+                selected: option.selected,
+              })}
+            >
+              {option.icon ? (
+                <Ionicons
+                  {...decorativeAccessibilityProps}
+                  name={option.icon}
+                  size={15}
+                  color={option.selected ? theme.colors.textPrimary : theme.colors.textMuted}
+                />
+              ) : null}
+              <View style={styles.inlineOptionCopy}>
+                <Text style={styles.inlineOptionTitle}>{option.title}</Text>
+                {option.description ? (
+                  <Text style={styles.inlineOptionsDescription}>{option.description}</Text>
+                ) : null}
+              </View>
+              {option.selected ? (
+                <Ionicons {...decorativeAccessibilityProps} name="checkmark" size={16} color={theme.colors.textPrimary} />
+              ) : null}
+            </Pressable>
+          ))}
+        </ScrollView>
+      )}
+    </View>
+  );
+}
+
 // ── Compose View ───────────────────────────────────────────────────
 
 function ComposeView({
@@ -8245,7 +8353,9 @@ function ComposeView({
   showAgentPicker,
   agentLabel,
   showModelControls,
-  modelReasoningLabel,
+  modelLabel,
+  showThinkingControls,
+  thinkingLabel,
   collaborationModeLabel,
   showFastMode,
   fastModeEnabled,
@@ -8255,7 +8365,8 @@ function ComposeView({
   onSuggestion,
   onOpenWorkspacePicker,
   onOpenAgentPicker,
-  onOpenModelReasoningPicker,
+  onOpenModelPicker,
+  onOpenThinkingPicker,
   onOpenCollaborationModePicker,
   onToggleFastMode,
 }: {
@@ -8263,7 +8374,9 @@ function ComposeView({
   showAgentPicker: boolean;
   agentLabel: string;
   showModelControls: boolean;
-  modelReasoningLabel: string;
+  modelLabel: string;
+  showThinkingControls: boolean;
+  thinkingLabel: string;
   collaborationModeLabel: string;
   showFastMode: boolean;
   fastModeEnabled: boolean;
@@ -8273,7 +8386,8 @@ function ComposeView({
   onSuggestion: (s: string) => void;
   onOpenWorkspacePicker: () => void;
   onOpenAgentPicker: () => void;
-  onOpenModelReasoningPicker: () => void;
+  onOpenModelPicker: () => void;
+  onOpenThinkingPicker: () => void;
   onOpenCollaborationModePicker: () => void;
   onToggleFastMode: () => void;
 }) {
@@ -8342,13 +8456,30 @@ function ComposeView({
             styles.workspaceSelectBtn,
             pressed && styles.workspaceSelectBtnPressed,
           ]}
-          onPress={onOpenModelReasoningPicker}
+          onPress={onOpenModelPicker}
           accessibilityRole="button"
-          accessibilityLabel={`Model controls, ${modelReasoningLabel}`}
+          accessibilityLabel={`Model, ${modelLabel}`}
         >
           <Ionicons {...decorativeAccessibilityProps} name="sparkles-outline" size={16} color={theme.colors.textMuted} />
           <Text style={styles.workspaceSelectLabel} numberOfLines={1}>
-            {modelReasoningLabel}
+            {modelLabel}
+          </Text>
+          <Ionicons {...decorativeAccessibilityProps} name="chevron-forward" size={14} color={theme.colors.textMuted} />
+        </Pressable>
+      ) : null}
+      {showThinkingControls ? (
+        <Pressable
+          style={({ pressed }) => [
+            styles.workspaceSelectBtn,
+            pressed && styles.workspaceSelectBtnPressed,
+          ]}
+          onPress={onOpenThinkingPicker}
+          accessibilityRole="button"
+          accessibilityLabel={`Thinking level, ${thinkingLabel}`}
+        >
+          <Ionicons {...decorativeAccessibilityProps} name="pulse-outline" size={16} color={theme.colors.textMuted} />
+          <Text style={styles.workspaceSelectLabel} numberOfLines={1}>
+            {thinkingLabel}
           </Text>
           <Ionicons {...decorativeAccessibilityProps} name="chevron-forward" size={14} color={theme.colors.textMuted} />
         </Pressable>

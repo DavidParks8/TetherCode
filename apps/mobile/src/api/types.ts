@@ -251,7 +251,8 @@ export type ReasoningEffort =
   | 'low'
   | 'medium'
   | 'high'
-  | 'xhigh';
+  | 'xhigh'
+  | 'max';
 
 export type ServiceTier = 'flex' | 'fast';
 

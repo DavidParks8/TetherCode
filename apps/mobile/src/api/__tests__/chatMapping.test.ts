@@ -156,13 +156,40 @@ describe('chatMapping', () => {
       role: 'activity',
       activityType: SUBAGENT_ACTIVITY_TYPE,
     });
-    expect(getMessageText(mapped.messages[0])).toContain('Result: Workspace title');
+    expect(getMessageText(mapped.messages[0])).toContain('Latest: Workspace title');
     expect(getSubAgentMeta(mapped.messages[0])).toEqual({
+        toolCallId: 'task-1',
         tool: 'spawnAgent',
         senderThreadId: 'parent-thread',
         receiverThreadIds: ['v1.b3BlbmNvZGU.Y2hpbGQtc2Vzc2lvbg'],
         agentStatus: 'completed',
-        navigable: false,
+        navigable: true,
+    });
+  });
+
+  it('maps an in-progress task snapshot to a running subagent card before child XML', () => {
+    const mapped = mapChat(toRawThread({
+      id: 'parent-running-task',
+      acpSnapshot: {
+        version: 2,
+        timeline: [{ sequence: 0, kind: 'tool', canonicalId: 'task-running' }],
+        messages: [],
+        tools: [{
+          id: 'task-running', kind: 'other', status: 'in_progress', title: 'task', content: '',
+          structuredContent: [], locations: [],
+        }],
+        plan: [], usage: {}, config: [], commands: [],
+        session: { agentId: 'opencode', threadId: 'parent-running-task', historyReconstruction: false },
+        active: { toolIds: ['task-running'] },
+      },
+    }));
+
+    expect(mapped.messages).toHaveLength(1);
+    expect(mapped.messages[0]).toMatchObject({
+      id: 'subagent:task-running', role: 'activity', activityType: SUBAGENT_ACTIVITY_TYPE,
+      content: expect.objectContaining({
+        subAgent: expect.objectContaining({ toolCallId: 'task-running', agentStatus: 'running' }),
+      }),
     });
   });
 

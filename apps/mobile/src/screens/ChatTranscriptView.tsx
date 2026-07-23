@@ -220,7 +220,7 @@ export const ChatTranscriptView = memo(function ChatTranscriptView({
         </Text>
       );
     }
-    return <Text style={styles.inlineChoiceHint}>Beginning of history</Text>;
+    return null;
   }, [continuationState, onLoadEarlier, styles.inlineChoiceHint]);
 
   const handleScroll = useCallback(

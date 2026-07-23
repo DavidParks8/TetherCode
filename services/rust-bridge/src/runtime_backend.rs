@@ -424,6 +424,22 @@ impl RuntimeBackend {
                     .map_err(|error| error.to_string())?;
                 Ok(json!({ "thread": session_to_thread_value(session)? }))
             }
+            "thread/name/update" => {
+                let thread_id = required_string(&params, "threadId")?;
+                let title = required_string(&params, "title")?;
+                let session = self
+                    .manager
+                    .rename_session(&thread_id, &title)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                self.hub
+                    .broadcast_notification(
+                        "thread/name/updated",
+                        json!({ "threadId": thread_id, "threadName": title.trim() }),
+                    )
+                    .await;
+                Ok(json!({ "thread": session_to_thread_value(session)? }))
+            }
             "thread/snapshot/page" => {
                 let thread_id = required_string(&params, "threadId")?;
                 let before = read_string(params.get("beforeCursor"));

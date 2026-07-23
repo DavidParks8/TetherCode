@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Fragment, memo, useCallback, useMemo, useState, type ReactElement } from 'react';
 import {
+  ActivityIndicator,
   Image,
   Modal,
   Pressable,
@@ -367,6 +368,8 @@ function ChatMessageComponent({
         : [{ title: messageText, details: [] }];
       const subAgentMeta = getSubAgentMeta(message);
       const targetThreadId = subAgentMeta?.receiverThreadIds?.[0]?.trim() ?? '';
+    const subAgentRunning = Boolean(subAgentMeta?.agentStatus) &&
+      !isTerminalSubAgentStatus(subAgentMeta?.agentStatus);
     const canOpenThread = Boolean(
       targetThreadId &&
       subAgentMeta?.navigable !== false &&
@@ -393,12 +396,16 @@ function ChatMessageComponent({
                 accessibilityState={controlAccessibilityState({ disabled: !canOpenThread })}
               >
                 <View style={styles.subAgentHeader}>
-                  <Ionicons
-                    {...decorativeAccessibilityProps}
-                    name={visual.icon}
-                    size={14}
-                    color={visual.isError ? theme.colors.statusError : theme.colors.warning}
-                  />
+                  {subAgentRunning ? (
+                    <ActivityIndicator size="small" color={theme.colors.warning} />
+                  ) : (
+                    <Ionicons
+                      {...decorativeAccessibilityProps}
+                      name={visual.icon}
+                      size={14}
+                      color={visual.isError ? theme.colors.statusError : theme.colors.warning}
+                    />
+                  )}
                   <Text style={styles.subAgentTitle}>{entry.title}</Text>
                 </View>
                 {entry.details.length > 0 ? (
@@ -2669,4 +2676,12 @@ function toSubAgentVisual(title: string): {
     icon: 'git-branch-outline',
     isError: false,
   };
+}
+
+function isTerminalSubAgentStatus(status: string | null | undefined): boolean {
+  const normalized = status?.trim().toLowerCase() ?? '';
+  return [
+    'completed', 'complete', 'succeeded', 'failed', 'error', 'aborted',
+    'cancelled', 'canceled', 'closed',
+  ].includes(normalized);
 }

@@ -22,7 +22,7 @@
     { "method": "POST", "path": "/attachments", "auth": "bearer", "contentType": "multipart/form-data", "maxFileBytes": 20971520 }
   ],
   "mobileForwardedMethods": [
-    "model/list", "thread/config/set", "thread/list", "thread/loaded/list", "thread/read", "thread/resume", "thread/snapshot/page",
+    "model/list", "thread/config/set", "thread/list", "thread/loaded/list", "thread/name/update", "thread/read", "thread/resume", "thread/snapshot/page",
     "thread/start", "turn/interrupt", "turn/start", "turn/steer"
   ],
   "notifications": [
