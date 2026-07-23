@@ -30,7 +30,7 @@
     "bridge/git/updated", "bridge/notification.truncated", "bridge/terminal/completed", "bridge/thread/list/stream/batch",
     "bridge/thread/list/stream/error", "bridge/thread/queue/updated", "bridge/ui.dismiss",
     "bridge/ui.present", "bridge/ui.resolved", "bridge/ui.update", "bridge/userInput.requested",
-    "bridge/userInput.resolved"
+    "bridge/userInput.resolved", "thread/subagent/adopted"
   ],
   "errors": [
     { "code": -32700, "name": "parseError" },

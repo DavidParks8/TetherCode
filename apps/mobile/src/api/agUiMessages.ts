@@ -29,6 +29,7 @@ export interface AgUiThreadMessageState {
   replacesMessageIdByMessageId: Record<string, string>;
   toolCallMessageIdByCallId: Record<string, string>;
   toolResultMessageIdByCallId: Record<string, string>;
+  subagentToolCallIds: Record<string, true>;
   toolTextRevisionByCallId: Record<string, string>;
   structuredRevisionByCallId: Record<string, string>;
   structuredTextByCallId: Record<string, string>;
@@ -91,6 +92,7 @@ export function createAgUiThreadMessageState(): AgUiThreadMessageState {
     replacesMessageIdByMessageId: {},
     toolCallMessageIdByCallId: {},
     toolResultMessageIdByCallId: {},
+    subagentToolCallIds: {},
     toolTextRevisionByCallId: {},
     structuredRevisionByCallId: {},
     structuredTextByCallId: {},
@@ -195,15 +197,19 @@ function reduceThreadState(
     case EventType.THINKING_END:
       return markTerminal(current, `${envelope.runId}:thinking`);
     case EventType.TOOL_CALL_START:
+      if (current.subagentToolCallIds[event.toolCallId]) return current;
       return startToolCall(current, envelope.runId, event.toolCallId, event.toolCallName, event.parentMessageId, event.timestamp);
     case EventType.TOOL_CALL_ARGS:
+      if (current.subagentToolCallIds[event.toolCallId]) return current;
       return appendToolArgs(current, envelope.runId, event.toolCallId, event.delta, event.timestamp);
     case EventType.TOOL_CALL_END: {
+      if (current.subagentToolCallIds[event.toolCallId]) return current;
       const messageId = current.toolCallMessageIdByCallId[event.toolCallId];
       return messageId ? markTerminal(current, messageId) : current;
     }
     case EventType.TOOL_CALL_CHUNK: {
       if (!event.toolCallId) return current;
+      if (current.subagentToolCallIds[event.toolCallId]) return current;
       let next = current;
       if (!current.toolCallMessageIdByCallId[event.toolCallId]) {
         next = startToolCall(next, envelope.runId, event.toolCallId, event.toolCallName ?? 'tool', event.parentMessageId, event.timestamp);
@@ -211,6 +217,7 @@ function reduceThreadState(
       return event.delta ? appendToolArgs(next, envelope.runId, event.toolCallId, event.delta, event.timestamp) : next;
     }
     case EventType.TOOL_CALL_RESULT:
+      if (current.subagentToolCallIds[event.toolCallId]) return current;
       return appendToolResult(current, envelope.runId, event.messageId, event.toolCallId, event.content, event.timestamp);
     case EventType.MESSAGES_SNAPSHOT:
       return applyMessagesSnapshot(current, envelope.runId, event.messages, event.timestamp);
@@ -368,7 +375,16 @@ function reduceActivitySnapshot(
         ),
       }
     : current;
-  return upsertMessage(withoutGenericTool, createActivityMessage(
+  const withSuppressedTool = toolCallId
+    ? {
+        ...withoutGenericTool,
+        subagentToolCallIds: {
+          ...withoutGenericTool.subagentToolCallIds,
+          [toolCallId]: true as const,
+        },
+      }
+    : withoutGenericTool;
+  return upsertMessage(withSuppressedTool, createActivityMessage(
     messageId,
     activityType,
     content as { text: string; [key: string]: unknown },
@@ -477,8 +493,17 @@ function applyMessagesSnapshot(
   messages: Message[],
   timestamp?: number
 ): AgUiThreadMessageState {
+  const snapshotSubagentIds = messages.reduce<Record<string, true>>((ids, message) => {
+    if (message.role === 'activity' && message.activityType === SUBAGENT_ACTIVITY_TYPE) {
+      const content = record(message.content);
+      const subAgent = record(content?.subAgent);
+      const toolCallId = nonEmptyString(subAgent?.toolCallId);
+      if (toolCallId) ids[toolCallId] = true;
+    }
+    return ids;
+  }, { ...current.subagentToolCallIds });
   const previous = new Map(current.messages.map((message) => [message.id, message]));
-  const nextMessages = messages.map((message) => ({
+  const nextMessages = messages.filter((message) => !messageUsesSuppressedTool(message, snapshotSubagentIds)).map((message) => ({
     ...message,
     createdAt: previous.get(message.id)?.createdAt ?? timestampIso(timestamp),
     parts: previous.get(message.id)?.parts,
@@ -489,7 +514,21 @@ function applyMessagesSnapshot(
     authoritativeSnapshot: true,
     runByMessageId: Object.fromEntries(nextMessages.map((message) => [message.id, runId])),
     terminalMessageIds: nextMessages.map((message) => message.id),
+    subagentToolCallIds: snapshotSubagentIds,
   };
+}
+
+function messageUsesSuppressedTool(
+  message: Message,
+  suppressed: Record<string, true>
+): boolean {
+  if (message.role === 'tool') {
+    return Boolean(suppressed[message.toolCallId]);
+  }
+  if (message.role === 'assistant') {
+    return (message.toolCalls ?? []).some((call) => suppressed[call.id]);
+  }
+  return false;
 }
 
 function applyActivityDelta(
@@ -574,6 +613,7 @@ function reduceToolText(
   value: Record<string, unknown> | null
 ): AgUiThreadMessageState {
   const toolCallId = nonEmptyString(value?.toolCallId);
+  if (toolCallId && current.subagentToolCallIds[toolCallId]) return current;
   const revision = nonEmptyString(value?.revision);
   const content = typeof value?.content === 'string' ? value.content : null;
   if (!toolCallId || !revision || content === null) return current;
@@ -593,6 +633,7 @@ function reduceToolContent(
   value: Record<string, unknown> | null
 ): AgUiThreadMessageState {
   const toolCallId = nonEmptyString(value?.toolCallId) ?? 'unknown';
+  if (current.subagentToolCallIds[toolCallId]) return current;
   const revision = nonEmptyString(value?.revision) ?? JSON.stringify(value);
   if (current.structuredRevisionByCallId[toolCallId] === revision) return current;
   const structured = Array.isArray(value?.content) && value.content.length === 0 && Array.isArray(value?.locations) && value.locations.length === 0
@@ -641,7 +682,11 @@ function reduceSubagentActivity(
   const messages = current.messages.filter((message) => !(
     message.id === `tool-call:${toolCallId}` || message.id === `tool-result:${toolCallId}` || message.id === `subagent:${toolCallId}`
   ));
-  return upsertMessage({ ...current, messages }, createActivityMessage(
+  return upsertMessage({
+    ...current,
+    messages,
+    subagentToolCallIds: { ...current.subagentToolCallIds, [toolCallId]: true },
+  }, createActivityMessage(
     `subagent:${toolCallId}`,
     SUBAGENT_ACTIVITY_TYPE,
     { text, subAgent: meta },

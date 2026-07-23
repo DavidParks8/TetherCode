@@ -230,6 +230,40 @@ impl RuntimeBackend {
         let snapshot_manager = manager.clone();
         let event_pump = tokio::spawn(async move {
             while let Some(event) = events.recv().await {
+                if let Some((parent_thread_id, child_session_id, child_title)) =
+                    crate::agui::discovered_subagent_session(&event)
+                {
+                    match snapshot_manager
+                        .adopt_related_session(parent_thread_id, &child_session_id, child_title)
+                        .await
+                    {
+                        Ok(thread_id) => {
+                            if let Ok(session) = snapshot_manager.read_session(&thread_id).await {
+                                event_hub
+                                    .broadcast_ag_ui_envelope(
+                                        crate::agui::messages_snapshot_envelope(
+                                            &session.snapshot,
+                                            format!("{thread_id}::history"),
+                                            None,
+                                        ),
+                                    )
+                                    .await;
+                            }
+                            event_hub
+                                .broadcast_notification(
+                                    "thread/subagent/adopted",
+                                    json!({
+                                        "threadId": thread_id,
+                                        "parentThreadId": parent_thread_id,
+                                    }),
+                                )
+                                .await;
+                        }
+                        Err(error) => {
+                            eprintln!("failed to adopt ACP subagent session: {error}");
+                        }
+                    }
+                }
                 event_hub.broadcast_canonical_event(&event).await;
                 let terminal = match &event {
                     crate::acp::events::CanonicalEvent::RunFinished {

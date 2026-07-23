@@ -121,8 +121,6 @@ import {
   type AutoScrollState,
   RUN_WATCHDOG_MS,
   WORKSPACE_FAVORITES_LIMIT,
-  ACTIVE_CHAT_SYNC_INTERVAL_MS,
-  IDLE_CHAT_SYNC_INTERVAL_MS,
   AGENT_THREADS_SYNC_INTERVAL_MS,
   AGENT_THREADS_IDLE_SYNC_INTERVAL_MS,
   AGENT_THREADS_BACKGROUND_SYNC_INTERVAL_MS,
@@ -4177,40 +4175,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
       [agentRootThreadId, api, closeAgentDetail, loadAgentDetail]
     );
 
-    useEffect(() => {
-      if (!agentDetailThreadId) {
-        return;
-      }
-      let stopped = false;
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      const poll = async () => {
-        if (stopped) {
-          return;
-        }
-        await loadAgentDetail(agentDetailThreadId);
-        if (stopped) {
-          return;
-        }
-        const summary = api.peekChatSummary(agentDetailThreadId) ?? agentDetailChat;
-        const snapshot = threadRuntimeSnapshotsRef.current[agentDetailThreadId];
-        const running = summary
-          ? buildAgentThreadDisplayState(summary, snapshot).isActive
-          : false;
-        timer = setTimeout(() => {
-          void poll();
-        }, running ? ACTIVE_CHAT_SYNC_INTERVAL_MS : IDLE_CHAT_SYNC_INTERVAL_MS);
-      };
-      timer = setTimeout(() => {
-        void poll();
-      }, ACTIVE_CHAT_SYNC_INTERVAL_MS);
-      return () => {
-        stopped = true;
-        if (timer) {
-          clearTimeout(timer);
-        }
-      };
-    }, [agentDetailChat, agentDetailThreadId, api, loadAgentDetail]);
-
     const openAgentThreadSelector = useCallback(
       async (query?: string | null): Promise<boolean> => {
         const focusChat = selectedChatRef.current;
@@ -5423,8 +5387,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
                 clearPendingPlanImplementationPrompt(agUiEnvelope.threadId);
               }
               loadChat(agUiEnvelope.threadId).catch(() => {});
-            } else if (agentDetailThreadId === agUiEnvelope.threadId) {
-              void loadAgentDetail(agUiEnvelope.threadId);
             }
             return;
           }
@@ -5477,6 +5439,15 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
             );
           } else {
             loadChat(threadId, { preserveRuntimeState: true }).catch(() => {});
+          }
+          return;
+        }
+
+        if (event.method === 'thread/subagent/adopted') {
+          const params = toRecord(event.params);
+          const threadId = extractNotificationThreadId(params);
+          if (threadId && threadId === agentDetailThreadId && !agentDetailChat) {
+            void loadAgentDetail(threadId, true);
           }
           return;
         }
@@ -7731,18 +7702,6 @@ export const MainScreen = forwardRef<MainScreenHandle, MainScreenProps>(
           agentThreadStatusById={agentThreadStatusById}
           onOpenLocalPreview={onOpenLocalPreviewHandler}
           onClose={closeAgentDetail}
-          onRefresh={() => {
-            if (agentDetailThreadId) {
-              void loadAgentDetail(agentDetailThreadId, true);
-            }
-          }}
-          onOpenAsChat={() => {
-            const threadId = agentDetailThreadId;
-            closeAgentDetail();
-            if (threadId) {
-              openChatThread(threadId, agentDetailChat);
-            }
-          }}
         />
 
         <SelectionSheet

@@ -1,12 +1,14 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   type FlatList,
-  Modal,
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,7 +21,6 @@ import type { TranscriptDisplayItem } from './transcriptMessages';
 import { ChatTranscriptView } from './ChatTranscriptView';
 import { useAppTheme, type AppTheme } from '../theme';
 import {
-  controlAccessibilityState,
   decorativeAccessibilityProps,
   useAccessibilityAnnouncement,
   useModalAccessibilityFocus,
@@ -42,8 +43,6 @@ interface SubAgentDetailViewProps {
   agentThreadStatusById: ReadonlyMap<string, Chat['status']>;
   onOpenLocalPreview?: (targetUrl: string) => void;
   onClose: () => void;
-  onOpenAsChat: () => void;
-  onRefresh: () => void;
 }
 
 export function SubAgentDetailView({
@@ -63,11 +62,13 @@ export function SubAgentDetailView({
   agentThreadStatusById,
   onOpenLocalPreview,
   onClose,
-  onOpenAsChat,
-  onRefresh,
 }: SubAgentDetailViewProps) {
   const theme = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { width: viewportWidth } = useWindowDimensions();
+  const transition = useRef(new Animated.Value(1)).current;
+  const [mounted, setMounted] = useState(visible);
+  const closingRef = useRef(false);
   const scrollRef = useRef<FlatList<TranscriptDisplayItem>>(null);
   const autoScrollStateRef = useRef<AutoScrollState>({
     shouldStickToBottom: true,
@@ -89,6 +90,7 @@ export function SubAgentDetailView({
           authoritativeSnapshot: false,
           runByMessageId: {}, terminalMessageIds: [], replacesMessageIdByMessageId: {},
           toolCallMessageIdByCallId: {}, toolResultMessageIdByCallId: {},
+          subagentToolCallIds: {},
           toolTextRevisionByCallId: {}, structuredRevisionByCallId: {},
           structuredTextByCallId: {}, chunkAssemblies: {}, state: null, steps: {}, rawEvents: [],
           customMetadata: {}, customMetadataOrder: [],
@@ -98,32 +100,71 @@ export function SubAgentDetailView({
   const modalFocusRef = useModalAccessibilityFocus(visible);
   useAccessibilityAnnouncement(visible ? error ?? (loading ? 'Loading agent transcript' : null) : null);
 
+  useEffect(() => {
+    if (visible) {
+      closingRef.current = false;
+      setMounted(true);
+      transition.stopAnimation();
+      transition.setValue(1);
+      Animated.timing(transition, {
+        toValue: 0,
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+      return;
+    }
+    if (mounted && !closingRef.current) {
+      Animated.timing(transition, {
+        toValue: 1,
+        duration: 200,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }).start(() => setMounted(false));
+    }
+  }, [mounted, transition, visible]);
+
+  const navigateBack = useCallback(() => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    Animated.timing(transition, {
+      toValue: 1,
+      duration: 200,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start(() => {
+      setMounted(false);
+      closingRef.current = false;
+      onClose();
+    });
+  }, [onClose, transition]);
+
+  if (!mounted) return null;
+
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+    <Animated.View
+      style={[
+        styles.page,
+        {
+          transform: [{
+            translateX: transition.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, Math.max(viewportWidth, 1)],
+            }),
+          }],
+        },
+      ]}
+    >
       <SafeAreaView accessibilityViewIsModal importantForAccessibility="yes" style={styles.container}>
         <View style={styles.header}>
-          <Pressable onPress={onClose} hitSlop={8} style={styles.iconButton} accessibilityRole="button" accessibilityLabel="Close sub-agent transcript">
+          <Pressable onPress={navigateBack} hitSlop={8} style={styles.iconButton} accessibilityRole="button" accessibilityLabel="Back from sub-agent transcript">
             <Ionicons {...decorativeAccessibilityProps} name="chevron-back" size={22} color={theme.colors.textPrimary} />
           </Pressable>
           <View style={styles.headerCopy}>
             <Text style={styles.eyebrow}>Sub-agent</Text>
             <Text ref={modalFocusRef} accessibilityRole="header" style={styles.title} numberOfLines={1}>{title}</Text>
           </View>
-          <Pressable
-            onPress={onRefresh}
-            hitSlop={8}
-            style={styles.iconButton}
-            disabled={loading}
-            accessibilityRole="button"
-            accessibilityLabel="Refresh sub-agent transcript"
-            accessibilityState={controlAccessibilityState({ disabled: loading, busy: loading })}
-          >
-            {loading ? (
-              <ActivityIndicator size="small" color={theme.colors.textMuted} />
-            ) : (
-              <Ionicons {...decorativeAccessibilityProps} name="refresh" size={18} color={theme.colors.textMuted} />
-            )}
-          </Pressable>
+          <View style={styles.iconButton} />
         </View>
 
         <View style={styles.statusBar} accessibilityLiveRegion="polite">
@@ -152,10 +193,6 @@ export function SubAgentDetailView({
               <Text style={styles.activityDetail} numberOfLines={2}>{activityDetail}</Text>
             ) : null}
           </View>
-          <Pressable onPress={onOpenAsChat} style={styles.openChatButton} accessibilityRole="button" accessibilityLabel="Open sub-agent as chat">
-            <Text style={styles.openChatButtonText}>Open as chat</Text>
-            <Ionicons {...decorativeAccessibilityProps} name="open-outline" size={14} color={theme.colors.textPrimary} />
-          </Pressable>
         </View>
 
         {error ? <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={styles.errorText}>{error}</Text> : null}
@@ -194,11 +231,17 @@ export function SubAgentDetailView({
           )}
         </View>
       </SafeAreaView>
-    </Modal>
+    </Animated.View>
   );
 }
 
 const createStyles = (theme: AppTheme) => StyleSheet.create({
+  page: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 100,
+    elevation: 24,
+    backgroundColor: theme.colors.bgMain,
+  },
   container: {
     flex: 1,
     backgroundColor: theme.colors.bgMain,
@@ -263,21 +306,6 @@ const createStyles = (theme: AppTheme) => StyleSheet.create({
   activityDetail: {
     ...theme.typography.caption,
     color: theme.colors.textSecondary,
-  },
-  openChatButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
-    borderRadius: theme.radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.borderHighlight,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 7,
-  },
-  openChatButtonText: {
-    ...theme.typography.caption,
-    color: theme.colors.textPrimary,
-    fontWeight: '700',
   },
   errorText: {
     ...theme.typography.caption,

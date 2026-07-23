@@ -653,9 +653,12 @@ describe('MainScreen control and modal coverage', () => {
     expect(api.getChat).toHaveBeenCalledWith(subAgentChat.id, { forceRefresh: true });
     const detailMessage = root.findAllByType(ChatMessage).find((node) => node.props.message.id === 'message-sub');
     expect(detailMessage).toBeTruthy();
+    expect(root.findAll((node) => node.props.accessibilityLabel === 'Refresh sub-agent transcript')).toHaveLength(0);
+    expect(root.findAll((node) => node.props.accessibilityLabel === 'Open sub-agent as chat')).toHaveLength(0);
     act(() => detailMessage?.props.onOpenLocalPreview('http://localhost:4173'));
     expect(onOpenLocalPreview).toHaveBeenCalledWith('http://localhost:4173');
-    await press(byLabel(root, 'Close sub-agent transcript'));
+    await press(byLabel(root, 'Back from sub-agent transcript'));
+    await advance(250);
 
     act(() => tree.unmount());
   });

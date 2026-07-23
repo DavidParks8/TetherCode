@@ -1136,6 +1136,31 @@ fn parse_task_subagent(content: &str) -> Option<TaskSubagent<'_>> {
     })
 }
 
+pub(super) fn discovered_subagent_session(
+    canonical: &CanonicalEvent,
+) -> Option<(&str, String, Option<&str>)> {
+    let CanonicalEvent::Tool {
+        thread_id,
+        title,
+        content,
+        ..
+    } = canonical
+    else {
+        return None;
+    };
+    let content = match content {
+        FieldUpdate::Set(content) | FieldUpdate::Append(content) => content,
+        FieldUpdate::Clear | FieldUpdate::Unchanged => return None,
+    };
+    parse_task_subagent(content).map(|task| {
+        (
+            thread_id.as_str(),
+            task.session_id,
+            (!title.trim().is_empty()).then_some(title.as_str()),
+        )
+    })
+}
+
 fn xml_attribute<'a>(header: &'a str, name: &str) -> Option<&'a str> {
     let marker = format!(r#"{name}=""#);
     let value = header.split_once(&marker)?.1;

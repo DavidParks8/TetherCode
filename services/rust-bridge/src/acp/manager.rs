@@ -24,7 +24,7 @@ use crate::storage::atomic_write_private;
 use super::config::ResolvedAgentManifest;
 use super::events::{
     canonical_event_channel, CanonicalEvent, CanonicalEventReceiver, CanonicalEventSender,
-    FieldUpdate,
+    FieldUpdate, MessageRole,
 };
 use super::identity::AgentSessionId;
 use super::interactions::{PendingElicitationSummary, PendingPermissionSummary};
@@ -47,6 +47,8 @@ const OPENCODE_SESSION_CATALOG_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_OPENCODE_SESSION_CATALOG_BYTES: usize = 256 * 1024;
 const OPENCODE_MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_OPENCODE_MODEL_CATALOG_BYTES: usize = 2 * 1024 * 1024;
+const OPENCODE_EXPORT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_OPENCODE_EXPORT_BYTES: usize = 4 * 1024 * 1024;
 
 pub type AgentId = String;
 type AgentStartResult = (
@@ -269,6 +271,62 @@ struct OpenCodeModelLimit {
 #[derive(Debug, Deserialize)]
 struct OpenCodeModelCapabilities {
     reasoning: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct OpenCodeRelatedSession {
+    session_id: String,
+    title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeExportDocument {
+    #[serde(default)]
+    messages: Vec<OpenCodeExportMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeExportMessage {
+    info: OpenCodeExportMessageInfo,
+    #[serde(default)]
+    parts: Vec<OpenCodeExportPart>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeExportMessageInfo {
+    id: String,
+    role: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeExportPart {
+    id: Option<String>,
+    #[serde(rename = "type")]
+    part_type: String,
+    text: Option<String>,
+    tool: Option<String>,
+    state: Option<OpenCodeExportToolState>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeExportToolState {
+    status: Option<String>,
+    title: Option<String>,
+    input: Option<OpenCodeExportToolInput>,
+    output: Option<String>,
+    error: Option<String>,
+    metadata: Option<OpenCodeExportToolMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenCodeExportToolInput {
+    description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenCodeExportToolMetadata {
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1103,6 +1161,47 @@ impl AgentManager {
             .map_err(|_| AgentManagerError::InvalidCursor)
     }
 
+    pub async fn adopt_related_session(
+        &self,
+        parent_thread_id: &str,
+        child_session_id: &str,
+        title: Option<&str>,
+    ) -> Result<String, AgentManagerError> {
+        let parent = AgentSessionId::decode(parent_thread_id)
+            .map_err(|_| AgentManagerError::InvalidThreadId)?;
+        let child = AgentSessionId::new(parent.agent_id.clone(), child_session_id.to_string())
+            .map_err(|_| AgentManagerError::InvalidThreadId)?;
+        if child.acp_session_id == parent.acp_session_id {
+            return Err(AgentManagerError::InvalidThreadId);
+        }
+        let parent_entry = self
+            .session_index
+            .lock()
+            .await
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.agent_id == parent.agent_id && entry.acp_session_id == parent.acp_session_id
+            })
+            .cloned()
+            .ok_or_else(|| {
+                AgentManagerError::SessionIndex("parent session is not indexed".to_string())
+            })?;
+        self.session_index
+            .lock()
+            .await
+            .insert_all([SessionIndexEntry {
+                agent_id: child.agent_id.clone(),
+                acp_session_id: child.acp_session_id.clone(),
+                cwd: parent_entry.cwd,
+                title: title
+                    .filter(|title| valid_session_title(title))
+                    .map(str::to_string),
+            }])
+            .await?;
+        Ok(child.encode())
+    }
+
     pub async fn prompt(
         &self,
         thread_id: &str,
@@ -1527,8 +1626,8 @@ impl AgentManager {
                     "session has no durable canonical workspace path".to_string(),
                 )
             })?;
-        if let Some(title) = entry.title {
-            snapshot.title = Some(title);
+        if let Some(title) = &entry.title {
+            snapshot.title = Some(title.clone());
         } else if snapshot.title.is_none() || snapshot.updated_at.is_none() {
             if let Some(runtime) = self.agents.get(&identity.agent_id) {
                 let summaries = self.opencode_session_summaries(runtime).await;
@@ -1543,6 +1642,16 @@ impl AgentManager {
                 }
             }
         }
+        self.adopt_snapshot_subagents(&snapshot, &entry.cwd).await?;
+        self.adopt_exported_subagents(&identity, &entry.cwd).await?;
+        if snapshot.messages.is_empty() {
+            self.seed_exported_session(&identity, &entry.cwd, &session)
+                .await;
+            snapshot = session.snapshot().await;
+            if let Some(title) = entry.title.clone() {
+                snapshot.title = Some(title);
+            }
+        }
         Ok(ManagedSession {
             thread_id: snapshot.thread_id.clone(),
             agent_id: snapshot.agent_id.clone(),
@@ -1550,6 +1659,228 @@ impl AgentManager {
             snapshot,
         })
     }
+
+    async fn adopt_snapshot_subagents(
+        &self,
+        snapshot: &SessionSnapshot,
+        cwd: &Path,
+    ) -> Result<(), AgentManagerError> {
+        let parent = AgentSessionId::decode(&snapshot.thread_id)
+            .map_err(|_| AgentManagerError::InvalidThreadId)?;
+        let entries = snapshot
+            .tools
+            .values()
+            .filter_map(|tool| snapshot_task_session_id(&tool.content))
+            .filter_map(|session_id| {
+                AgentSessionId::new(parent.agent_id.clone(), session_id)
+                    .ok()
+                    .filter(|child| child.acp_session_id != parent.acp_session_id)
+            })
+            .map(|child| index_entry(child, cwd.to_path_buf()))
+            .collect::<Vec<_>>();
+        if !entries.is_empty() {
+            self.session_index.lock().await.insert_all(entries).await?;
+        }
+        Ok(())
+    }
+
+    async fn adopt_exported_subagents(
+        &self,
+        parent: &AgentSessionId,
+        cwd: &Path,
+    ) -> Result<(), AgentManagerError> {
+        let entries = self
+            .opencode_related_sessions(parent, cwd)
+            .await
+            .into_iter()
+            .filter_map(|related| {
+                AgentSessionId::new(parent.agent_id.clone(), related.session_id)
+                    .ok()
+                    .filter(|child| child.acp_session_id != parent.acp_session_id)
+                    .map(|child| SessionIndexEntry {
+                        agent_id: child.agent_id,
+                        acp_session_id: child.acp_session_id,
+                        cwd: cwd.to_path_buf(),
+                        title: related.title.filter(|title| valid_session_title(title)),
+                    })
+            })
+            .collect::<Vec<_>>();
+        if !entries.is_empty() {
+            self.session_index.lock().await.insert_all(entries).await?;
+        }
+        Ok(())
+    }
+
+    async fn opencode_related_sessions(
+        &self,
+        parent: &AgentSessionId,
+        cwd: &Path,
+    ) -> Vec<OpenCodeRelatedSession> {
+        let Some(document) = self.opencode_export(parent, cwd).await else {
+            return Vec::new();
+        };
+        parse_opencode_related_sessions(document)
+    }
+
+    async fn opencode_export(
+        &self,
+        identity: &AgentSessionId,
+        cwd: &Path,
+    ) -> Option<OpenCodeExportDocument> {
+        let runtime = self.agents.get(&identity.agent_id)?;
+        if runtime.manifest.resolved.agent_id != "opencode"
+            || runtime.manifest.resolved.argv != ["acp"]
+        {
+            return None;
+        }
+        let mut command = AsyncCommand::new(&runtime.manifest.resolved.executable);
+        command
+            .args(["export", &identity.acp_session_id])
+            .current_dir(cwd)
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        for name in ["PATH", "HOME", "TMPDIR", "LANG", "XDG_CONFIG_HOME"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        let Ok(Ok(output)) = tokio::time::timeout(OPENCODE_EXPORT_TIMEOUT, command.output()).await
+        else {
+            return None;
+        };
+        if !output.status.success() || output.stdout.len() > MAX_OPENCODE_EXPORT_BYTES {
+            return None;
+        }
+        serde_json::from_slice(&output.stdout).ok()
+    }
+
+    async fn seed_exported_session(
+        &self,
+        identity: &AgentSessionId,
+        cwd: &Path,
+        session: &super::session::AcpSession,
+    ) {
+        let Some(document) = self.opencode_export(identity, cwd).await else {
+            return;
+        };
+        for event in exported_session_events(identity, document) {
+            session.emit(event).await;
+        }
+    }
+}
+
+fn snapshot_task_session_id(content: &str) -> Option<String> {
+    let header = content
+        .trim_start()
+        .strip_prefix("<task ")?
+        .split_once('>')?
+        .0;
+    let marker = "id=\"";
+    let value = header.split_once(marker)?.1.split_once('"')?.0.trim();
+    (!value.is_empty() && value.len() <= 1_024).then(|| value.to_string())
+}
+
+fn parse_opencode_related_sessions(
+    document: OpenCodeExportDocument,
+) -> Vec<OpenCodeRelatedSession> {
+    let mut related = document
+        .messages
+        .into_iter()
+        .flat_map(|message| message.parts)
+        .filter(|part| part.part_type == "tool" && part.tool.as_deref() == Some("task"))
+        .filter_map(|part| {
+            let state = part.state?;
+            let session_id = state
+                .metadata
+                .and_then(|metadata| metadata.session_id)
+                .or_else(|| state.output.as_deref().and_then(snapshot_task_session_id))?;
+            let title = state
+                .input
+                .and_then(|input| input.description)
+                .map(|title| title.trim().to_string())
+                .filter(|title| valid_session_title(title));
+            Some(OpenCodeRelatedSession { session_id, title })
+        })
+        .collect::<Vec<_>>();
+    related.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+    related.dedup_by(|left, right| left.session_id == right.session_id);
+    related.truncate(128);
+    related
+}
+
+fn exported_session_events(
+    identity: &AgentSessionId,
+    document: OpenCodeExportDocument,
+) -> Vec<CanonicalEvent> {
+    let thread_id = identity.encode();
+    let mut events = Vec::new();
+    for message in document.messages {
+        for (index, part) in message.parts.into_iter().enumerate() {
+            let canonical_id = format!(
+                "export:{}:{}",
+                message.info.id,
+                part.id.unwrap_or_else(|| index.to_string())
+            );
+            let role = match (message.info.role.as_str(), part.part_type.as_str()) {
+                (_, "reasoning") => Some(MessageRole::Thought),
+                ("user", "text") => Some(MessageRole::User),
+                ("assistant", "text") => Some(MessageRole::Agent),
+                _ => None,
+            };
+            if let (Some(role), Some(text)) = (role, part.text.as_deref()) {
+                if !text.trim().is_empty() {
+                    events.push(CanonicalEvent::MessageChunk {
+                        agent_id: identity.agent_id.clone(),
+                        thread_id: thread_id.clone(),
+                        run_id: None,
+                        source_turn_id: None,
+                        generation: None,
+                        role,
+                        message_id: canonical_id,
+                        content: text.to_string(),
+                        content_block: None,
+                    });
+                }
+                continue;
+            }
+            if part.part_type == "tool" {
+                let Some(state) = part.state else {
+                    continue;
+                };
+                let status = match state.status.as_deref() {
+                    Some("completed") => {
+                        agent_client_protocol::schema::v1::ToolCallStatus::Completed
+                    }
+                    Some("error") => agent_client_protocol::schema::v1::ToolCallStatus::Failed,
+                    Some("running") => {
+                        agent_client_protocol::schema::v1::ToolCallStatus::InProgress
+                    }
+                    _ => agent_client_protocol::schema::v1::ToolCallStatus::Pending,
+                };
+                let content = state.output.or(state.error).unwrap_or_default();
+                events.push(CanonicalEvent::Tool {
+                    agent_id: identity.agent_id.clone(),
+                    thread_id: thread_id.clone(),
+                    run_id: None,
+                    source_turn_id: None,
+                    generation: None,
+                    tool_call_id: canonical_id,
+                    kind: agent_client_protocol::schema::v1::ToolKind::Other,
+                    status,
+                    title: state
+                        .title
+                        .or(part.tool)
+                        .unwrap_or_else(|| "tool".to_string()),
+                    content: FieldUpdate::Set(content),
+                    structured_content: FieldUpdate::Set(Vec::new()),
+                    locations: FieldUpdate::Set(Vec::new()),
+                });
+            }
+        }
+    }
+    events
 }
 
 fn valid_session_title(title: &str) -> bool {
@@ -1664,6 +1995,80 @@ mod catalog_tests {
         assert_eq!(catalog[0].display_name, "Demo Model");
         assert_eq!(catalog[0].context_window, Some(200000));
         assert_eq!(catalog[0].reasoning_effort, vec!["high", "max"]);
+    }
+
+    #[test]
+    fn parses_related_sessions_from_opencode_export() {
+        let document = serde_json::from_slice::<OpenCodeExportDocument>(
+            br#"{
+                    "messages": [{
+                        "info": { "id": "message-parent", "role": "assistant" },
+                        "parts": [{
+                            "type": "tool",
+                            "tool": "task",
+                            "state": {
+                                "input": { "description": "Ask subagent about hobbies" },
+                                "output": "<task id=\"child-fallback\" state=\"completed\"></task>",
+                                "metadata": { "sessionId": "child-session" }
+                            }
+                        }]
+                    }]
+                }"#,
+        )
+        .unwrap();
+        let related = parse_opencode_related_sessions(document);
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].session_id, "child-session");
+        assert_eq!(
+            related[0].title.as_deref(),
+            Some("Ask subagent about hobbies")
+        );
+    }
+
+    #[test]
+    fn converts_opencode_export_messages_to_canonical_transcript_events() {
+        let document = serde_json::from_slice::<OpenCodeExportDocument>(
+            br#"{
+                    "messages": [
+                        {
+                            "info": { "id": "user-message", "role": "user" },
+                            "parts": [{ "id": "user-text", "type": "text", "text": "Hello" }]
+                        },
+                        {
+                            "info": { "id": "assistant-message", "role": "assistant" },
+                            "parts": [
+                                { "id": "thought", "type": "reasoning", "text": "Thinking" },
+                                { "id": "answer", "type": "text", "text": "Hi there" }
+                            ]
+                        }
+                    ]
+                }"#,
+        )
+        .unwrap();
+        let identity = AgentSessionId::new("opencode", "child-session").unwrap();
+        let events = exported_session_events(&identity, document);
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            events[0],
+            CanonicalEvent::MessageChunk {
+                role: MessageRole::User,
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[1],
+            CanonicalEvent::MessageChunk {
+                role: MessageRole::Thought,
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[2],
+            CanonicalEvent::MessageChunk {
+                role: MessageRole::Agent,
+                ..
+            }
+        ));
     }
 }
 
@@ -2561,6 +2966,103 @@ mod tests {
             refreshed.sessions[0].snapshot.title.as_deref(),
             Some("Manual title")
         );
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn discovered_subagent_inherits_parent_workspace_and_loads() {
+        let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
+        let ready = connection_with_capabilities(
+            "alpha",
+            AgentCapabilities::new().load_session(true),
+            observed_tx,
+        )
+        .await;
+        let manager = AgentManager::from_start_results(
+            "alpha".into(),
+            vec![(manifest("alpha", "Alpha"), Ok(ready))],
+        )
+        .await
+        .expect("manager starts");
+        let parent = AgentSessionId::new("alpha", "parent-session").unwrap();
+        manager
+            .session_index
+            .lock()
+            .await
+            .insert_all([index_entry(parent.clone(), PathBuf::from("/tmp"))])
+            .await
+            .unwrap();
+
+        let child_thread_id = manager
+            .adopt_related_session(&parent.encode(), "child-session", Some("Child task"))
+            .await
+            .expect("child adopted");
+        let child = manager
+            .read_session(&child_thread_id)
+            .await
+            .expect("child loads through ACP");
+        assert_eq!(child.cwd, PathBuf::from("/tmp"));
+        assert_eq!(
+            AgentSessionId::decode(&child.thread_id)
+                .unwrap()
+                .acp_session_id,
+            "child-session"
+        );
+        assert_eq!(observed_rx.recv().await.as_deref(), Some("load:alpha"));
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn persisted_parent_task_snapshot_adopts_child_session() {
+        let (observed_tx, _observed_rx) = mpsc::unbounded_channel();
+        let ready = connection("alpha", false, "unused", observed_tx).await;
+        let manager = AgentManager::from_start_results(
+            "alpha".into(),
+            vec![(manifest("alpha", "Alpha"), Ok(ready))],
+        )
+        .await
+        .expect("manager starts");
+        let parent = manager
+            .new_session("alpha", NewSessionRequest::new("/tmp"))
+            .await
+            .expect("parent created");
+        let (_, session_id, connection) = manager.route_thread(&parent.thread_id).unwrap();
+        let session = connection
+            .session(&session_id)
+            .await
+            .expect("parent loaded");
+        session
+            .emit(CanonicalEvent::Tool {
+                agent_id: "alpha".into(),
+                thread_id: parent.thread_id.clone(),
+                run_id: None,
+                source_turn_id: None,
+                generation: None,
+                tool_call_id: "task-persisted".into(),
+                kind: agent_client_protocol::schema::v1::ToolKind::Other,
+                status: agent_client_protocol::schema::v1::ToolCallStatus::Completed,
+                title: "task".into(),
+                content: FieldUpdate::Set(
+                    "<task id=\"child-persisted\" state=\"completed\"></task>".into(),
+                ),
+                structured_content: FieldUpdate::Set(Vec::new()),
+                locations: FieldUpdate::Set(Vec::new()),
+            })
+            .await;
+
+        manager
+            .read_session(&parent.thread_id)
+            .await
+            .expect("parent read");
+        assert!(manager
+            .session_index
+            .lock()
+            .await
+            .entries
+            .iter()
+            .any(|entry| {
+                entry.agent_id == "alpha" && entry.acp_session_id == "child-persisted"
+            }));
         manager.shutdown().await;
     }
 

@@ -580,5 +580,33 @@ describe('AG-UI bridge notifications', () => {
       threadId: 'parent', runId: 'run', event: subagent,
     });
     expect(messages(repeated, 'parent')).toHaveLength(1);
+
+    for (const event of [
+      { type: EventType.TOOL_CALL_START, toolCallId: 'task-1', toolCallName: 'task' },
+      { type: EventType.TOOL_CALL_ARGS, toolCallId: 'task-1', delta: '{}' },
+      {
+        type: EventType.TOOL_CALL_RESULT,
+        messageId: 'late-result',
+        toolCallId: 'task-1',
+        role: 'tool',
+        content: 'late result',
+      },
+      {
+        type: EventType.CUSTOM,
+        name: 'tethercode.dev/tool-text',
+        value: { toolCallId: 'task-1', revision: 'late-text', content: 'late text' },
+      },
+      {
+        type: EventType.CUSTOM,
+        name: 'tethercode.dev/tool-content',
+        value: { toolCallId: 'task-1', revision: 'late-content', content: [], locations: [] },
+      },
+    ] as AGUIEvent[]) {
+      state = updateAgUiLiveAssistantMessages(state, {
+        threadId: 'parent', runId: 'run', event,
+      });
+    }
+    expect(messages(state, 'parent')).toHaveLength(1);
+    expect(messages(state, 'parent')[0]).toMatchObject({ id: 'subagent:task-1' });
   });
 });
