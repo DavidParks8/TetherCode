@@ -26,7 +26,7 @@
     "@expo-google-fonts/space-mono": "^0.4.2",
     "@expo/metro-runtime": "~55.0.6",
     "@expo/vector-icons": "15.0.3",
-    "expo": "~55.0.8",
+    "expo": "~55.0.28",
     "expo-blur": "~55.0.10",
     "expo-camera": "~55.0.10",
     "expo-clipboard": "~55.0.9",
