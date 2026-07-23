@@ -2,8 +2,6 @@ import type { ChatMessage } from '../api/types';
 import {
   COMPACTION_ACTIVITY_TYPE,
   createActivityMessage,
-  getMessageText,
-  getSubAgentMeta,
   SUBAGENT_ACTIVITY_TYPE,
 } from '../api/messages';
 import {
@@ -179,8 +177,13 @@ describe('getVisibleTranscriptMessages', () => {
 
     const synced = syncVisibleSubAgentStatuses(messages, new Map([['child', 'complete']]));
 
-    expect(getMessageText(synced[0]!)).toContain('Status: complete');
-    expect(getSubAgentMeta(synced[0]!)?.agentStatus).toBe('complete');
+    const syncedMessage = synced[0];
+    expect(syncedMessage?.role).toBe('activity');
+    if (!syncedMessage || syncedMessage.role !== 'activity') {
+      throw new Error('Expected synced sub-agent message to be an activity message.');
+    }
+    expect(syncedMessage.content.text).toContain('Status: complete');
+    expect(syncedMessage.content.subAgent?.agentStatus).toBe('complete');
   });
 
   it('hides internal protocol content and blank assistant messages', () => {
@@ -209,7 +212,12 @@ describe('getVisibleTranscriptMessages', () => {
     });
     const synced = syncVisibleSubAgentStatuses([message('a', 'assistant', 'before'), spawned], new Map([['child', 'running']]));
     expect(synced).not.toBe([message('a', 'assistant', 'before'), spawned]);
-    expect(getMessageText(synced[1])).toBe('• Spawned sub-agent\n  Status: running');
+    const syncedSpawned = synced[1];
+    expect(syncedSpawned?.role).toBe('activity');
+    if (!syncedSpawned || syncedSpawned.role !== 'activity') {
+      throw new Error('Expected synced spawned message to be an activity message.');
+    }
+    expect(syncedSpawned.content.text).toBe('• Spawned sub-agent\n  Status: running');
     expect(syncVisibleSubAgentStatuses([synced[1]], new Map([['child', 'running']]))[0]).toBe(synced[1]);
     expect(syncVisibleSubAgentStatuses([spawned], new Map([['other', 'running']]))).toEqual([spawned]);
   });

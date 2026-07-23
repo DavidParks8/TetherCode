@@ -1,1 +1,1 @@
-export { BridgeUiBanner, BridgeUiModal, BridgeUiWorkflowCard } from './BridgeUiSurfaceImplementation';
+export { BridgeUiBanner, BridgeUiModal, BridgeUiWorkflowCard } from './BridgeUiSurfaceRenderers';

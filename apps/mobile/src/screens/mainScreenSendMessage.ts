@@ -7,7 +7,7 @@ import type {
 } from '../api/types';
 import { getMessageText } from '../api/messages';
 import { toMentionInput, toOptimisticUserContent, normalizeChatMessageMatchContent, shouldAutoEnablePlanModeFromChat, isChatLikelyRunning, parseGoalSlashObjective, buildOptimisticGoalBridgeUiSurface } from './mainScreenHelpers';
-import type { MainScreenSection27Context } from './mainScreenSection27';
+import type { MainScreenSendMessageHandlerContext } from './mainScreenSendMessageHandler';
 import type { ComposerSubmission } from './controllers/submissionController';
 
 export interface SendMessageOptions {
@@ -21,7 +21,7 @@ export interface SendMessageOptions {
   submission?: ComposerSubmission;
 }
 
-export async function executeSendMessage(context: MainScreenSection27Context, rawContent: string, options?: SendMessageOptions): Promise<boolean> {
+export async function executeSendMessage(context: MainScreenSendMessageHandlerContext, rawContent: string, options?: SendMessageOptions): Promise<boolean> {
   const {
     selectedChatId,
     handleSlashCommand,

@@ -82,6 +82,8 @@ for (const method of mobileRequestMethods) {
 for (const method of manifest.notifications) {
   if (!rust.includes(`"${method}"`)) fail(`Rust notification missing: ${method}`);
 }
+const errorCodes = manifest.errors.map(({ code }) => code);
+if (new Set(errorCodes).size !== errorCodes.length) fail('error codes must be unique');
 for (const { code, name } of manifest.errors) {
   if (!Number.isInteger(code) || typeof name !== 'string') fail('invalid error entry');
   if (!rust.includes(String(code))) fail(`Rust error code missing: ${String(code)}`);

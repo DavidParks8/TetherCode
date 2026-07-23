@@ -9,7 +9,7 @@ import type {
   ChatReadOptions,
   ChatSummariesReadOptions,
   ListAllChatsOptions,
-} from "./clientInternalsPart2";
+} from "./clientChatListInternals";
 import type {
   AgentId,
   ApprovalPolicy,
@@ -74,7 +74,7 @@ import type {
   SnapshotPageResponse,
   TurnInputLocalImage,
   TurnInputMention,
-} from "./clientInternalsPart1";
+} from "./clientContractsAndSnapshotInternals";
 import type { HostBridgeWsClient } from "./ws";
 
 export abstract class HostBridgeApiClientCore {

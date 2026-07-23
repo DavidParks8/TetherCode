@@ -12,7 +12,7 @@
     "build": "node scripts/run-expo.cjs export --platform all --output-dir dist",
     "test": "jest --passWithNoTests",
     "test:coverage": "jest --runInBand --coverage",
-    "test:contract": "jest --runInBand src/api/contractFixtures.test.ts",
+    "test:contract": "jest --runInBand src/api/ws.test.ts src/api/agUi.test.ts src/screens/mainScreenHelpers.test.ts",
     "test:watch": "jest --watch"
   },
   "dependencies": {

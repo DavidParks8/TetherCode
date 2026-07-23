@@ -1,10 +1,34 @@
 import { Platform } from 'react-native';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 import {
   BridgeProtocolVersionError,
   HostBridgeWsClient,
   RpcRequestError,
 } from './ws';
+
+interface ContractManifest {
+  protocolVersion: number;
+  notifications: string[];
+  fixtures: {
+    capabilities: {
+      protocolVersion: number;
+      agUiEvents: boolean;
+    };
+    notification: {
+      method: string;
+      protocolVersion: number;
+      eventId: number;
+    };
+    agUiNotification: {
+      method: string;
+      protocolVersion: number;
+      eventId: number;
+      params: { event: { type: string; delta: string } };
+    };
+  };
+}
 
 class MockWebSocket {
   onopen: (() => void) | null = null;
@@ -55,6 +79,31 @@ afterEach(() => {
 });
 
 describe('HostBridgeWsClient', () => {
+  it('keeps bridge protocol and notification envelopes aligned with contract fixtures', () => {
+    const manifest = JSON.parse(
+      readFileSync(
+        path.resolve(__dirname, '../../../../contracts/bridge-rpc/v2/manifest.json'),
+        'utf8'
+      )
+    ) as ContractManifest;
+
+    expect(manifest.protocolVersion).toBe(HostBridgeWsClient.PROTOCOL_VERSION);
+    expect(manifest.fixtures.capabilities.protocolVersion).toBe(manifest.protocolVersion);
+    expect(manifest.fixtures.capabilities.agUiEvents).toBe(true);
+    expect(manifest.fixtures.notification).toMatchObject({
+      protocolVersion: manifest.protocolVersion,
+      eventId: 7,
+    });
+    expect(manifest.notifications).toContain(manifest.fixtures.notification.method);
+    expect(manifest.fixtures.agUiNotification).toMatchObject({
+      method: 'bridge/agui.event',
+      protocolVersion: manifest.protocolVersion,
+      eventId: 8,
+      params: { event: { type: 'TEXT_MESSAGE_CONTENT', delta: 'Hello' } },
+    });
+    expect(manifest.notifications).toContain(manifest.fixtures.agUiNotification.method);
+  });
+
   it('connect() builds /rpc websocket URL', () => {
     const client = new HostBridgeWsClient('http://localhost:8787');
     client.connect();

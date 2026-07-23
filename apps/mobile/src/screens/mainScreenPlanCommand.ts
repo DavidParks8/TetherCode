@@ -1,9 +1,9 @@
 import type { ChatMessage as ChatTranscriptMessage } from '../api/types';
 import { getMessageText } from '../api/messages';
 import { normalizeChatMessageMatchContent, shouldAutoEnablePlanModeFromChat } from './mainScreenHelpers';
-import type { MainScreenSection21Context } from './mainScreenSection21';
+import type { MainScreenSlashCommandHandlerContext } from './mainScreenSlashCommandHandler';
 
-export async function executePlanCommand(context: MainScreenSection21Context, argText: string): Promise<boolean> {
+export async function executePlanCommand(context: MainScreenSlashCommandHandlerContext, argText: string): Promise<boolean> {
   const {
     setSelectedCollaborationMode,
     setActivity,

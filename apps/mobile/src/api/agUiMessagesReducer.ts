@@ -7,4 +7,4 @@ export type {
   AgUiMessageState,
   AgUiThreadMessageState,
 } from "./agUiMessagesState";
-export { reduceAgUiMessageState } from "./agUiMessagesReducerPart1";
+export { reduceAgUiMessageState } from "./agUiMessagesReducerEntry";

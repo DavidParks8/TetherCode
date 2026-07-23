@@ -1,4 +1,4 @@
-import { HostBridgeWsClientPart4 } from "./HostBridgeWsClientPart4";
+import { HostBridgeWsClientCompletionAndDispatchLayer } from "./HostBridgeWsClientCompletionAndDispatchLayer";
 
 export {
   BridgeProtocolVersionError,
@@ -6,4 +6,4 @@ export {
   RpcRequestError,
 } from "./wsErrors";
 
-export class HostBridgeWsClient extends HostBridgeWsClientPart4 {}
+export class HostBridgeWsClient extends HostBridgeWsClientCompletionAndDispatchLayer {}

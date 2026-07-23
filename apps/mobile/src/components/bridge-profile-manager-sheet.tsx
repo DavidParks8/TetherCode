@@ -1,1 +1,1 @@
-export { BridgeProfileManagerSheet } from './bridge-profile-manager-sheet-implementation';
+export { BridgeProfileManagerSheet } from './bridge-profile-manager-sheet-content';

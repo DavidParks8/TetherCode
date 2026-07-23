@@ -1,17 +1,17 @@
 import type { AppTheme } from '../theme';
-import { createDrawerContentStyleGroup1 } from './drawerContentStyles1';
-import { createDrawerContentStyleGroup2 } from './drawerContentStyles2';
-import { createDrawerContentStyleGroup3 } from './drawerContentStyles3';
+import { createDrawerContentShellStyles } from './drawerContentShellStyles';
+import { createDrawerContentFilterListStyles } from './drawerContentFilterListStyles';
+import { createDrawerContentWorkspaceRowStyles } from './drawerContentWorkspaceRowStyles';
 
 export type DrawerContentStyles =
-  & ReturnType<typeof createDrawerContentStyleGroup1>
-  & ReturnType<typeof createDrawerContentStyleGroup2>
-  & ReturnType<typeof createDrawerContentStyleGroup3>;
+  & ReturnType<typeof createDrawerContentShellStyles>
+  & ReturnType<typeof createDrawerContentFilterListStyles>
+  & ReturnType<typeof createDrawerContentWorkspaceRowStyles>;
 
 export function createDrawerContentStyles(theme: AppTheme): DrawerContentStyles {
   return {
-    ...createDrawerContentStyleGroup1(theme),
-    ...createDrawerContentStyleGroup2(theme),
-    ...createDrawerContentStyleGroup3(theme),
+    ...createDrawerContentShellStyles(theme),
+    ...createDrawerContentFilterListStyles(theme),
+    ...createDrawerContentWorkspaceRowStyles(theme),
   } as DrawerContentStyles;
 }

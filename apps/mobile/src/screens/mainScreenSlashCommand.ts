@@ -1,8 +1,8 @@
 import { executePlanCommand } from './mainScreenPlanCommand';
 import { formatCollaborationModeLabel, parseSlashCommand, findSlashCommandDefinition, isSlashCommandAvailable } from './mainScreenHelpers';
-import type { MainScreenSection21Context } from './mainScreenSection21';
+import type { MainScreenSlashCommandHandlerContext } from './mainScreenSlashCommandHandler';
 
-export async function executeSlashCommand(context: MainScreenSection21Context, input: string): Promise<boolean> {
+export async function executeSlashCommand(context: MainScreenSlashCommandHandlerContext, input: string): Promise<boolean> {
   const {
     setError,
     selectedChatId,
