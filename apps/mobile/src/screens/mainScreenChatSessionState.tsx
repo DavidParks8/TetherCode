@@ -5,6 +5,7 @@ import type { BridgeUiSurface, Chat } from '../api/types';
 import { type ActivePlanState, type ThreadRuntimeSnapshot, type PendingOptimisticUserMessage, type PendingOptimisticQueuedMessage, type ChatModelPreference, SLASH_COMMANDS, normalizeWorkspacePath, toApprovalPolicyForMode, isSlashCommandAvailable } from './mainScreenHelpers';
 import { useAttachmentController } from './controllers/attachmentController';
 import { mergeModelOptions, modelOptionsFromAcpConfig } from './mainScreenChatState';
+import { lastUsedModelPreference } from './mainScreenHelperPreferences';
 import type { MainScreenLifecycleRecoveryContext, MainScreenLifecycleRecoveryResult } from './mainScreenLifecycleRecovery';
 import { EMPTY_MODEL_OPTIONS } from './mainScreenConstants';
 
@@ -178,8 +179,12 @@ export function useMainScreenChatSessionState(context: MainScreenChatSessionStat
   const pendingAgentDefaults = selectedNewAgentId
     ? agentSettings?.[selectedNewAgentId] ?? null
     : null;
-  const preferredDefaultModelId = null;
-  const preferredDefaultEffort = null;
+  const preferredAgentModelPreference = lastUsedModelPreference(
+    chatModelPreferencesRef.current,
+    selectedNewAgentId
+  );
+  const preferredDefaultModelId = preferredAgentModelPreference?.modelId ?? null;
+  const preferredDefaultEffort = preferredAgentModelPreference?.effort ?? null;
   const preferredServiceTier = undefined;
   const preferredCollaborationMode =
     pendingAgentDefaults?.collaborationMode === 'plan'

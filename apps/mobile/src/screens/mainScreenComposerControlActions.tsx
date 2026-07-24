@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo } from 'react';
 import type { AgentId, ServiceTier } from '../api/types';
 import { type SelectionSheetOption } from '../components/SelectionSheet';
 import { normalizeModelId } from './mainScreenHelpers';
+import { agentModelPreferenceKey } from './mainScreenHelperPreferences';
 import { ATTACHMENT_MAX_LABEL } from './controllers/attachmentController';
 import type { MainScreenModeConfigurationSessionContext, MainScreenModeConfigurationSessionResult } from './mainScreenModeConfigurationSession';
 
@@ -15,6 +16,8 @@ export type MainScreenComposerControlActionsContext = MainScreenModeConfiguratio
 export function useMainScreenComposerControlActions(context: MainScreenComposerControlActionsContext) {
   const {
     activeServiceTier,
+    activeAgentId,
+    chatModelPreferencesRef,
     agentSettings,
     applyAcpConfigOption,
     attachmentController,
@@ -25,6 +28,7 @@ export function useMainScreenComposerControlActions(context: MainScreenComposerC
     modelOptions,
     refreshModelOptions,
     rememberChatModelPreference,
+    saveChatModelPreferences,
     retryFailedUploads,
     selectedChatId,
     setActivity,
@@ -66,6 +70,19 @@ export function useMainScreenComposerControlActions(context: MainScreenComposerC
           null,
           activeServiceTier
         );
+      } else if (activeAgentId) {
+        const key = agentModelPreferenceKey(activeAgentId);
+        const nextPreferences = {
+          ...chatModelPreferencesRef.current,
+          [key]: {
+            modelId: normalizedModelId,
+            effort: null,
+            serviceTier: activeServiceTier,
+            updatedAt: new Date().toISOString(),
+          },
+        };
+        chatModelPreferencesRef.current = nextPreferences;
+        void saveChatModelPreferences(nextPreferences);
       }
 
       if (normalizedModelId) {
@@ -78,10 +95,13 @@ export function useMainScreenComposerControlActions(context: MainScreenComposerC
     },
     [
       activeServiceTier,
+      activeAgentId,
       applyAcpConfigOption,
+      chatModelPreferencesRef,
       modelConfig,
       modelOptions,
       rememberChatModelPreference,
+      saveChatModelPreferences,
       selectedChatId,
     ]
   );

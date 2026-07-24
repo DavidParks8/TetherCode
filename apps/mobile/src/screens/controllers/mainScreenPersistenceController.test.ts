@@ -1,6 +1,16 @@
 import { MainScreenPersistenceController } from './mainScreenPersistenceController';
 
 describe('mainScreenPersistenceController', () => {
+  const originalLocalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+
+  afterEach(() => {
+    if (originalLocalStorage) {
+      Object.defineProperty(globalThis, 'localStorage', originalLocalStorage);
+    } else {
+      Reflect.deleteProperty(globalThis, 'localStorage');
+    }
+  });
+
   it('supports its default storage and path dependencies', () => {
     expect(new MainScreenPersistenceController()).toBeInstanceOf(MainScreenPersistenceController);
   });
@@ -17,6 +27,25 @@ describe('mainScreenPersistenceController', () => {
       version: 1,
       entries: { thread: { modelId: 'model' } },
     });
+  });
+
+  it('persists model preferences through browser storage by default', async () => {
+    const values = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: jest.fn((key: string) => values.get(key) ?? null),
+        setItem: jest.fn((key: string, value: string) => values.set(key, value)),
+      },
+    });
+    const controller = new MainScreenPersistenceController(undefined, {}, 'web');
+    await controller.saveModelPreferences({
+      thread: { modelId: 'gpt-5.4', effort: 'high', serviceTier: null, updatedAt: 'now' },
+    });
+    await expect(controller.loadModelPreferences()).resolves.toMatchObject({
+      thread: { modelId: 'gpt-5.4', effort: 'high' },
+    });
+    expect(values.has('tethercode.main-screen.model-preferences.v1')).toBe(true);
   });
 
   it('returns an empty collection when storage cannot be read', async () => {

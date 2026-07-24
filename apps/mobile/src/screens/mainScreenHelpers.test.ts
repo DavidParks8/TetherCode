@@ -8,6 +8,11 @@ import type {
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import * as helpers from './mainScreenHelpers';
+import {
+  agentModelPreferenceKey,
+  lastUsedModelPreference,
+  withLastUsedModelPreference,
+} from './mainScreenHelperPreferences';
 
 interface ContractManifest {
   protocolVersion: number;
@@ -743,6 +748,30 @@ describe('mainScreenHelpers branch behavior', () => {
       },
     }));
     expect(snapshots.thread).toMatchObject({ threadId: 'thread', turnId: 'turn', explanation: null, steps: [{ step: 'ok', status: 'inProgress' }], deltaText: '' });
+  });
+
+  it('resolves and writes last-used model preferences per agent', () => {
+    const preferences = {
+      older: { modelId: 'old', effort: null, serviceTier: null, updatedAt: '2026-07-20T00:00:00.000Z' },
+      newer: { modelId: 'new', effort: 'high' as const, serviceTier: null, updatedAt: '2026-07-22T00:00:00.000Z' },
+      [agentModelPreferenceKey('other')]: {
+        modelId: 'other-model', effort: null, serviceTier: null,
+        updatedAt: '2026-07-23T00:00:00.000Z',
+      },
+    };
+    expect(lastUsedModelPreference(preferences, 'opencode')).toMatchObject({
+      modelId: 'new', effort: 'high',
+    });
+
+    const updated = withLastUsedModelPreference(preferences, 'opencode', {
+      modelId: 'gpt-5.4', effort: 'max', serviceTier: null,
+    });
+    expect(lastUsedModelPreference(updated, 'opencode')).toMatchObject({
+      modelId: 'gpt-5.4', effort: 'max',
+    });
+    expect(lastUsedModelPreference(updated, 'other')).toMatchObject({
+      modelId: 'other-model',
+    });
   });
 
   it('rejects invalid persisted bridge UI containers', () => {

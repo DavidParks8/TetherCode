@@ -149,38 +149,6 @@ export function reduceThreadState(
         event.encryptedValue,
         event.subtype,
       );
-    case EventType.THINKING_START:
-    case EventType.THINKING_TEXT_MESSAGE_START: {
-      const messageId = `${envelope.runId}:thinking`;
-      return findMessage(current, messageId)
-        ? current
-        : upsertMessage(
-            current,
-            {
-              id: messageId,
-              role: "reasoning",
-              content:
-                event.type === EventType.THINKING_START
-                  ? (event.title ?? "")
-                  : "",
-              createdAt: timestampIso(event.timestamp),
-            },
-            envelope.runId,
-            event.timestamp,
-          );
-    }
-    case EventType.THINKING_TEXT_MESSAGE_CONTENT:
-      return appendText(
-        current,
-        `${envelope.runId}:thinking`,
-        event.delta,
-        envelope.runId,
-        event.timestamp,
-        "reasoning",
-      );
-    case EventType.THINKING_TEXT_MESSAGE_END:
-    case EventType.THINKING_END:
-      return markTerminal(current, `${envelope.runId}:thinking`);
     case EventType.TOOL_CALL_START:
       if (current.subagentToolCallIds[event.toolCallId]) return current;
       return startToolCall(

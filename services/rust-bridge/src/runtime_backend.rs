@@ -879,6 +879,13 @@ fn session_to_thread_value(session: crate::acp::manager::ManagedSession) -> Resu
     let snapshot = crate::acp::snapshot::BridgeThreadSnapshot::from(session.snapshot);
     let title = snapshot.session.title.clone();
     let updated_at = snapshot.session.updated_at.clone();
+    let source = session.parent_thread_id.as_ref().map(|parent_thread_id| {
+        json!({
+            "kind": "subAgentThreadSpawn",
+            "parentThreadId": parent_thread_id,
+            "depth": 1,
+        })
+    });
     Ok(json!({
         "id": session.thread_id,
         "agentId": session.agent_id,
@@ -886,6 +893,7 @@ fn session_to_thread_value(session: crate::acp::manager::ManagedSession) -> Resu
         "name": title,
         "createdAt": updated_at.clone(),
         "updatedAt": updated_at,
+        "source": source,
         "acpSnapshot": snapshot,
     }))
 }

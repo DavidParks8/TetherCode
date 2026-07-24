@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import type { AgentDescriptor } from '../api/types';
-import { UNKNOWN_AGENT_LABEL, validAgentIconUri } from '../agents';
+import { getAgentLabel, validAgentIconUri } from '../agents';
 
 interface AgentIconProps {
   agent?: AgentDescriptor | null;
@@ -11,7 +11,7 @@ interface AgentIconProps {
 
 export function AgentIcon({ agent, size = 18, style }: AgentIconProps) {
   const iconUri = validAgentIconUri(agent?.icon);
-  const label = agent?.displayName.trim() || UNKNOWN_AGENT_LABEL;
+  const label = getAgentLabel(agent ? [agent] : [], agent?.agentId);
   return (
     <View
       accessibilityLabel={label}

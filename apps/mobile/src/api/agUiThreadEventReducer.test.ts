@@ -154,34 +154,6 @@ describe('agUiThreadEventReducer.reduceThreadState', () => {
     }
   });
 
-  it('creates and advances thinking messages', () => {
-    let state = reduceThreadState(
-      createAgUiThreadMessageState(),
-      envelope({ type: EventType.THINKING_START, title: 'Plan' }),
-    );
-    const repeated = reduceThreadState(
-      state,
-      envelope({ type: EventType.THINKING_TEXT_MESSAGE_START }),
-    );
-    expect(repeated).toBe(state);
-
-    state = reduceThreadState(
-      state,
-      envelope({ type: EventType.THINKING_TEXT_MESSAGE_CONTENT, delta: ' next step' }),
-    );
-    state = reduceThreadState(
-      state,
-      envelope({ type: EventType.THINKING_TEXT_MESSAGE_END }),
-    );
-    state = reduceThreadState(state, envelope({ type: EventType.THINKING_END }));
-
-    expect(state.messages.find((entry) => entry.id === `${RUN_ID}:thinking`)).toMatchObject({
-      role: 'reasoning',
-      content: 'Plan next step',
-    });
-    expect(state.terminalMessageIds).toContain(`${RUN_ID}:thinking`);
-  });
-
   it('suppresses tool-call lifecycle events for subagent tool ids', () => {
     const current = {
       ...createAgUiThreadMessageState(),

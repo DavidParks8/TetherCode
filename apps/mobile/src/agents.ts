@@ -1,6 +1,6 @@
 import type { AgentDescriptor, AgentId, BridgeCapabilities } from './api/types';
 
-export const UNKNOWN_AGENT_LABEL = 'Unknown agent';
+export const UNKNOWN_AGENT_LABEL = 'Agent';
 
 export function findAgentDescriptor(
   agents: readonly AgentDescriptor[],
@@ -14,7 +14,20 @@ export function getAgentLabel(
   agents: readonly AgentDescriptor[],
   agentId: AgentId | null | undefined
 ): string {
-  return findAgentDescriptor(agents, agentId)?.displayName.trim() || UNKNOWN_AGENT_LABEL;
+  return findAgentDescriptor(agents, agentId)?.displayName.trim() ||
+    humanizeAgentId(agentId) ||
+    UNKNOWN_AGENT_LABEL;
+}
+
+function humanizeAgentId(agentId: AgentId | null | undefined): string | null {
+  const normalized = agentId?.trim();
+  if (!normalized) return null;
+  if (normalized.toLowerCase() === 'opencode') return 'OpenCode';
+  return normalized
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || null;
 }
 
 export function selectAgentId(

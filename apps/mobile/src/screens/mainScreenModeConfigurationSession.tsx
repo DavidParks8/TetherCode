@@ -1,6 +1,7 @@
 import { useCallback, useRef } from 'react';
 import type { AcpConfigOption, Chat, ReasoningEffort } from '../api/types';
 import { normalizeModelId } from './mainScreenHelpers';
+import { agentModelPreferenceKey } from './mainScreenHelperPreferences';
 import { mergeModelOptions, modelOptionsFromAcpConfig } from './mainScreenChatState';
 import type { MainScreenWorkspaceCheckoutActionsContext, MainScreenWorkspaceCheckoutActionsResult } from './mainScreenWorkspaceCheckoutActions';
 import { EMPTY_MODEL_OPTIONS } from './mainScreenConstants';
@@ -19,11 +20,13 @@ export function useMainScreenModeConfigurationSession(context: MainScreenModeCon
     activeModelId,
     activeServiceTier,
     api,
+    chatModelPreferencesRef,
     effortConfig,
     loadingModels,
     modelOptionsRequestRef,
     preferredStartCwd,
     rememberChatModelPreference,
+    saveChatModelPreferences,
     selectedAcpModeId,
     selectedChatId,
     selectedChatIdRef,
@@ -199,14 +202,32 @@ export function useMainScreenModeConfigurationSession(context: MainScreenModeCon
           effort,
           activeServiceTier
         );
+      } else if (activeAgentId) {
+        const key = agentModelPreferenceKey(activeAgentId);
+        const previous = chatModelPreferencesRef.current[key];
+        const nextPreferences = {
+          ...chatModelPreferencesRef.current,
+          [key]: {
+            modelId: activeModelId,
+            effort,
+            serviceTier: activeServiceTier,
+            updatedAt: new Date().toISOString(),
+            ...(previous?.modelId && !activeModelId ? { modelId: previous.modelId } : {}),
+          },
+        };
+        chatModelPreferencesRef.current = nextPreferences;
+        void saveChatModelPreferences(nextPreferences);
       }
     },
     [
       activeModelId,
       activeServiceTier,
+      activeAgentId,
       applyAcpConfigOption,
+      chatModelPreferencesRef,
       effortConfig,
       rememberChatModelPreference,
+      saveChatModelPreferences,
       selectedChatId,
     ]
   );

@@ -1176,6 +1176,46 @@ describe('MainScreen controls and modals', () => {
     act(() => failed.tree.unmount());
   });
 
+  it('uses the most recently persisted model for a new chat', async () => {
+    (FileSystem.readAsStringAsync as jest.Mock).mockImplementation((path: string) => {
+      if (path.endsWith('chat-model-preferences.json')) {
+        return Promise.resolve(JSON.stringify({
+          version: 1,
+          entries: {
+            older: {
+              modelId: 'opencode/big-pickle', effort: null, serviceTier: null,
+              updatedAt: '2026-07-20T00:00:00.000Z',
+            },
+            newest: {
+              modelId: 'github-copilot/gpt-5.4', effort: 'high', serviceTier: null,
+              updatedAt: '2026-07-22T00:00:00.000Z',
+            },
+          },
+        }));
+      }
+      return Promise.reject(new Error('missing'));
+    });
+    const api = createApi();
+    (api.listModelOptions as jest.Mock).mockResolvedValue([
+      { id: 'opencode/big-pickle', displayName: 'Big Pickle', providerName: 'OpenCode Zen', isDefault: true },
+      {
+        id: 'github-copilot/gpt-5.4', displayName: 'GPT-5.4', providerName: 'GitHub Copilot',
+        reasoningEffort: [{ effort: 'high' }],
+      },
+    ]);
+
+    const { tree } = await renderMain({ api });
+    const root = rootOf(tree);
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    expect(byLabel(root, 'Model, GitHub Copilot · GPT-5.4')).toBeTruthy();
+    expect(byLabel(root, 'Thinking level, High')).toBeTruthy();
+    act(() => tree.unmount());
+  });
+
   it('uses advertised ACP model, thinking, and primary mode controls', async () => {
     const configuredChat: Chat = {
       ...rootChat,
@@ -2179,7 +2219,8 @@ describe('MainScreen runtime recovery and synchronization', () => {
     { value: new Error('capabilities unavailable') },
   ])('renders unavailable agent capability state', async ({ value }) => {
     const harness = await renderMain({ api: createApi({ capabilities: value }) });
-    expect(input(harness.tree.root as Queryable).props.placeholder).toContain('Unknown agent');
+    expect(input(harness.tree.root as Queryable).props.placeholder).toContain('Agent');
+    expect(input(harness.tree.root as Queryable).props.placeholder).not.toContain('Unknown agent');
     expect(
       (harness.tree.root as Queryable).findAll(
         (node) => node.props.accessibilityLabel === 'Fast mode'

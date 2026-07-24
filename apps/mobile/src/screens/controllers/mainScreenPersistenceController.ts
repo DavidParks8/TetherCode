@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system/legacy';
+import { Platform } from 'react-native';
 
 import type { BridgeUiSurface } from '../../api/types';
 import {
@@ -35,20 +36,46 @@ const fileStorage: MainScreenStorage = {
   write: FileSystem.writeAsStringAsync,
 };
 
+interface WebStorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+const webStorage: MainScreenStorage = {
+  read: async (key) => {
+    const value = getWebStorage()?.getItem(key);
+    if (value === null || value === undefined) throw new Error('missing');
+    return value;
+  },
+  write: async (key, value) => {
+    const storage = getWebStorage();
+    if (!storage) throw new Error('Browser storage is unavailable.');
+    storage.setItem(key, value);
+  },
+};
+
+const WEB_PATH_PREFIX = 'tethercode.main-screen.';
+
 export class MainScreenPersistenceController {
   private readonly paths: MainScreenPersistencePaths;
 
   constructor(
-    private readonly storage: MainScreenStorage = fileStorage,
-    paths: Partial<MainScreenPersistencePaths> = {}
+    storage?: MainScreenStorage,
+    paths: Partial<MainScreenPersistencePaths> = {},
+    platform: string = Platform.OS
   ) {
+    this.storage = storage ?? (platform === 'web' ? webStorage : fileStorage);
+    const webPath = (name: string, nativePath: () => string | null) => () =>
+      platform === 'web' ? `${WEB_PATH_PREFIX}${name}` : nativePath();
     this.paths = {
-      modelPreferences: paths.modelPreferences ?? getChatModelPreferencesPath,
-      planSnapshots: paths.planSnapshots ?? getChatPlanSnapshotsPath,
-      bridgeUiSurfaces: paths.bridgeUiSurfaces ?? getChatBridgeUiSurfacesPath,
-      workspaceFavorites: paths.workspaceFavorites ?? getWorkspaceFavoritesPath,
+      modelPreferences: paths.modelPreferences ?? webPath('model-preferences.v1', getChatModelPreferencesPath),
+      planSnapshots: paths.planSnapshots ?? webPath('plan-snapshots.v1', getChatPlanSnapshotsPath),
+      bridgeUiSurfaces: paths.bridgeUiSurfaces ?? webPath('bridge-ui-surfaces.v1', getChatBridgeUiSurfacesPath),
+      workspaceFavorites: paths.workspaceFavorites ?? webPath('workspace-favorites.v1', getWorkspaceFavoritesPath),
     };
   }
+
+  private readonly storage: MainScreenStorage;
 
   loadModelPreferences(): Promise<Record<string, ChatModelPreference>> {
     return this.read(this.paths.modelPreferences(), parseChatModelPreferences, {});
@@ -115,4 +142,14 @@ export class MainScreenPersistenceController {
       // Main-screen persistence is best effort.
     }
   }
+}
+
+function getWebStorage(): WebStorageLike | null {
+  if (typeof globalThis !== 'object' || globalThis === null) return null;
+  const storage = (
+    globalThis as typeof globalThis & { localStorage?: Partial<WebStorageLike> }
+  ).localStorage;
+  return storage && typeof storage.getItem === 'function' && typeof storage.setItem === 'function'
+    ? (storage as WebStorageLike)
+    : null;
 }

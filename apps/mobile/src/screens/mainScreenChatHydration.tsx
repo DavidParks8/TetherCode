@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from 'react';
 import type { BridgeUiSurface, ReasoningEffort, ServiceTier } from '../api/types';
 import { type ActivePlanState, WORKSPACE_FAVORITES_LIMIT, type ChatModelPreference, normalizeWorkspacePath, normalizeModelId, normalizeReasoningEffort, normalizeServiceTier, toSelectedServiceTier } from './mainScreenHelpers';
+import { agentModelPreferenceKey } from './mainScreenHelperPreferences';
 import type { MainScreenThreadSnapshotStoreContext, MainScreenThreadSnapshotStoreResult } from './mainScreenThreadSnapshotStore';
 
 
@@ -152,24 +153,38 @@ export function useMainScreenChatHydration(context: MainScreenChatHydrationConte
       const normalizedServiceTier = toSelectedServiceTier(
         normalizeServiceTier(serviceTier)
       );
+      const updatedAt = new Date().toISOString();
+      const nextPreference: ChatModelPreference = {
+        modelId: normalizedModelId,
+        effort: normalizedEffort,
+        serviceTier: normalizedServiceTier,
+        updatedAt,
+      };
+      const agentPreferenceKey = activeAgentId
+        ? agentModelPreferenceKey(activeAgentId)
+        : null;
       const previous = chatModelPreferencesRef.current[normalizedChatId];
+      const previousAgent = agentPreferenceKey
+        ? chatModelPreferencesRef.current[agentPreferenceKey]
+        : null;
       if (
         previous &&
         previous.modelId === normalizedModelId &&
         previous.effort === normalizedEffort &&
-        previous.serviceTier === normalizedServiceTier
+        previous.serviceTier === normalizedServiceTier &&
+        (!agentPreferenceKey || (
+          previousAgent?.modelId === normalizedModelId &&
+          previousAgent?.effort === normalizedEffort &&
+          previousAgent?.serviceTier === normalizedServiceTier
+        ))
       ) {
         return;
       }
 
       const nextPreferences: Record<string, ChatModelPreference> = {
         ...chatModelPreferencesRef.current,
-        [normalizedChatId]: {
-          modelId: normalizedModelId,
-          effort: normalizedEffort,
-          serviceTier: normalizedServiceTier,
-          updatedAt: new Date().toISOString(),
-        },
+        [normalizedChatId]: nextPreference,
+        ...(agentPreferenceKey ? { [agentPreferenceKey]: nextPreference } : {}),
       };
       chatModelPreferencesRef.current = nextPreferences;
       if (chatIdRef.current === normalizedChatId) {
@@ -179,7 +194,7 @@ export function useMainScreenChatHydration(context: MainScreenChatHydrationConte
       }
       void saveChatModelPreferences(nextPreferences);
     },
-    [saveChatModelPreferences]
+    [activeAgentId, saveChatModelPreferences]
   );
 
   useEffect(() => {

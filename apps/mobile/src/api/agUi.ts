@@ -1,6 +1,7 @@
 import { EventSchemas, EventType, type AGUIEvent } from '@ag-ui/core';
 
 import type { RpcNotification } from './types';
+import { SUPPORTED_AG_UI_EVENT_TYPES } from './agUiMessagesState';
 
 export { renderAgUiCustomContent } from './agUiContent';
 export {
@@ -30,6 +31,7 @@ export function parseAgUiEventNotification(
   const parsedEvent = EventSchemas.safeParse(params?.event);
   if (!threadId || !runId || !parsedEvent.success) return null;
   const event = parsedEvent.data;
+  if (!SUPPORTED_AG_UI_EVENT_TYPES.has(event.type)) return null;
   if (
     (event.type === EventType.RUN_STARTED || event.type === EventType.RUN_FINISHED) &&
     (event.threadId !== threadId || event.runId !== runId)

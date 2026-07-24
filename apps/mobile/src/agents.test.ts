@@ -32,7 +32,9 @@ test('selects saved ready agent, then bridge preferred, then first ready descrip
 test('uses descriptor labels and generic unknown fallback', () => {
   const value = capabilities();
   expect(getAgentLabel(value.agents, 'agent-beta')).toBe('Beta');
-  expect(getAgentLabel(value.agents, 'missing-agent')).toBe('Unknown agent');
+  expect(getAgentLabel(value.agents, 'missing-agent')).toBe('Missing Agent');
+  expect(getAgentLabel([], 'opencode')).toBe('OpenCode');
+  expect(getAgentLabel([], null)).toBe('Agent');
 });
 
 test('accepts image URIs and rejects invalid descriptor icons', () => {

@@ -93,8 +93,31 @@ describe('AG-UI bridge notifications', () => {
     expect(toolResult?.content).not.toContain('terminal-1');
   });
 
-  it('handles every event type exported by the installed AG-UI core', () => {
-    expect(SUPPORTED_AG_UI_EVENT_TYPES).toEqual(new Set(Object.values(EventType)));
+  it('handles current AG-UI event types and rejects deprecated thinking events', () => {
+    const deprecated = new Set<EventType>([
+      EventType.THINKING_START,
+      EventType.THINKING_END,
+      EventType.THINKING_TEXT_MESSAGE_START,
+      EventType.THINKING_TEXT_MESSAGE_CONTENT,
+      EventType.THINKING_TEXT_MESSAGE_END,
+    ]);
+    const current = new Set(Object.values(EventType).filter((eventType) => !deprecated.has(eventType)));
+    expect(SUPPORTED_AG_UI_EVENT_TYPES).toEqual(current);
+    for (const eventType of deprecated) {
+      expect(SUPPORTED_AG_UI_EVENT_TYPES.has(eventType)).toBe(false);
+      expect(parseAgUiEventNotification({
+        method: 'bridge/agui.event',
+        params: {
+          threadId: 'thread',
+          runId: 'run',
+          event: eventType === EventType.THINKING_START
+            ? { type: eventType, title: 'legacy' }
+            : eventType === EventType.THINKING_TEXT_MESSAGE_CONTENT
+              ? { type: eventType, delta: 'legacy' }
+              : { type: eventType },
+        },
+      })).toBeNull();
+    }
   });
   it('parses canonical text events and projects them to the migration reducer', () => {
     expect(parseAgUiEventNotification(notification)).toEqual(notification.params);

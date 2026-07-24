@@ -1,10 +1,47 @@
 import type {
+  AgentId,
   ApprovalMode,
   ApprovalPolicy,
   ReasoningEffort,
   ServiceTier,
 } from '../api/types';
-import type { SelectedServiceTier } from './mainScreenHelperTypes';
+import type { ChatModelPreference, SelectedServiceTier } from './mainScreenHelperTypes';
+
+export const AGENT_MODEL_PREFERENCE_PREFIX = '__agent_model__:';
+
+export function agentModelPreferenceKey(agentId: AgentId): string {
+  return `${AGENT_MODEL_PREFERENCE_PREFIX}${agentId.trim()}`;
+}
+
+export function lastUsedModelPreference(
+  preferences: Record<string, ChatModelPreference>,
+  agentId: AgentId | null | undefined
+): ChatModelPreference | null {
+  const normalizedAgentId = agentId?.trim() ?? '';
+  if (!normalizedAgentId) return null;
+  const explicit = preferences[agentModelPreferenceKey(normalizedAgentId)];
+  if (explicit) return explicit;
+  return Object.entries(preferences)
+    .filter(([key, preference]) =>
+      !key.startsWith(AGENT_MODEL_PREFERENCE_PREFIX) && Boolean(preference.modelId)
+    )
+    .map(([, preference]) => preference)
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0] ?? null;
+}
+
+export function withLastUsedModelPreference(
+  preferences: Record<string, ChatModelPreference>,
+  agentId: AgentId,
+  preference: Omit<ChatModelPreference, 'updatedAt'>
+): Record<string, ChatModelPreference> {
+  return {
+    ...preferences,
+    [agentModelPreferenceKey(agentId)]: {
+      ...preference,
+      updatedAt: new Date().toISOString(),
+    },
+  };
+}
 
 export function normalizeModelId(value: string | null | undefined): string | null {
   if (typeof value !== 'string') {

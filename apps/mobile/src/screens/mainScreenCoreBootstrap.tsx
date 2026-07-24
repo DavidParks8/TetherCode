@@ -27,6 +27,7 @@ export type MainScreenCoreBootstrapContext = MainScreenProps & { ref: ForwardedR
 
 export function useMainScreenCoreBootstrap(context: MainScreenCoreBootstrapContext) {
   const {
+    agentSettings,
     api,
     bridgeProfileId,
     pendingOpenChatId,
@@ -149,7 +150,7 @@ export function useMainScreenCoreBootstrap(context: MainScreenCoreBootstrapConte
   >({});
   const [loadingModels, setLoadingModels] = useState(false);
   const [pendingAgentId, setPendingAgentId] = useState<AgentId | null>(
-    () => preferredAgentId ?? null
+    () => preferredAgentId ?? Object.keys(agentSettings ?? {})[0] ?? null
   );
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [selectedEffort, setSelectedEffort] = useState<ReasoningEffort | null>(null);

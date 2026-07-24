@@ -223,6 +223,7 @@ pub struct ManagedSession {
     pub thread_id: String,
     pub agent_id: AgentId,
     pub cwd: PathBuf,
+    pub parent_thread_id: Option<String>,
     pub snapshot: SessionSnapshot,
 }
 
@@ -358,6 +359,8 @@ struct SessionIndexEntry {
     cwd: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_acp_session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -425,6 +428,9 @@ impl DurableSessionIndex {
                 if merged.title.is_none() {
                     merged.title = existing.title.clone();
                 }
+                if merged.parent_acp_session_id.is_none() {
+                    merged.parent_acp_session_id = existing.parent_acp_session_id.clone();
+                }
                 if *existing != merged {
                     *existing = merged;
                     changed = true;
@@ -475,6 +481,10 @@ fn sanitize_index_entries(entries: Vec<SessionIndexEntry>) -> Vec<SessionIndexEn
                     .title
                     .as_ref()
                     .is_none_or(|title| valid_session_title(title))
+                && entry.parent_acp_session_id.as_ref().is_none_or(|parent| {
+                    parent != &entry.acp_session_id
+                        && AgentSessionId::new(&entry.agent_id, parent).is_ok()
+                })
         })
         .collect::<Vec<_>>();
     entries.sort();
@@ -491,6 +501,7 @@ fn index_entry(identity: AgentSessionId, cwd: PathBuf) -> SessionIndexEntry {
         acp_session_id: identity.acp_session_id,
         cwd,
         title: None,
+        parent_acp_session_id: None,
     }
 }
 
@@ -500,6 +511,7 @@ fn empty_managed_session(identity: &AgentSessionId, cwd: PathBuf) -> ManagedSess
         thread_id: thread_id.clone(),
         agent_id: identity.agent_id.clone(),
         cwd,
+        parent_thread_id: None,
         snapshot: SessionSnapshot::new(identity.agent_id.clone(), thread_id),
     }
 }
@@ -522,6 +534,7 @@ fn listed_managed_session(
         thread_id,
         agent_id: identity.agent_id.clone(),
         cwd,
+        parent_thread_id: None,
         snapshot,
     }
 }
@@ -539,6 +552,7 @@ fn add_durable_sessions(
             if let Some(title) = &entry.title {
                 session.snapshot.title = Some(title.clone());
             }
+            session.parent_thread_id = parent_thread_id(entry);
         }
     }
 }
@@ -942,6 +956,7 @@ impl AgentManager {
                             thread_id: snapshot.thread_id.clone(),
                             agent_id: snapshot.agent_id.clone(),
                             cwd: entry.cwd.clone(),
+                            parent_thread_id: parent_thread_id(entry),
                             snapshot,
                         },
                     );
@@ -1197,6 +1212,7 @@ impl AgentManager {
                 title: title
                     .filter(|title| valid_session_title(title))
                     .map(str::to_string),
+                parent_acp_session_id: Some(parent.acp_session_id),
             }])
             .await?;
         Ok(child.encode())
@@ -1652,10 +1668,12 @@ impl AgentManager {
                 snapshot.title = Some(title);
             }
         }
+        let parent_thread_id = parent_thread_id(&entry);
         Ok(ManagedSession {
             thread_id: snapshot.thread_id.clone(),
             agent_id: snapshot.agent_id.clone(),
             cwd: entry.cwd,
+            parent_thread_id,
             snapshot,
         })
     }
@@ -1702,6 +1720,7 @@ impl AgentManager {
                         acp_session_id: child.acp_session_id,
                         cwd: cwd.to_path_buf(),
                         title: related.title.filter(|title| valid_session_title(title)),
+                        parent_acp_session_id: Some(parent.acp_session_id.clone()),
                     })
             })
             .collect::<Vec<_>>();
@@ -1886,6 +1905,14 @@ fn exported_session_events(
 fn valid_session_title(title: &str) -> bool {
     let title = title.trim();
     !title.is_empty() && title.len() <= 256 && !title.chars().any(char::is_control)
+}
+
+fn parent_thread_id(entry: &SessionIndexEntry) -> Option<String> {
+    entry
+        .parent_acp_session_id
+        .as_ref()
+        .and_then(|parent| AgentSessionId::new(&entry.agent_id, parent).ok())
+        .map(|identity| identity.encode())
 }
 
 fn milliseconds_to_iso(milliseconds: u64) -> Option<String> {
@@ -2985,6 +3012,7 @@ mod tests {
         .await
         .expect("manager starts");
         let parent = AgentSessionId::new("alpha", "parent-session").unwrap();
+        let parent_thread_id = parent.encode();
         manager
             .session_index
             .lock()
@@ -2994,7 +3022,7 @@ mod tests {
             .unwrap();
 
         let child_thread_id = manager
-            .adopt_related_session(&parent.encode(), "child-session", Some("Child task"))
+            .adopt_related_session(&parent_thread_id, "child-session", Some("Child task"))
             .await
             .expect("child adopted");
         let child = manager
@@ -3002,6 +3030,10 @@ mod tests {
             .await
             .expect("child loads through ACP");
         assert_eq!(child.cwd, PathBuf::from("/tmp"));
+        assert_eq!(
+            child.parent_thread_id.as_deref(),
+            Some(parent_thread_id.as_str())
+        );
         assert_eq!(
             AgentSessionId::decode(&child.thread_id)
                 .unwrap()
@@ -3407,18 +3439,21 @@ mod tests {
             acp_session_id: "valid".into(),
             cwd: PathBuf::from("/tmp"),
             title: None,
+            parent_acp_session_id: None,
         };
         let other_session = SessionIndexEntry {
             agent_id: "alpha".into(),
             acp_session_id: "valid-two".into(),
             cwd: PathBuf::from("/tmp"),
             title: None,
+            parent_acp_session_id: None,
         };
         let other_agent = SessionIndexEntry {
             agent_id: "beta".into(),
             acp_session_id: "valid".into(),
             cwd: PathBuf::from("/tmp"),
             title: None,
+            parent_acp_session_id: None,
         };
         let entries = sanitize_index_entries(vec![
             valid.clone(),
@@ -3430,18 +3465,21 @@ mod tests {
                 acp_session_id: "invalid".into(),
                 cwd: PathBuf::from("/tmp"),
                 title: None,
+                parent_acp_session_id: None,
             },
             SessionIndexEntry {
                 agent_id: "alpha".into(),
                 acp_session_id: "relative".into(),
                 cwd: PathBuf::from("relative"),
                 title: None,
+                parent_acp_session_id: None,
             },
             SessionIndexEntry {
                 agent_id: "alpha".into(),
                 acp_session_id: "oversized-cwd".into(),
                 cwd: PathBuf::from(format!("/{}", "x".repeat(MAX_SESSION_CWD_BYTES))),
                 title: None,
+                parent_acp_session_id: None,
             },
         ]);
         assert_eq!(entries, vec![valid, other_session, other_agent]);
@@ -3453,6 +3491,7 @@ mod tests {
                 acp_session_id: "titled".into(),
                 cwd: PathBuf::from("/tmp"),
                 title: Some("Manual title".into()),
+                parent_acp_session_id: None,
             }])
             .await
             .unwrap();
