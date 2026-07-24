@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'; import type { HostBridgeApiClient } from '../api/client';
 import type { ChatSummary, RpcNotification } from '../api/types';
-import type { HostBridgeWsClient } from '../api/ws'; import { filterDrawerChats } from './drawerChats';
+import type { HostBridgeWsClient } from '../api/ws';
 import { pruneStaleDrawerRunIndicators, reconcileDrawerRunIndicatorsWithChats,
   updateDrawerRunIndicatorsForEvent, type DrawerRunIndicatorMap } from './drawerRuntimeIndicators';
 import { areDrawerChatListsEquivalent, dedupeChatsById, mergeDrawerChatBatch, sortChats } from './drawerContentHelpers';
@@ -48,7 +48,7 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
       }
 
       const applyChats = (rawChats: ChatSummary[], cacheLimit?: number) => {
-        const incomingChats = sortChats(dedupeChatsById(filterDrawerChats(rawChats)));
+        const incomingChats = sortChats(dedupeChatsById(rawChats));
         const shouldPreserveExisting =
           hasHydratedOnceRef.current || chatsRef.current.length > incomingChats.length;
         const nextChats = shouldPreserveExisting

@@ -97,6 +97,25 @@ describe('drawerRuntimeIndicators', () => {
     expect(isDrawerChatRunning(chat('thr_1'), complete, 3000)).toBe(false);
   });
 
+  it.each([
+    ['approval', 'bridge/approval.requested', 'bridge/approval.resolved'],
+    ['user input', 'bridge/userInput.requested', 'bridge/userInput.resolved'],
+  ])('clears %s request indicators when the request resolves', (_label, requested, resolved) => {
+    const waiting = updateDrawerRunIndicatorsForEvent(
+      {},
+      event(requested, { threadId: 'thr_1' }),
+      1000
+    );
+    expect(isDrawerChatRunning(chat('thr_1'), waiting, 2000)).toBe(true);
+
+    const complete = updateDrawerRunIndicatorsForEvent(
+      waiting,
+      event(resolved, { threadId: 'thr_1' }),
+      3000
+    );
+    expect(isDrawerChatRunning(chat('thr_1'), complete, 4000)).toBe(false);
+  });
+
   it('uses thread status changes as authoritative running and terminal hints', () => {
     const running = updateDrawerRunIndicatorsForEvent(
       {},
