@@ -1299,7 +1299,7 @@ describe('MainScreen controls and modals', () => {
     act(() => tree.unmount());
   });
 
-  it('browses, pins, selects, defaults, loads, and reports workspace failures', async () => {
+  it('browses, selects, defaults, loads, and reports workspace failures', async () => {
     const onDefaultStartCwdChange = jest.fn();
     let resolveBrowse: ((value: unknown) => void) | undefined;
     const api = createApi();
@@ -1318,6 +1318,7 @@ describe('MainScreen controls and modals', () => {
     const root = rootOf(tree);
 
     await press(byLabelPrefix(root, 'Workspace, '));
+    await press(byLabel(root, 'Browse workspace folders'));
     expect(root.findAll((node) => node.props.accessibilityRole === 'progressbar').length).toBeGreaterThan(0);
     await act(async () => {
       resolveBrowse?.({
@@ -1329,12 +1330,11 @@ describe('MainScreen controls and modals', () => {
       });
       await flush();
     });
-    await press(byLabel(root, 'Pin workspace'));
-    expect(byLabel(root, 'Unpin workspace')).toBeTruthy();
     await press(byLabel(root, 'Open folder mobile'));
     expect(hasText(root, 'Showing 0 of 12 entries.')).toBe(true);
-    await press(byLabel(root, 'Go to parent folder'));
+    await press(byLabel(root, 'Back to workspace'));
     expect(hasText(root, 'browse denied')).toBe(true);
+    await press(byLabel(root, 'Back to Workspaces'));
     await press(byLabel(root, 'Use default workspace'));
     expect(onDefaultStartCwdChange).toHaveBeenCalledWith(null);
 
@@ -1369,15 +1369,16 @@ describe('MainScreen controls and modals', () => {
 
     await press(byLabelPrefix(root, 'Workspace, '));
     await flush();
-    await press(byLabel(root, 'Clone Repo'));
+    await press(byLabel(root, 'Clone Repository...'));
     await act(async () => {
       textInput(root, 'Repository URL').props.onChangeText('git@github.com:org/repo.git');
       await flush();
     });
     expect(textInput(root, 'Clone directory name').props.value).toBe('repo');
     await press(byLabelPrefix(root, 'Clone into '));
+    await press(byLabel(root, 'Browse workspace folders'));
     await press(byLabel(root, 'Open folder destination'));
-    await press(byLabel(root, 'Use destination workspace'));
+    await press(byLabel(root, 'Choose destination workspace'));
     expect(hasText(root, 'Git checkout')).toBe(true);
 
     await press(pressForText(root, 'Clone and use'));

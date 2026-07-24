@@ -4,108 +4,178 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAccessibilityAnnouncement, useModalAccessibilityFocus } from '../accessibility';
 import { useAppTheme } from '../theme';
-import { matchesSearch, toPathBasename } from './workspacePickerHelpers';
+import {
+  getWorkspacePickerPresentation,
+  matchesSearch,
+  toPathBasename,
+} from './workspacePickerHelpers';
 import { WorkspacePickerModalView } from './WorkspacePickerModalView';
 import { createWorkspacePickerStyles } from './workspacePickerStyles';
-import type { WorkspacePickerModalProps } from './workspacePickerTypes';
+import type {
+  WorkspacePickerModalProps,
+  WorkspacePickerScreen,
+} from './workspacePickerTypes';
 
 export function WorkspacePickerModal({
-  visible, selectedPath = null, bridgeRoot = null, recentWorkspaces,
-  favoriteWorkspacePaths = [], currentPath = null, parentPath = null, entries,
-  loadingEntries = false, error = null, truncationMessage = null, onBrowsePath,
-  onSelectPath, onToggleFavorite, actionLabel = null, actionDescription = null,
-  actionDisabled = false, onActionPress, onClose,
+  visible,
+  selectedPath = null,
+  bridgeRoot = null,
+  recentWorkspaces,
+  currentPath = null,
+  parentPath = null,
+  entries,
+  loadingEntries = false,
+  error = null,
+  truncationMessage = null,
+  onBrowsePath,
+  onSelectPath,
+  actionLabel = null,
+  actionDescription = null,
+  actionDisabled = false,
+  onActionPress,
+  onClose,
 }: WorkspacePickerModalProps) {
   const theme = useAppTheme();
   const insets = useSafeAreaInsets();
-  const { height: windowHeight } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const [screen, setScreen] = useState<WorkspacePickerScreen>('home');
   const [searchQuery, setSearchQuery] = useState('');
-  const [pendingSelectionPath, setPendingSelectionPath] = useState<string | null>(
-    selectedPath ?? currentPath ?? bridgeRoot
-  );
+  const [browserRootPath, setBrowserRootPath] = useState<string | null>(null);
   const wasVisibleRef = useRef(false);
-  const previousSelectedPathRef = useRef<string | null>(selectedPath);
   const styles = useMemo(() => createWorkspacePickerStyles(theme), [theme]);
+  const presentation = useMemo(
+    () =>
+      getWorkspacePickerPresentation({
+        width: windowWidth,
+        height: windowHeight,
+        topInset: insets.top,
+        bottomInset: insets.bottom,
+      }),
+    [insets.bottom, insets.top, windowHeight, windowWidth]
+  );
 
   useEffect(() => {
     const wasVisible = wasVisibleRef.current;
     wasVisibleRef.current = visible;
-    if (!visible) {
+    if (visible && !wasVisible) {
+      setScreen('home');
       setSearchQuery('');
-    } else if (!wasVisible) {
-      setPendingSelectionPath(selectedPath ?? currentPath ?? bridgeRoot);
+      setBrowserRootPath(null);
+    } else if (!visible) {
+      setSearchQuery('');
     }
-  }, [bridgeRoot, currentPath, selectedPath, visible]);
+  }, [visible]);
 
   useEffect(() => {
-    if (!visible || pendingSelectionPath !== null) return;
-    const fallbackPath = selectedPath ?? currentPath ?? bridgeRoot;
-    if (fallbackPath) setPendingSelectionPath(fallbackPath);
-  }, [bridgeRoot, currentPath, pendingSelectionPath, selectedPath, visible]);
-
-  useEffect(() => {
-    const previousSelectedPath = previousSelectedPathRef.current;
-    previousSelectedPathRef.current = selectedPath;
-    if (!visible || previousSelectedPath === selectedPath) return;
-    setPendingSelectionPath((current) =>
-      current !== previousSelectedPath
-        ? current
-        : selectedPath ?? currentPath ?? bridgeRoot ?? null
-    );
-  }, [bridgeRoot, currentPath, selectedPath, visible]);
+    if (screen === 'browser') {
+      setSearchQuery('');
+    }
+  }, [currentPath, screen]);
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
-  const favoritePathSet = useMemo(() => new Set(favoriteWorkspacePaths), [favoriteWorkspacePaths]);
-  const recentWorkspaceByPath = useMemo(
-    () => new Map(recentWorkspaces.map((workspace) => [workspace.path, workspace])),
-    [recentWorkspaces]
+  const filteredEntries = useMemo(
+    () =>
+      entries.filter((entry) =>
+        matchesSearch([entry.name, entry.path], normalizedSearch)
+      ),
+    [entries, normalizedSearch]
   );
-  const favoriteWorkspaces = favoriteWorkspacePaths
-    .map((path) => recentWorkspaceByPath.get(path) ?? { path, chatCount: 0 })
-    .filter((workspace) => matchesSearch([workspace.path, toPathBasename(workspace.path)], normalizedSearch))
-    .slice(0, 4);
-  const filteredEntries = entries.filter((entry) =>
-    matchesSearch([entry.name, entry.path], normalizedSearch)
-  );
-  const footerPath = pendingSelectionPath ?? currentPath ?? bridgeRoot ?? null;
-  const footerTitle = footerPath ? toPathBasename(footerPath) : 'Default workspace';
-  const currentFolderPath = currentPath ?? bridgeRoot ?? null;
-  const currentFolderTitle = currentFolderPath ? toPathBasename(currentFolderPath) : 'Loading';
-  const topInset = Math.max(insets.top + theme.spacing.lg, 72);
-  const bottomInset = Math.max(insets.bottom + theme.spacing.lg, 72);
-  const cardHeight = Math.min(
-    Math.max(560, Math.round(windowHeight * 0.82)),
-    windowHeight - topInset - bottomInset
-  );
+  const recentWorkspaceList = useMemo(() => {
+    const seen = new Set<string>();
+    return recentWorkspaces
+      .filter((workspace) => {
+        if (seen.has(workspace.path)) return false;
+        seen.add(workspace.path);
+        return true;
+      })
+      .slice(0, 6);
+  }, [recentWorkspaces]);
+
+  const currentFolderPath = currentPath ?? bridgeRoot;
+  const currentFolderTitle = currentFolderPath
+    ? toPathBasename(currentFolderPath)
+    : 'Computer folders';
+  const canBrowseUp =
+    screen === 'browser' &&
+    Boolean(parentPath) &&
+    currentFolderPath !== browserRootPath;
+  const browserBackLabel =
+    canBrowseUp && parentPath ? toPathBasename(parentPath) : 'Workspaces';
+  const actionPath = selectedPath ?? currentPath ?? bridgeRoot;
   const modalFocusRef = useModalAccessibilityFocus(visible);
+
   useAccessibilityAnnouncement(visible ? error ?? truncationMessage : null);
   useAccessibilityAnnouncement(
-    visible && loadingEntries ? `Loading folders in ${currentFolderTitle}` : null
+    visible && loadingEntries && screen === 'browser'
+      ? `Loading folders in ${currentFolderTitle}`
+      : null
+  );
+  useAccessibilityAnnouncement(
+    visible && screen === 'browser' ? `Browsing ${currentFolderTitle}` : null
   );
 
+  const handleOpenBrowser = () => {
+    const startPath = currentPath ?? selectedPath ?? bridgeRoot;
+    setBrowserRootPath(startPath);
+    setSearchQuery('');
+    setScreen('browser');
+    if (
+      !loadingEntries &&
+      (currentPath !== startPath || entries.length === 0)
+    ) {
+      onBrowsePath(startPath);
+    }
+  };
+
   const handleBrowsePath = (path: string | null) => {
-    setPendingSelectionPath(path);
+    setSearchQuery('');
     onBrowsePath(path);
+  };
+
+  const handleBrowserBack = () => {
+    if (canBrowseUp && parentPath) {
+      handleBrowsePath(parentPath);
+      return;
+    }
+    setSearchQuery('');
+    setScreen('home');
   };
 
   return (
     <WorkspacePickerModalView
-      visible={visible} styles={styles} theme={theme} topInset={topInset}
-      bottomInset={bottomInset} cardHeight={cardHeight} modalFocusRef={modalFocusRef}
-      onClose={onClose} selectedPath={selectedPath} bridgeRoot={bridgeRoot}
-      searchQuery={searchQuery} setSearchQuery={setSearchQuery} onSelectPath={onSelectPath}
-      actionLabel={actionLabel} actionDescription={actionDescription}
+      visible={visible}
+      screen={screen}
+      styles={styles}
+      theme={theme}
+      presentation={presentation}
+      bottomSafeInset={insets.bottom}
+      modalFocusRef={modalFocusRef}
+      onClose={onClose}
+      selectedPath={selectedPath}
+      bridgeRoot={bridgeRoot}
+      recentWorkspaces={recentWorkspaceList}
+      browseStartPath={currentPath ?? selectedPath ?? bridgeRoot}
+      onOpenBrowser={handleOpenBrowser}
+      onSelectPath={onSelectPath}
+      actionLabel={actionLabel}
+      actionDescription={actionDescription}
       actionDisabled={actionDisabled}
-      onActionPress={onActionPress ? () => onActionPress(footerPath) : undefined}
-      favoriteWorkspaces={favoriteWorkspaces} favoritePathSet={favoritePathSet}
-      pendingSelectionPath={pendingSelectionPath} onBrowsePath={handleBrowsePath}
-      onToggleFavorite={onToggleFavorite} parentPath={parentPath}
-      loadingEntries={loadingEntries} filteredEntries={filteredEntries}
-      normalizedSearch={normalizedSearch} currentFolderTitle={currentFolderTitle}
-      currentFolderPath={currentFolderPath} error={error}
-      truncationMessage={truncationMessage} footerPath={footerPath}
-      footerTitle={footerTitle} footerSubtitle={footerPath ?? 'Bridge default workspace'}
-      footerIsFavorite={footerPath ? favoritePathSet.has(footerPath) : false}
+      onActionPress={
+        onActionPress ? () => onActionPress(actionPath) : undefined
+      }
+      searchQuery={searchQuery}
+      setSearchQuery={setSearchQuery}
+      parentPath={parentPath}
+      browserBackLabel={browserBackLabel}
+      onBrowserBack={handleBrowserBack}
+      currentFolderTitle={currentFolderTitle}
+      currentFolderPath={currentFolderPath}
+      loadingEntries={loadingEntries}
+      entries={filteredEntries}
+      normalizedSearch={normalizedSearch}
+      onBrowsePath={handleBrowsePath}
+      error={error}
+      truncationMessage={truncationMessage}
     />
   );
 }

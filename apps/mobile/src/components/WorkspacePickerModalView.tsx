@@ -1,67 +1,131 @@
-import { Ionicons } from '@expo/vector-icons';
 import type { RefObject } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { Text } from 'react-native';
+import { Modal, Pressable, StyleSheet, View } from 'react-native';
 
 import type { FileSystemEntry, WorkspaceSummary } from '../api/types';
-import { decorativeAccessibilityProps } from '../accessibility';
 import type { AppTheme } from '../theme';
 import { WorkspacePickerBrowser } from './WorkspacePickerBrowser';
-import { WorkspacePickerFooter } from './WorkspacePickerFooter';
+import { WorkspacePickerHome } from './WorkspacePickerHome';
+import type { WorkspacePickerPresentation } from './workspacePickerHelpers';
 import type { WorkspacePickerStyles } from './workspacePickerStyles';
-import { WorkspacePickerTopSection } from './WorkspacePickerTopSection';
+import type { WorkspacePickerScreen } from './workspacePickerTypes';
 
 export interface WorkspacePickerModalViewProps {
-  visible: boolean; styles: WorkspacePickerStyles; theme: AppTheme;
-  topInset: number; bottomInset: number; cardHeight: number;
-  modalFocusRef: RefObject<Text | null>; onClose: () => void;
-  selectedPath: string | null; bridgeRoot: string | null;
-  searchQuery: string; setSearchQuery: (query: string) => void;
+  visible: boolean;
+  screen: WorkspacePickerScreen;
+  styles: WorkspacePickerStyles;
+  theme: AppTheme;
+  presentation: WorkspacePickerPresentation;
+  bottomSafeInset: number;
+  modalFocusRef: RefObject<Text | null>;
+  onClose: () => void;
+  selectedPath: string | null;
+  bridgeRoot: string | null;
+  recentWorkspaces: WorkspaceSummary[];
+  browseStartPath: string | null;
+  onOpenBrowser: () => void;
   onSelectPath: (path: string | null) => void;
-  actionLabel: string | null; actionDescription: string | null; actionDisabled: boolean;
-  onActionPress?: () => void; favoriteWorkspaces: WorkspaceSummary[];
-  favoritePathSet: Set<string>; pendingSelectionPath: string | null;
+  actionLabel: string | null;
+  actionDescription: string | null;
+  actionDisabled: boolean;
+  onActionPress?: () => void;
+  searchQuery: string;
+  setSearchQuery: (query: string) => void;
+  parentPath: string | null;
+  browserBackLabel: string;
+  onBrowserBack: () => void;
+  currentFolderTitle: string;
+  currentFolderPath: string | null;
+  loadingEntries: boolean;
+  entries: FileSystemEntry[];
+  normalizedSearch: string;
   onBrowsePath: (path: string | null) => void;
-  onToggleFavorite?: (path: string | null) => void;
-  parentPath: string | null; loadingEntries: boolean; filteredEntries: FileSystemEntry[];
-  normalizedSearch: string; currentFolderTitle: string; currentFolderPath: string | null;
-  error: string | null; truncationMessage: string | null; footerPath: string | null;
-  footerTitle: string; footerSubtitle: string; footerIsFavorite: boolean;
+  error: string | null;
+  truncationMessage: string | null;
 }
 
 export function WorkspacePickerModalView(props: WorkspacePickerModalViewProps) {
+  const { presentation } = props;
   return (
-    <Modal visible={props.visible} transparent animationType="fade" presentationStyle="overFullScreen" onRequestClose={props.onClose}>
+    <Modal
+      visible={props.visible}
+      transparent
+      animationType={presentation.isLargeScreen ? 'fade' : 'slide'}
+      presentationStyle="overFullScreen"
+      onRequestClose={props.onClose}
+    >
       <View style={props.styles.backdrop}>
         <Pressable
-          style={StyleSheet.absoluteFill} onPress={props.onClose}
-          accessibilityRole="button" accessibilityLabel="Close workspace picker"
+          style={StyleSheet.absoluteFill}
+          onPress={props.onClose}
+          accessibilityRole="button"
+          accessibilityLabel="Close workspace picker"
+          accessibilityHint="Dismisses workspace selection"
         />
-        <View style={[props.styles.outer, { paddingTop: props.topInset, paddingBottom: props.bottomInset }]}>
+        <View
+          style={[
+            props.styles.outer,
+            presentation.isLargeScreen && props.styles.outerLarge,
+            {
+              paddingHorizontal: presentation.horizontalPadding,
+              paddingTop: presentation.topPadding,
+              paddingBottom: presentation.bottomPadding,
+            },
+          ]}
+        >
           <View
-            accessibilityViewIsModal importantForAccessibility="yes"
-            style={[props.styles.card, { height: props.cardHeight }]}
+            accessibilityViewIsModal
+            importantForAccessibility="yes"
+            style={[
+              props.styles.panel,
+              presentation.isLargeScreen
+                ? props.styles.panelLarge
+                : props.styles.panelPhone,
+              {
+                height: presentation.panelHeight,
+                maxWidth: presentation.panelMaxWidth,
+              },
+            ]}
           >
-            <View style={props.styles.header}>
-              <View style={props.styles.headerSpacer} />
-              <Text ref={props.modalFocusRef} accessibilityRole="header" style={props.styles.title}>Choose Workspace</Text>
-              <Pressable
-                onPress={props.onClose}
-                style={({ pressed }) => [props.styles.closeButton, pressed && props.styles.pressed]}
-                accessibilityRole="button" accessibilityLabel="Close workspace picker"
-              >
-                <Ionicons {...decorativeAccessibilityProps} name="close" size={18} color={props.theme.colors.textSecondary} />
-              </Pressable>
-            </View>
-            <View style={props.styles.body}>
-              <WorkspacePickerTopSection {...props} hasVisibleEntries={props.filteredEntries.length > 0} />
-              <WorkspacePickerBrowser
-                styles={props.styles} theme={props.theme} entries={props.filteredEntries}
-                loadingEntries={props.loadingEntries} normalizedSearch={props.normalizedSearch}
-                favoritePathSet={props.favoritePathSet} onBrowsePath={props.onBrowsePath}
-                onToggleFavorite={props.onToggleFavorite}
+            {!presentation.isLargeScreen ? <View style={props.styles.handle} /> : null}
+            {props.screen === 'home' ? (
+              <WorkspacePickerHome
+                styles={props.styles}
+                theme={props.theme}
+                modalFocusRef={props.modalFocusRef}
+                bottomSafeInset={props.bottomSafeInset}
+                bridgeRoot={props.bridgeRoot}
+                browseStartPath={props.browseStartPath}
+                selectedPath={props.selectedPath}
+                onSelectPath={props.onSelectPath}
+                onOpenBrowser={props.onOpenBrowser}
+                actionLabel={props.actionLabel}
+                actionDescription={props.actionDescription}
+                actionDisabled={props.actionDisabled}
+                onActionPress={props.onActionPress}
+                recentWorkspaces={props.recentWorkspaces}
+                onClose={props.onClose}
               />
-              <WorkspacePickerFooter {...props} />
-            </View>
+            ) : (
+              <WorkspacePickerBrowser
+                styles={props.styles}
+                theme={props.theme}
+                bottomSafeInset={props.bottomSafeInset}
+                browserBackLabel={props.browserBackLabel}
+                onBack={props.onBrowserBack}
+                currentFolderTitle={props.currentFolderTitle}
+                currentFolderPath={props.currentFolderPath}
+                searchQuery={props.searchQuery}
+                setSearchQuery={props.setSearchQuery}
+                entries={props.entries}
+                loadingEntries={props.loadingEntries}
+                normalizedSearch={props.normalizedSearch}
+                error={props.error}
+                truncationMessage={props.truncationMessage}
+                onBrowsePath={props.onBrowsePath}
+                onSelectPath={props.onSelectPath}
+              />
+            )}
           </View>
         </View>
       </View>

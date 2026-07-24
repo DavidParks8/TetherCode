@@ -130,11 +130,13 @@ export function MainScreenWorkspaceAndGitModals({ context }: { context: Context 
                 onSelectPath={handleWorkspaceSelection}
                 onToggleFavorite={toggleWorkspaceFavorite}
                 actionLabel={
-                  workspacePickerPurpose === 'default-start' ? 'Clone Repo' : null
+                  workspacePickerPurpose === 'default-start'
+                    ? 'Clone Repository...'
+                    : null
                 }
                 actionDescription={
                   workspacePickerPurpose === 'default-start'
-                    ? 'Into this workspace'
+                    ? 'Choose a destination and start a session'
                     : null
                 }
                 onActionPress={

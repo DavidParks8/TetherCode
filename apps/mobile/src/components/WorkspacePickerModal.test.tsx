@@ -1,4 +1,4 @@
-import { ActionSheetIOS, Modal, Text, TextInput } from 'react-native';
+import { Modal, Text, TextInput } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import renderer, {
   act,
@@ -6,16 +6,20 @@ import renderer, {
   type ReactTestRenderer,
 } from 'react-test-renderer';
 
-import type { FileSystemEntry } from '../api/types';
-import { createAppTheme, AppThemeProvider } from '../theme';
+import type { FileSystemEntry, WorkspaceSummary } from '../api/types';
+import { AppThemeProvider, createAppTheme } from '../theme';
+import {
+  formatRelativeTime,
+  getWorkspacePickerPresentation,
+} from './workspacePickerHelpers';
 import { WorkspacePickerModal } from './WorkspacePickerModal';
+import type { WorkspacePickerModalProps } from './workspacePickerTypes';
 
 type QueryableTestInstance = ReactTestInstance & {
   type: unknown;
   props: Record<string, unknown> & {
-    onChangeText: jest.Mock;
-    onLongPress: jest.Mock;
-    onPress: jest.Mock;
+    onChangeText?: (value: string) => void;
+    onPress?: () => void;
   };
   children: unknown[];
   findAll(predicate: (node: QueryableTestInstance) => boolean): QueryableTestInstance[];
@@ -24,19 +28,19 @@ type QueryableTestInstance = ReactTestInstance & {
 
 jest.mock('@expo/vector-icons', () => {
   const React = jest.requireActual('react');
-  const { Text } = jest.requireActual('react-native');
+  const { Text: NativeText } = jest.requireActual('react-native');
 
   return {
-    Ionicons: ({ name }: { name: string }) => React.createElement(Text, null, name),
+    Ionicons: ({ name }: { name: string }) =>
+      React.createElement(NativeText, null, name),
   };
 });
 
 describe('WorkspacePickerModal', () => {
   const theme = createAppTheme('dark');
-  const oldSelectionPath =
-    '/Users/davidparks/Documents/github/serious-projects/tethercode';
-  const githubPath = '/Users/davidparks/Documents/github';
-  const seriousProjectsPath = '/Users/davidparks/Documents/github/serious-projects';
+  const codePath = '/Users/davidparks/Code';
+  const tetherCodePath = '/Users/davidparks/Code/TetherCode';
+  const notesPath = '/Users/davidparks/Code/notes';
 
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => {
@@ -44,237 +48,237 @@ describe('WorkspacePickerModal', () => {
     jest.useRealTimers();
   });
 
-  it('keeps a browsed checkout destination when currentPath refreshes', () => {
-    const onBrowsePath = jest.fn();
+  it('selects recent and default workspaces directly from the home screen', () => {
     const onSelectPath = jest.fn();
-
-    let rendered: ReactTestRenderer | undefined;
-    act(() => {
-      rendered = renderer.create(
-        renderPicker({
-          onBrowsePath,
-          onSelectPath,
-          currentPath: githubPath,
-          parentPath: '/Users/davidparks/Documents',
-          entries: [directoryEntry('serious-projects', seriousProjectsPath)],
-        })
-      );
-    });
-
-    const tree = expectValue(rendered);
-    act(() => {
-      readOnPress(findPressableContainingText(tree.root, 'serious-projects').props)();
-    });
-
-    expect(onBrowsePath).toHaveBeenCalledWith(seriousProjectsPath);
-
-    act(() => {
-      tree.update(
-        renderPicker({
-          onBrowsePath,
-          onSelectPath,
-          currentPath: seriousProjectsPath,
-          parentPath: githubPath,
-          entries: [directoryEntry('tethercode', oldSelectionPath)],
-        })
-      );
-    });
-
-    act(() => {
-      readOnPress(findPressableWithExactText(tree.root, 'Use').props)();
-    });
-
-    expect(onSelectPath).toHaveBeenCalledWith(seriousProjectsPath);
-    expect(onSelectPath).not.toHaveBeenCalledWith(oldSelectionPath);
-
-    act(() => {
-      tree.unmount();
-    });
-  });
-
-  it('exposes modal, selected, and disabled workspace controls', () => {
-    let rendered: ReactTestRenderer | undefined;
-    act(() => {
-      rendered = renderer.create(
-        renderPicker({
-          onBrowsePath: jest.fn(),
-          onSelectPath: jest.fn(),
-          currentPath: githubPath,
-          parentPath: githubPath,
-          entries: [directoryEntry('serious-projects', seriousProjectsPath)],
-        })
-      );
-    });
-
-    const root = expectValue(rendered).root as QueryableTestInstance;
-    expect(root.findAll((node) => node.props.accessibilityViewIsModal === true).length)
-      .toBeGreaterThan(0);
-    expect(root.findAll((node) => node.props.accessibilityLabel === 'Close workspace picker').length)
-      .toBeGreaterThan(0);
-    expect(
-      root.findAll((node) => node.props.accessibilityLabel === 'Use default workspace')[0]?.props
-        .accessibilityState
-    ).toEqual({ disabled: false, selected: false });
-    act(() => {
-      expectValue(rendered).unmount();
-    });
-  });
-
-  it('browses, searches, selects, pins, uses default, and closes populated workspaces', () => {
-    const onBrowsePath = jest.fn();
-    const onSelectPath = jest.fn();
-    const onToggleFavorite = jest.fn();
     const onClose = jest.fn();
-    let rendered: ReactTestRenderer | undefined;
-    act(() => {
-      rendered = renderer.create(renderPickerMatrix({ onBrowsePath, onSelectPath, onToggleFavorite, onClose }));
-    });
-    const tree = expectValue(rendered);
+    const tree = renderPicker({ onSelectPath, onClose });
     const root = tree.root as QueryableTestInstance;
-    act(() => readOnPress(findPressableContainingText(root, 'notes').props)());
-    expect(onBrowsePath).toHaveBeenCalledWith('/Users/davidparks/Code/notes');
-    const parent = root.findAll((node) => node.props.accessibilityLabel === 'Go to parent folder')[0];
-    act(() => readOnPress(parent.props)());
-    expect(onBrowsePath).toHaveBeenCalledWith('/Users/davidparks');
-    const search = root.findAllByType(TextInput).find((node) => node.props.accessibilityLabel === 'Search folders');
-    if (!search) throw new Error('Missing search');
-    act(() => search.props.onChangeText('missing'));
-    expect(flattenTreeText(root)).toContain('No folders match this search.');
-    act(() => search.props.onChangeText(''));
-    act(() => readOnPress(findPressableWithExactText(root, 'Use').props)());
-    expect(onSelectPath).toHaveBeenCalledWith('/Users/davidparks');
-    const unpin = root.findAll((node) => node.props.accessibilityLabel === 'Pin davidparks')[0];
-    act(() => readOnPress(unpin.props)());
-    expect(onToggleFavorite).toHaveBeenCalledWith('/Users/davidparks');
-    act(() => readOnPress(root.findAll((node) => node.props.accessibilityLabel === 'Use default workspace')[0].props)());
+
+    expect(flattenTreeText(root)).toContain('Choose Workspace');
+    expect(flattenTreeText(root)).toContain('Recent');
+    expect(flattenTreeText(root)).toContain('On this computer');
+    expect(flattenTreeText(root)).not.toContain('Pinned');
+
+    pressByLabel(root, 'Use Code workspace');
+    expect(onSelectPath).toHaveBeenCalledWith(codePath);
+
+    pressByLabel(root, 'Use default workspace');
     expect(onSelectPath).toHaveBeenCalledWith(null);
-    act(() => readOnPress(root.findAll((node) => node.props.accessibilityLabel === 'Close workspace picker')[0].props)());
+
+    const selected = findByLabel(root, 'Use TetherCode workspace');
+    expect(selected.props.accessibilityState).toEqual({
+      disabled: false,
+      selected: true,
+    });
+
+    pressByLabel(root, 'Cancel workspace selection');
     expect(onClose).toHaveBeenCalled();
     act(() => tree.unmount());
   });
 
-  it('renders loading, errors, truncation, empty folders, and custom action states', () => {
-    const onActionPress = jest.fn();
-    let rendered: ReactTestRenderer | undefined;
-    act(() => {
-      rendered = renderer.create(renderPickerMatrix({
-        entries: [], loadingEntries: true, error: 'Bridge unavailable',
-        truncationMessage: 'Showing the first 100 folders.', actionLabel: 'Clone here', onActionPress,
-      }));
-    });
-    const tree = expectValue(rendered);
+  it('pushes folder browsing and keeps navigation separate from selection', () => {
+    const onBrowsePath = jest.fn();
+    const onSelectPath = jest.fn();
+    const tree = renderPicker({ onBrowsePath, onSelectPath });
     const root = tree.root as QueryableTestInstance;
+
+    pressByLabel(root, 'Browse workspace folders');
+    expect(findSearch(root).props.placeholder).toBe('Search this folder');
+    expect(flattenTreeText(root)).toContain(`Choose "Code"`);
+
+    pressByLabel(root, 'Open folder notes');
+    expect(onBrowsePath).toHaveBeenCalledWith(notesPath);
+    expect(onSelectPath).not.toHaveBeenCalled();
+
+    act(() => {
+      tree.update(
+        pickerElement({
+          onBrowsePath,
+          onSelectPath,
+          currentPath: notesPath,
+          parentPath: codePath,
+          entries: [],
+        })
+      );
+    });
+
+    expect(flattenTreeText(root)).toContain('No subfolders. You can choose this folder.');
+    expect(findByLabel(root, 'Back to Code')).toBeDefined();
+    pressByLabel(root, 'Choose notes workspace');
+    expect(onSelectPath).toHaveBeenCalledWith(notesPath);
+
+    pressByLabel(root, 'Back to Code');
+    expect(onBrowsePath).toHaveBeenLastCalledWith(codePath);
+
+    act(() => {
+      tree.update(
+        pickerElement({
+          onBrowsePath,
+          onSelectPath,
+          currentPath: codePath,
+          parentPath: '/Users/davidparks',
+        })
+      );
+    });
+    pressByLabel(root, 'Back to Workspaces');
+    expect(flattenTreeText(root)).toContain('Choose Workspace');
+    act(() => tree.unmount());
+  });
+
+  it('filters the current folder and clears search after navigation', () => {
+    const onBrowsePath = jest.fn();
+    const tree = renderPicker({ onBrowsePath });
+    const root = tree.root as QueryableTestInstance;
+
+    pressByLabel(root, 'Browse workspace folders');
+    const search = findSearch(root);
+    act(() => search.props.onChangeText?.('notes'));
+    expect(flattenTreeText(root)).toContain('notes');
+    expect(flattenTreeText(root)).not.toContain('TetherCodeGit repository');
+
+    pressByLabel(root, 'Open folder notes');
+    act(() => {
+      tree.update(
+        pickerElement({
+          onBrowsePath,
+          currentPath: notesPath,
+          parentPath: codePath,
+          entries: [],
+        })
+      );
+    });
+    expect(findSearch(root).props.value).toBe('');
+
+    act(() => findSearch(root).props.onChangeText?.('missing'));
+    expect(flattenTreeText(root)).toContain('No folders match this search.');
+    act(() => tree.unmount());
+  });
+
+  it('renders browser loading, error, truncation, and empty states', () => {
+    const tree = renderPicker({
+      entries: [],
+      loadingEntries: true,
+      error: 'Bridge unavailable',
+      truncationMessage: 'Showing the first 100 folders.',
+    });
+    const root = tree.root as QueryableTestInstance;
+
+    pressByLabel(root, 'Browse workspace folders');
     expect(flattenTreeText(root)).toContain('Bridge unavailable');
     expect(flattenTreeText(root)).toContain('Showing the first 100 folders.');
-    expect(root.findAll((node) => node.props.accessibilityLabel === 'Loading folders...').length).toBeGreaterThan(0);
-    act(() => readOnPress(root.findAll((node) => node.props.accessibilityLabel === 'Clone here')[0].props)());
-    expect(onActionPress).toHaveBeenCalled();
-    act(() => tree.update(renderPickerMatrix({ entries: [], loadingEntries: false })));
-    expect(flattenTreeText(root)).toContain('No folders found here.');
-    act(() => tree.unmount());
-  });
+    expect(
+      root.findAll((node) => node.props.accessibilityLabel === 'Loading folders').length
+    ).toBeGreaterThan(0);
 
-  it('resets search and pending selection across visibility and selected-path changes', () => {
-    const onSelectPath = jest.fn();
-    let rendered: ReactTestRenderer | undefined;
     act(() => {
-      rendered = renderer.create(renderPickerMatrix({ onSelectPath }));
+      tree.update(
+        pickerElement({
+          entries: [],
+          loadingEntries: false,
+          error: null,
+          truncationMessage: null,
+        })
+      );
     });
-    const tree = expectValue(rendered);
-    const root = tree.root as QueryableTestInstance;
-    const search = root.findAllByType(TextInput)[0];
-    act(() => search.props.onChangeText('notes'));
-    expect(root.findAllByType(TextInput)[0].props.value).toBe('notes');
-
-    act(() => tree.update(renderPickerMatrix({ visible: false, selectedPath: null, currentPath: null, bridgeRoot: null, parentPath: null, entries: [], onSelectPath })));
-    expect(tree.root.findByType(Modal).props.visible).toBe(false);
-    act(() => tree.update(renderPickerMatrix({ visible: true, selectedPath: null, currentPath: null, bridgeRoot: null, parentPath: null, entries: [], onSelectPath })));
-    expect(root.findAllByType(TextInput)[0].props.value).toBe('');
-    expect(flattenTreeText(root)).toContain('Default workspace');
-    const use = root.findAll((node) => node.props.accessibilityLabel === 'Use Default workspace workspace')[0];
-    const pin = root.findAll((node) => node.props.accessibilityLabel === 'Pin Default workspace')[0];
-    expect(use.props.accessibilityState).toEqual({ disabled: true });
-    expect(pin.props.accessibilityState).toEqual({ disabled: true, selected: false });
-
-    act(() => tree.update(renderPickerMatrix({ selectedPath: '/Users/davidparks/Code/next', onSelectPath })));
-    expect(flattenTreeText(root)).toContain('next');
+    expect(flattenTreeText(root)).toContain('No subfolders. You can choose this folder.');
     act(() => tree.unmount());
   });
 
-  it('preserves a browsed pending path when the external selection changes', () => {
-    const onBrowsePath = jest.fn();
-    let rendered: ReactTestRenderer | undefined;
-    act(() => { rendered = renderer.create(renderPickerMatrix({ onBrowsePath })); });
-    const tree = expectValue(rendered);
-    act(() => readOnPress(findPressableContainingText(tree.root, 'notes').props)());
-    act(() => tree.update(renderPickerMatrix({ onBrowsePath, selectedPath: '/Users/davidparks/Code/other' })));
-    expect(flattenTreeText(tree.root as QueryableTestInstance)).toContain('/Users/davidparks/Code/notes');
-    act(() => tree.unmount());
-  });
-
-  it('exposes disabled loading and action controls without invoking callbacks', () => {
-    const onBrowsePath = jest.fn();
+  it('keeps repository cloning as a plain home action', () => {
     const onActionPress = jest.fn();
-    let rendered: ReactTestRenderer | undefined;
-    act(() => {
-      rendered = renderer.create(renderPickerMatrix({
-        entries: [], loadingEntries: true, parentPath: '/Users/davidparks',
-        actionLabel: 'Clone here', actionDisabled: true, onActionPress, onBrowsePath,
-      }));
+    const tree = renderPicker({
+      actionLabel: 'Clone Repository...',
+      actionDescription: 'Choose a destination and start a session',
+      onActionPress,
     });
-    const root = expectValue(rendered).root as QueryableTestInstance;
-    const up = root.findAll((node) => node.props.accessibilityLabel === 'Go to parent folder')[0];
-    const action = root.findAll((node) => node.props.accessibilityLabel === 'Clone here')[0];
-    expect(up.props.accessibilityState).toEqual({ disabled: true });
-    expect(action.props.accessibilityState).toEqual({ disabled: true });
-    expect(action.props.accessibilityHint).toBe('Clones a repository into this folder');
-    expect(onBrowsePath).not.toHaveBeenCalled();
-    expect(onActionPress).not.toHaveBeenCalled();
-    act(() => expectValue(rendered).unmount());
+    const root = tree.root as QueryableTestInstance;
+    const action = findByLabel(root, 'Clone Repository...');
+
+    expect(action.props.accessibilityHint).toBe(
+      'Choose a destination and start a session'
+    );
+    press(action);
+    expect(onActionPress).toHaveBeenCalledWith(tetherCodePath);
+
+    act(() => {
+      tree.update(
+        pickerElement({
+          actionLabel: 'Clone Repository...',
+          actionDescription: 'Choose a destination and start a session',
+          actionDisabled: true,
+          onActionPress,
+        })
+      );
+    });
+    expect(findByLabel(root, 'Clone Repository...').props.accessibilityState).toEqual({
+      disabled: true,
+      selected: false,
+    });
+    act(() => tree.unmount());
   });
 
-  it('confirms pinned and unpinned workspaces through long-press actions', () => {
-    const onToggleFavorite = jest.fn();
-    const actionSheet = jest.spyOn(ActionSheetIOS, 'showActionSheetWithOptions').mockImplementation((_options, callback) => callback(0));
-    let rendered: ReactTestRenderer | undefined;
-    act(() => { rendered = renderer.create(renderPickerMatrix({ onToggleFavorite })); });
-    const root = expectValue(rendered).root as QueryableTestInstance;
-    const pinnedTile = root.findAll((node) => node.props.accessibilityLabel === 'Code, 12 chats')[0];
-    const notesRow = root.findAll((node) => node.props.accessibilityLabel === 'Open folder notes')[0];
-    act(() => {
-      pinnedTile.props.onLongPress();
-      notesRow.props.onLongPress();
-    });
-    expect(actionSheet.mock.calls[0]?.[0]).toMatchObject({ options: ['Unpin workspace', 'Cancel'], title: 'Unpin this workspace?' });
-    expect(actionSheet.mock.calls[1]?.[0]).toMatchObject({ options: ['Pin workspace', 'Cancel'], title: 'Pin this workspace?' });
-    expect(onToggleFavorite).toHaveBeenCalledWith('/Users/davidparks/Code');
-    expect(onToggleFavorite).toHaveBeenCalledWith('/Users/davidparks/Code/notes');
-    actionSheet.mockRestore();
-    act(() => expectValue(rendered).unmount());
+  it('resets pushed navigation and search after the modal is reopened', () => {
+    const tree = renderPicker();
+    const root = tree.root as QueryableTestInstance;
+    pressByLabel(root, 'Browse workspace folders');
+    act(() => findSearch(root).props.onChangeText?.('notes'));
+
+    act(() => tree.update(pickerElement({ visible: false })));
+    expect(root.findByType(Modal).props.visible).toBe(false);
+    act(() => tree.update(pickerElement({ visible: true })));
+
+    expect(flattenTreeText(root)).toContain('Choose Workspace');
+    expect(root.findAllByType(TextInput)).toHaveLength(0);
+    act(() => tree.unmount());
   });
 
-  it('filters pinned workspaces and renders recent metadata variants', () => {
-    jest.setSystemTime(new Date('2026-04-17T12:00:00.000Z'));
-    let rendered: ReactTestRenderer | undefined;
-    act(() => {
-      rendered = renderer.create(renderPickerMatrix({
-        favoriteWorkspacePaths: ['/work/one', '/work/missing'],
-        recentWorkspaces: [
-          { path: '/work/one', chatCount: 1, updatedAt: '2026-04-17T11:59:55.000Z' },
-          { path: '/work/two', chatCount: 2, updatedAt: 'invalid' },
-        ],
-      }));
-    });
-    const root = expectValue(rendered).root as QueryableTestInstance;
-    expect(flattenTreeText(root)).toContain('now');
-    expect(flattenTreeText(root)).toContain('0 chats');
-    const search = root.findAllByType(TextInput)[0];
-    act(() => search.props.onChangeText('does-not-match'));
-    expect(flattenTreeText(root)).not.toContain('Pinned');
-    act(() => expectValue(rendered).unmount());
+  it('exposes modal close behavior and selected accessibility state', () => {
+    const onClose = jest.fn();
+    const tree = renderPicker({ onClose });
+    const root = tree.root as QueryableTestInstance;
+
+    expect(
+      root.findAll((node) => node.props.accessibilityViewIsModal === true).length
+    ).toBeGreaterThan(0);
+    expect(findByLabel(root, 'Close workspace picker')).toBeDefined();
+    act(() => (root.findByType(Modal).props.onRequestClose as () => void)());
+    expect(onClose).toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
+
+  it('deduplicates and caps recent workspaces', () => {
+    const recentWorkspaces: WorkspaceSummary[] = [
+      { path: '/work/one', chatCount: 1 },
+      { path: '/work/one', chatCount: 2 },
+      { path: '/work/two', chatCount: 2 },
+      { path: '/work/three', chatCount: 3 },
+      { path: '/work/four', chatCount: 4 },
+      { path: '/work/five', chatCount: 5 },
+      { path: '/work/six', chatCount: 6 },
+      { path: '/work/seven', chatCount: 7 },
+    ];
+    const tree = renderPicker({ recentWorkspaces });
+    const text = flattenTreeText(tree.root as QueryableTestInstance);
+    const recentLabels = new Set(
+      (tree.root as QueryableTestInstance)
+        .findAll(
+          (node) =>
+            typeof node.props.accessibilityLabel === 'string' &&
+            node.props.accessibilityLabel.startsWith('Use ') &&
+            node.props.accessibilityLabel.endsWith(' workspace')
+        )
+        .map((node) => node.props.accessibilityLabel)
+    );
+
+    expect(recentLabels.has('Use one workspace')).toBe(true);
+    expect(recentLabels.size).toBe(7);
+    expect(text).toContain('six');
+    expect(text).not.toContain('seven');
+    act(() => tree.unmount());
   });
 
   it.each([
+    ['2026-04-17T11:59:55.000Z', 'now'],
     ['2026-04-17T11:59:30.000Z', '30 sec ago'],
     ['2026-04-17T11:30:00.000Z', '30 min ago'],
     ['2026-04-17T07:00:00.000Z', '5 hr ago'],
@@ -282,104 +286,106 @@ describe('WorkspacePickerModal', () => {
     ['2026-04-14T12:00:00.000Z', '3 days ago'],
     ['2026-04-03T12:00:00.000Z', '2 wk ago'],
     ['2026-02-17T12:00:00.000Z', '1 mo ago'],
-  ])('renders recent workspace time %s as %s', (updatedAt, expected) => {
+  ])('formats recent workspace time %s as %s', (updatedAt, expected) => {
     jest.setSystemTime(new Date('2026-04-17T12:00:00.000Z'));
-    let rendered: ReactTestRenderer | undefined;
-    act(() => {
-      rendered = renderer.create(renderPickerMatrix({
-        favoriteWorkspacePaths: ['/work/time'],
-        recentWorkspaces: [{ path: '/work/time', chatCount: 4, updatedAt }],
-      }));
-    });
-    expect(flattenTreeText(expectValue(rendered).root as QueryableTestInstance)).toContain(expected);
-    act(() => expectValue(rendered).unmount());
+    expect(formatRelativeTime(updatedAt)).toBe(expected);
   });
 
-  it('renders singular chat metadata, custom action copy, and modal request close', () => {
-    const onClose = jest.fn();
-    const onActionPress = jest.fn();
-    let rendered: ReactTestRenderer | undefined;
-    act(() => {
-      rendered = renderer.create(renderPickerMatrix({
-        favoriteWorkspacePaths: ['/work/one'],
-        recentWorkspaces: [{ path: '/work/one', chatCount: 1 }],
-        actionLabel: 'Clone here', actionDescription: 'Create a checkout here',
-        onActionPress, onClose,
-      }));
+  it('falls back to chat metadata when a recent timestamp is absent or invalid', () => {
+    const tree = renderPicker({
+      recentWorkspaces: [
+        { path: '/work/one', chatCount: 1 },
+        { path: '/work/two', chatCount: 2, updatedAt: 'invalid' },
+      ],
     });
-    const root = expectValue(rendered).root as QueryableTestInstance;
-    expect(flattenTreeText(root)).toContain('1 chat');
-    const action = root.findAll((node) => node.props.accessibilityLabel === 'Clone here')[0];
-    expect(action.props.accessibilityHint).toBe('Create a checkout here');
-    act(() => readOnPress(action.props)());
-    expect(onActionPress).toHaveBeenCalledWith('/Users/davidparks/Code/tethercode');
-    act(() => (root.findByType(Modal).props.onRequestClose as () => void)());
-    expect(onClose).toHaveBeenCalled();
-    act(() => expectValue(rendered).unmount());
+    const text = flattenTreeText(tree.root as QueryableTestInstance);
+    expect(text).toContain('1 chat');
+    expect(text).toContain('2 chats');
+    act(() => tree.unmount());
   });
 
-  it('uses omitted optional defaults and exposes disabled favorite state', () => {
-    let rendered: ReactTestRenderer | undefined;
-    act(() => {
-      rendered = renderer.create(
-        <SafeAreaProvider initialMetrics={{ frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, left: 0, right: 0, bottom: 0 } }}>
-          <AppThemeProvider theme={theme}>
-            <WorkspacePickerModal visible={false} recentWorkspaces={[]} entries={[]} onBrowsePath={jest.fn()} onSelectPath={jest.fn()} onClose={jest.fn()} />
-          </AppThemeProvider>
-        </SafeAreaProvider>
-      );
+  it('adapts presentation to phones, landscape, and larger screens', () => {
+    expect(
+      getWorkspacePickerPresentation({
+        width: 390,
+        height: 844,
+        topInset: 47,
+        bottomInset: 34,
+      })
+    ).toEqual({
+      isLargeScreen: false,
+      horizontalPadding: 0,
+      topPadding: 55,
+      bottomPadding: 0,
+      panelHeight: 789,
+      panelMaxWidth: 390,
     });
-    const root = expectValue(rendered).root as QueryableTestInstance;
-    expect(root.findByType(Modal).props.visible).toBe(false);
-    act(() => {
-      expectValue(rendered).update(
-        <SafeAreaProvider initialMetrics={{ frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, left: 0, right: 0, bottom: 0 } }}>
-          <AppThemeProvider theme={theme}>
-            <WorkspacePickerModal visible recentWorkspaces={[]} entries={[]} onBrowsePath={jest.fn()} onSelectPath={jest.fn()} onClose={jest.fn()} />
-          </AppThemeProvider>
-        </SafeAreaProvider>
-      );
+
+    expect(
+      getWorkspacePickerPresentation({
+        width: 844,
+        height: 390,
+        topInset: 0,
+        bottomInset: 21,
+      })
+    ).toEqual({
+      isLargeScreen: false,
+      horizontalPadding: 0,
+      topPadding: 16,
+      bottomPadding: 0,
+      panelHeight: 374,
+      panelMaxWidth: 844,
     });
-    expect(root.findAll((node) => node.props.accessibilityLabel === 'Pin Default workspace')[0].props.accessibilityState).toEqual({ disabled: true, selected: false });
-    act(() => expectValue(rendered).unmount());
+
+    expect(
+      getWorkspacePickerPresentation({
+        width: 1024,
+        height: 1366,
+        topInset: 24,
+        bottomInset: 20,
+      })
+    ).toEqual({
+      isLargeScreen: true,
+      horizontalPadding: 24,
+      topPadding: 48,
+      bottomPadding: 48,
+      panelHeight: 820,
+      panelMaxWidth: 640,
+    });
   });
 
-  function renderPickerMatrix(overrides: Record<string, unknown>) {
-    return (
-      <SafeAreaProvider initialMetrics={{ frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 47, left: 0, right: 0, bottom: 34 } }}>
-        <AppThemeProvider theme={theme}>
-          <WorkspacePickerModal
-            visible
-            selectedPath="/Users/davidparks/Code/tethercode"
-            bridgeRoot="/Users/davidparks/Code"
-            recentWorkspaces={[{ path: '/Users/davidparks/Code', chatCount: 12 }]}
-            favoriteWorkspacePaths={['/Users/davidparks/Code']}
-            currentPath="/Users/davidparks/Code"
-            parentPath="/Users/davidparks"
-            entries={[directoryEntry('tethercode', '/Users/davidparks/Code/tethercode'), directoryEntry('notes', '/Users/davidparks/Code/notes')]}
-            onBrowsePath={jest.fn()}
-            onSelectPath={jest.fn()}
-            onClose={jest.fn()}
-            {...overrides}
-          />
-        </AppThemeProvider>
-      </SafeAreaProvider>
-    );
+  it('uses optional defaults without exposing removed pin controls', () => {
+    const tree = renderPicker({
+      selectedPath: null,
+      bridgeRoot: null,
+      currentPath: null,
+      parentPath: null,
+      recentWorkspaces: [],
+      entries: [],
+    });
+    const root = tree.root as QueryableTestInstance;
+    expect(flattenTreeText(root)).toContain('Connected computer folders');
+    expect(
+      root.findAll((node) =>
+        String(node.props.accessibilityLabel ?? '').toLowerCase().includes('pin')
+      )
+    ).toHaveLength(0);
+    expect(findByLabel(root, 'Use default workspace').props.accessibilityState).toEqual({
+      disabled: false,
+      selected: true,
+    });
+    act(() => tree.unmount());
+  });
+
+  function renderPicker(overrides: Partial<WorkspacePickerModalProps> = {}) {
+    let rendered: ReactTestRenderer | undefined;
+    act(() => {
+      rendered = renderer.create(pickerElement(overrides));
+    });
+    return expectValue(rendered);
   }
 
-  function renderPicker({
-    onBrowsePath,
-    onSelectPath,
-    currentPath,
-    parentPath,
-    entries,
-  }: {
-    onBrowsePath: (path: string | null) => void;
-    onSelectPath: (path: string | null) => void;
-    currentPath: string;
-    parentPath: string;
-    entries: FileSystemEntry[];
-  }) {
+  function pickerElement(overrides: Partial<WorkspacePickerModalProps> = {}) {
     return (
       <SafeAreaProvider
         initialMetrics={{
@@ -390,15 +396,22 @@ describe('WorkspacePickerModal', () => {
         <AppThemeProvider theme={theme}>
           <WorkspacePickerModal
             visible
-            selectedPath={oldSelectionPath}
-            bridgeRoot={oldSelectionPath}
-            recentWorkspaces={[]}
-            currentPath={currentPath}
-            parentPath={parentPath}
-            entries={entries}
-            onBrowsePath={onBrowsePath}
-            onSelectPath={onSelectPath}
+            selectedPath={tetherCodePath}
+            bridgeRoot={codePath}
+            recentWorkspaces={[
+              { path: codePath, chatCount: 12 },
+              { path: tetherCodePath, chatCount: 4 },
+            ]}
+            currentPath={codePath}
+            parentPath="/Users/davidparks"
+            entries={[
+              directoryEntry('TetherCode', tetherCodePath, true),
+              directoryEntry('notes', notesPath),
+            ]}
+            onBrowsePath={jest.fn()}
+            onSelectPath={jest.fn()}
             onClose={jest.fn()}
+            {...overrides}
           />
         </AppThemeProvider>
       </SafeAreaProvider>
@@ -406,59 +419,46 @@ describe('WorkspacePickerModal', () => {
   }
 });
 
-function directoryEntry(name: string, path: string): FileSystemEntry {
+function directoryEntry(
+  name: string,
+  path: string,
+  isGitRepo = false
+): FileSystemEntry {
   return {
     name,
     path,
     kind: 'directory',
     hidden: false,
     selectable: true,
-    isGitRepo: false,
+    isGitRepo,
   };
 }
 
-function expectValue<T>(value: T | undefined): T {
-  if (value === undefined) {
-    throw new Error('Expected value to be set');
-  }
-  return value;
+function findSearch(root: QueryableTestInstance) {
+  const search = root
+    .findAllByType(TextInput)
+    .find((node) => node.props.accessibilityLabel === 'Search this folder');
+  if (!search) throw new Error('Expected folder search input');
+  return search;
 }
 
-function readOnPress(props: Record<string, unknown>): () => void {
-  if (typeof props.onPress !== 'function') {
+function findByLabel(root: QueryableTestInstance, label: string) {
+  const matches = root.findAll((node) => node.props.accessibilityLabel === label);
+  const match =
+    matches.find((node) => node.props.accessibilityRole !== undefined) ?? matches[0];
+  if (!match) throw new Error(`Expected element labeled "${label}"`);
+  return match;
+}
+
+function pressByLabel(root: QueryableTestInstance, label: string) {
+  press(findByLabel(root, label));
+}
+
+function press(node: QueryableTestInstance) {
+  if (typeof node.props.onPress !== 'function') {
     throw new Error('Expected press handler');
   }
-  return props.onPress as () => void;
-}
-
-function findPressableContainingText(
-  root: ReactTestInstance,
-  expectedText: string
-): ReactTestInstance {
-  const matches = (root as QueryableTestInstance).findAll(
-    (node: QueryableTestInstance) =>
-      typeof node.props.onPress === 'function' &&
-      flattenTreeText(node).includes(expectedText)
-  );
-  if (matches.length === 0) {
-    throw new Error(`Expected press target containing "${expectedText}"`);
-  }
-  return matches[0];
-}
-
-function findPressableWithExactText(
-  root: ReactTestInstance,
-  expectedText: string
-): ReactTestInstance {
-  const matches = (root as QueryableTestInstance).findAll(
-    (node: QueryableTestInstance) =>
-      typeof node.props.onPress === 'function' &&
-      flattenTreeText(node) === expectedText
-  );
-  if (matches.length === 0) {
-    throw new Error(`Expected press target with text "${expectedText}"`);
-  }
-  return matches[0];
+  act(() => node.props.onPress?.());
 }
 
 function flattenRenderedText(value: unknown): string {
@@ -475,7 +475,6 @@ function flattenTreeText(node: QueryableTestInstance): string {
   if (node.type === Text) {
     return flattenRenderedText(node.props.children);
   }
-
   return node.children
     .map((child) =>
       typeof child === 'string' || typeof child === 'number'
@@ -483,4 +482,9 @@ function flattenTreeText(node: QueryableTestInstance): string {
         : flattenTreeText(child as QueryableTestInstance)
     )
     .join('');
+}
+
+function expectValue<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error('Expected value to be set');
+  return value;
 }

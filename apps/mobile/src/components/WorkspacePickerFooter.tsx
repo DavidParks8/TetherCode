@@ -1,57 +1,36 @@
-import { Ionicons } from '@expo/vector-icons';
 import { Pressable, Text, View } from 'react-native';
 
-import { controlAccessibilityState, decorativeAccessibilityProps } from '../accessibility';
-import type { AppTheme } from '../theme';
+import { controlAccessibilityState } from '../accessibility';
 import type { WorkspacePickerStyles } from './workspacePickerStyles';
 
 export function WorkspacePickerFooter({
-  styles, theme, footerPath, footerTitle, footerSubtitle, footerIsFavorite,
-  onToggleFavorite, onSelectPath,
+  styles,
+  bottomSafeInset,
+  folderPath,
+  folderTitle,
+  onSelectPath,
 }: {
   styles: WorkspacePickerStyles;
-  theme: AppTheme;
-  footerPath: string | null;
-  footerTitle: string;
-  footerSubtitle: string;
-  footerIsFavorite: boolean;
-  onToggleFavorite?: (path: string | null) => void;
+  bottomSafeInset: number;
+  folderPath: string | null;
+  folderTitle: string;
   onSelectPath: (path: string | null) => void;
 }) {
   return (
-    <View style={styles.footer}>
-      <View style={styles.selectionSummary}>
-        <Text style={styles.selectionLabel}>Workspace</Text>
-        <Text style={styles.selectionTitle} numberOfLines={1} ellipsizeMode="tail">{footerTitle}</Text>
-        <Text style={styles.selectionPath} numberOfLines={2} ellipsizeMode="middle">{footerSubtitle}</Text>
-      </View>
+    <View style={[styles.browserFooter, { paddingBottom: Math.max(bottomSafeInset, 12) }]}>
       <Pressable
-        onPress={() => footerPath && onToggleFavorite?.(footerPath)}
-        disabled={!footerPath || !onToggleFavorite}
+        onPress={() => folderPath && onSelectPath(folderPath)}
+        disabled={!folderPath}
         style={({ pressed }) => [
-          styles.footerFavoriteButton, footerIsFavorite && styles.footerFavoriteButtonActive,
-          (!footerPath || !onToggleFavorite) && styles.buttonDisabled,
-          pressed && footerPath && onToggleFavorite && styles.footerFavoriteButtonPressed,
+          styles.chooseButton,
+          !folderPath && styles.buttonDisabled,
+          pressed && folderPath && styles.chooseButtonPressed,
         ]}
         accessibilityRole="button"
-        accessibilityLabel={footerIsFavorite ? `Unpin ${footerTitle}` : `Pin ${footerTitle}`}
-        accessibilityState={controlAccessibilityState({ disabled: !footerPath || !onToggleFavorite, selected: footerIsFavorite })}
+        accessibilityLabel={`Choose ${folderTitle} workspace`}
+        accessibilityState={controlAccessibilityState({ disabled: !folderPath })}
       >
-        <Ionicons
-          {...decorativeAccessibilityProps} name={footerIsFavorite ? 'star' : 'star-outline'}
-          size={17} color={footerIsFavorite ? theme.colors.textPrimary : theme.colors.textSecondary}
-        />
-      </Pressable>
-      <Pressable
-        onPress={() => footerPath && onSelectPath(footerPath)} disabled={!footerPath}
-        style={({ pressed }) => [
-          styles.footerUseButton, !footerPath && styles.buttonDisabled,
-          pressed && Boolean(footerPath) && styles.footerUseButtonPressed,
-        ]}
-        accessibilityRole="button" accessibilityLabel={`Use ${footerTitle} workspace`}
-        accessibilityState={controlAccessibilityState({ disabled: !footerPath })}
-      >
-        <Text style={styles.footerUseButtonText}>Use</Text>
+        <Text style={styles.chooseButtonText}>{`Choose "${folderTitle}"`}</Text>
       </Pressable>
     </View>
   );

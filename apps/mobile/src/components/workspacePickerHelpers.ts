@@ -1,8 +1,49 @@
-import { ActionSheetIOS, Alert, Platform } from 'react-native';
-
 import type { WorkspaceSummary } from '../api/types';
 
-export const ENTRY_ROW_HEIGHT = 48;
+export const ENTRY_ROW_HEIGHT = 54;
+export const WORKSPACE_PICKER_MAX_WIDTH = 640;
+export const WORKSPACE_PICKER_MAX_HEIGHT = 820;
+
+interface WorkspacePickerViewport {
+  width: number;
+  height: number;
+  topInset: number;
+  bottomInset: number;
+}
+
+export interface WorkspacePickerPresentation {
+  isLargeScreen: boolean;
+  horizontalPadding: number;
+  topPadding: number;
+  bottomPadding: number;
+  panelHeight: number;
+  panelMaxWidth: number;
+}
+
+export function getWorkspacePickerPresentation({
+  width,
+  height,
+  topInset,
+  bottomInset,
+}: WorkspacePickerViewport): WorkspacePickerPresentation {
+  const isLargeScreen = Math.min(width, height) >= 600;
+  const topPadding = isLargeScreen
+    ? Math.max(topInset + 24, 48)
+    : Math.max(topInset + 8, 16);
+  const bottomPadding = isLargeScreen ? Math.max(bottomInset + 24, 48) : 0;
+  const availableHeight = Math.max(0, height - topPadding - bottomPadding);
+
+  return {
+    isLargeScreen,
+    horizontalPadding: isLargeScreen ? 24 : 0,
+    topPadding,
+    bottomPadding,
+    panelHeight: isLargeScreen
+      ? Math.min(WORKSPACE_PICKER_MAX_HEIGHT, availableHeight)
+      : availableHeight,
+    panelMaxWidth: isLargeScreen ? WORKSPACE_PICKER_MAX_WIDTH : width,
+  };
+}
 
 export function toPathBasename(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
@@ -20,7 +61,7 @@ export function formatWorkspaceMeta(workspace: WorkspaceSummary): string {
   return `${String(workspace.chatCount)} chats`;
 }
 
-function formatRelativeTime(iso?: string): string | null {
+export function formatRelativeTime(iso?: string): string | null {
   if (!iso) return null;
   const timestamp = Date.parse(iso);
   if (!Number.isFinite(timestamp)) return null;
@@ -39,22 +80,4 @@ function formatRelativeTime(iso?: string): string | null {
   if (days < 7) return `${String(days)} ${days === 1 ? 'day' : 'days'} ago`;
   if (weeks < 5) return `${String(weeks)} wk ago`;
   return `${String(Math.floor(days / 30))} mo ago`;
-}
-
-export function showWorkspacePinAction(isPinned: boolean, onAction: () => void) {
-  const actionTitle = isPinned ? 'Unpin workspace' : 'Pin workspace';
-  const promptTitle = isPinned ? 'Unpin this workspace?' : 'Pin this workspace?';
-  if (Platform.OS === 'ios') {
-    ActionSheetIOS.showActionSheetWithOptions(
-      { options: [actionTitle, 'Cancel'], cancelButtonIndex: 1, title: promptTitle },
-      (buttonIndex) => {
-        if (buttonIndex === 0) onAction();
-      }
-    );
-    return;
-  }
-  Alert.alert(promptTitle, undefined, [
-    { text: actionTitle, onPress: onAction },
-    { text: 'Cancel', style: 'cancel' },
-  ]);
 }

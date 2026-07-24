@@ -1,5 +1,7 @@
 import type { FileSystemEntry, WorkspaceSummary } from '../api/types';
 
+export type WorkspacePickerScreen = 'home' | 'browser';
+
 export interface WorkspacePickerModalProps {
   visible: boolean;
   selectedPath?: string | null;
