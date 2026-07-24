@@ -1,36 +1,30 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState } from 'react-native';
-import type { AgentDescriptor, AgentId } from '../api/types';
-import { getAgentLabel } from '../agents';
 import {
-  filterDrawerChatsByAgents,
-  searchDrawerChats,
-} from './drawerChats';
-import {
-  buildChatWorkspaceSections,
-  type ChatWorkspaceSection,
-} from './chatThreadTree';
-import {
-  DEFAULT_WORKSPACE_CHAT_LIMIT,
-} from '../appSettings';
-import {
-  countDrawerRunningChats,
-} from './drawerRuntimeIndicators';
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { ActionSheetIOS, AppState, Platform } from 'react-native';
+import type { AgentDescriptor } from '../api/types';
+import { DEFAULT_WORKSPACE_CHAT_LIMIT } from '../appSettings';
 import { useAppTheme } from '../theme';
 import {
-  getDefaultCollapsedWorkspaceKeys,
-  normalizeWorkspaceChatLimit,
-  sortPinnedChatsInSections,
-  sortWorkspaceSections,
-} from './drawerContentHelpers';
+  buildDrawerAttentionModel,
+  getDrawerFolderPickerLabels,
+  type DrawerAttentionLane,
+} from './drawerAttention';
 import { createDrawerContentStyles } from './drawerContentStyles';
 import type { DrawerContentProps, DrawerScreen } from './drawerContentTypes';
 import { DrawerContentView } from './DrawerContentView';
 import { DrawerContentViewContext } from './drawerContentViewContext';
+import { normalizeWorkspaceChatLimit } from './drawerContentHelpers';
+import { useDrawerAttentionRequests } from './useDrawerAttentionRequests';
 import { useDrawerChatLoading } from './useDrawerChatLoading';
-import { useDrawerPins } from './useDrawerPins';
 
 const DRAWER_EVENT_REFRESH_DEBOUNCE_MS = 250;
+
 export const DrawerContent = memo(function DrawerContentComponent({
   api,
   ws,
@@ -43,6 +37,23 @@ export const DrawerContent = memo(function DrawerContentComponent({
 }: DrawerContentProps) {
   const theme = useAppTheme();
   const {
+    pendingApprovals,
+    pendingUserInputs,
+    attentionRequestError,
+    refreshingAttentionRequests,
+    refreshAttentionRequests,
+  } = useDrawerAttentionRequests(api, ws, active);
+  const priorityThreadIds = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...pendingApprovals.map((approval) => approval.threadId),
+          ...pendingUserInputs.map((request) => request.threadId),
+        ])
+      ),
+    [pendingApprovals, pendingUserInputs]
+  );
+  const {
     chats,
     loading,
     loadingOlderChats,
@@ -54,329 +65,229 @@ export const DrawerContent = memo(function DrawerContentComponent({
     retryDeepChatListRef,
     cancelChatListStream,
     scheduleLoadChats,
-  } = useDrawerChatLoading(api, ws, active);
-  const [selectedAgentIds, setSelectedAgentIds] = useState<AgentId[]>([]);
+  } = useDrawerChatLoading(api, ws, active, priorityThreadIds);
   const [agents, setAgents] = useState<AgentDescriptor[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterMenuVisible, setFilterMenuVisible] = useState(false);
-  const [collapsedWorkspaceKeys, setCollapsedWorkspaceKeys] = useState<Set<string>>(new Set());
-  const { pinnedChatIds, pinnedWorkspacePaths, pinnedChatIdSet,
-    pinnedWorkspacePathSet, showChatPinAction, showWorkspacePinAction } = useDrawerPins();
-  const [workspaceVisibleCounts, setWorkspaceVisibleCounts] = useState<Record<string, number>>({});
-  const hasAppliedInitialCollapseRef = useRef(false);
-  const knownWorkspaceKeysRef = useRef<Set<string>>(new Set());
-  const chatSectionsRef = useRef<ChatWorkspaceSection[]>([]);
+  const [agentMetadataError, setAgentMetadataError] = useState<string | null>(null);
+  const [selectedFolderKey, setSelectedFolderKey] = useState<string | null>(null);
+  const [collapsedLaneKeys, setCollapsedLaneKeys] = useState<Set<DrawerAttentionLane>>(
+    new Set()
+  );
+  const [folderPickerVisible, setFolderPickerVisible] = useState(false);
+  const mountedRef = useRef(true);
   const styles = useMemo(() => createDrawerContentStyles(theme), [theme]);
-  const chatFilterOptions = useMemo(
-    () => agents.filter((agent) => agent.lifecycle === 'ready'),
-    [agents]
-  );
-  const agentFilteredChats = useMemo(
-    () => selectedAgentIds.length === chatFilterOptions.length
-      ? chats
-      : filterDrawerChatsByAgents(chats, selectedAgentIds),
-    [chatFilterOptions.length, chats, selectedAgentIds]
-  );
-  const filteredChats = useMemo(
-    () => searchDrawerChats(agentFilteredChats, searchQuery),
-    [agentFilteredChats, searchQuery]
-  );
+  const normalizedWorkspaceChatLimit = normalizeWorkspaceChatLimit(workspaceChatLimit);
 
   useEffect(() => {
-    let cancelled = false;
-    void api.readBridgeCapabilities().then((capabilities) => {
-      if (cancelled) {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const refreshAgentMetadata = useCallback(async () => {
+    try {
+      const capabilities = await api.readBridgeCapabilities();
+      if (!mountedRef.current) {
         return;
       }
       setAgents(capabilities.agents);
-      setSelectedAgentIds(
-        capabilities.agents.filter((agent) => agent.lifecycle === 'ready').map((agent) => agent.agentId)
-      );
-    }).catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [api]);
-  const baseChatSections = useMemo(
-    () =>
-      sortWorkspaceSections(
-        sortPinnedChatsInSections(buildChatWorkspaceSections(agentFilteredChats), pinnedChatIds),
-        pinnedWorkspacePaths
-      ),
-    [agentFilteredChats, pinnedChatIds, pinnedWorkspacePaths]
-  );
-  const workspaceChatSections = useMemo(
-    () =>
-      sortWorkspaceSections(
-        sortPinnedChatsInSections(buildChatWorkspaceSections(filteredChats), pinnedChatIds),
-        pinnedWorkspacePaths
-      ),
-    [filteredChats, pinnedChatIds, pinnedWorkspacePaths]
-  );
-  const chatSections = useMemo(
-    () => workspaceChatSections,
-    [workspaceChatSections]
-  );
-  const chatSectionByKey = useMemo(
-    () => new Map(chatSections.map((section) => [section.key, section])),
-    [chatSections]
-  );
-  const isSearching = searchQuery.trim().length > 0;
-  const normalizedWorkspaceChatLimit = normalizeWorkspaceChatLimit(workspaceChatLimit);
-  const visibleChatSections = useMemo(
-    () =>
-      chatSections.map((section) => {
-        const collapsed = !isSearching && collapsedWorkspaceKeys.has(section.key);
-        if (collapsed) {
-          return {
-            ...section,
-            data: [],
-          };
-        }
-
-        if (isSearching || normalizedWorkspaceChatLimit === null) {
-          return section;
-        }
-
-        const visibleCount = Math.min(
-          section.data.length,
-          workspaceVisibleCounts[section.key] ?? normalizedWorkspaceChatLimit
-        );
-        return {
-          ...section,
-          data: section.data.slice(0, visibleCount),
-        };
-      }),
-    [
-      chatSections,
-      collapsedWorkspaceKeys,
-      isSearching,
-      normalizedWorkspaceChatLimit,
-      workspaceVisibleCounts,
-    ]
-  );
-  const runningChatCount = useMemo(
-    () => countDrawerRunningChats(chats, runIndicatorsByThread),
-    [chats, runIndicatorsByThread]
-  );
-
-  useEffect(() => {
-    setWorkspaceVisibleCounts({});
-  }, [normalizedWorkspaceChatLimit]);
-
-  const showAllWorkspaceChats = useCallback(
-    (section: ChatWorkspaceSection) => {
-      if (normalizedWorkspaceChatLimit === null) {
-        return;
+      setAgentMetadataError(null);
+    } catch {
+      if (mountedRef.current) {
+        setAgentMetadataError('Could not refresh agent names.');
       }
-
-      setWorkspaceVisibleCounts((prev) => {
-        const currentCount = prev[section.key] ?? normalizedWorkspaceChatLimit;
-        const nextCount = section.itemCount;
-        if (nextCount <= currentCount) {
-          return prev;
-        }
-
-        return {
-          ...prev,
-          [section.key]: nextCount,
-        };
-      });
-    },
-    [normalizedWorkspaceChatLimit]
-  );
-
-  useEffect(() => {
-    chatSectionsRef.current = baseChatSections;
-  }, [baseChatSections]);
-
-  useEffect(() => {
-    const nextKnownKeys = new Set(baseChatSections.map((section) => section.key));
-    if (baseChatSections.length === 0) {
-      knownWorkspaceKeysRef.current = nextKnownKeys;
-      return;
     }
+  }, [api]);
 
-    setCollapsedWorkspaceKeys((prev) => {
-      if (!hasAppliedInitialCollapseRef.current) {
-        hasAppliedInitialCollapseRef.current = true;
-        return getDefaultCollapsedWorkspaceKeys(baseChatSections);
-      }
-
-      let changed = false;
-      const next = new Set<string>();
-
-      for (const key of prev) {
-        if (nextKnownKeys.has(key)) {
-          next.add(key);
-        } else {
-          changed = true;
-        }
-      }
-
-      for (let index = 1; index < baseChatSections.length; index += 1) {
-        const key = baseChatSections[index]?.key;
-        if (key && !knownWorkspaceKeysRef.current.has(key) && !next.has(key)) {
-          next.add(key);
-          changed = true;
-        }
-      }
-
-      const everySectionCollapsed =
-        baseChatSections.length > 0 &&
-        baseChatSections.every((section) => next.has(section.key));
-      if (everySectionCollapsed) {
-        next.delete(baseChatSections[0]?.key ?? '');
-        changed = true;
-      }
-
-      return changed ? next : prev;
-    });
-
-    knownWorkspaceKeysRef.current = nextKnownKeys;
-  }, [baseChatSections]);
-
-  const filteredChatCount = filteredChats.length;
-  const selectedAgentIdSet = useMemo(
-    () => new Set(selectedAgentIds),
-    [selectedAgentIds]
-  );
-  const hasFilteredAgents = selectedAgentIds.length < chatFilterOptions.length;
-  const hasActiveFilters = hasFilteredAgents || isSearching;
-  const singleSelectedAgentId = selectedAgentIds.length === 1 ? selectedAgentIds[0] : null;
-  const emptyTitle = singleSelectedAgentId
-    ? `No ${getAgentLabel(agents, singleSelectedAgentId)} chats`
-    : 'No chats yet';
-  const emptyHint = singleSelectedAgentId
-    ? `Turn another agent back on or start a new ${getAgentLabel(agents, singleSelectedAgentId)} chat.`
-    : 'Start a new chat and it will show up here with live activity.';
-  const resolvedEmptyTitle = isSearching ? 'No matching chats' : emptyTitle;
-  const resolvedEmptyHint = isSearching
-    ? 'Try a different title, keyword, or workspace name.'
-    : emptyHint;
+  useEffect(() => {
+    void refreshAgentMetadata();
+  }, [refreshAgentMetadata]);
 
   useEffect(() => {
     if (!active) {
       return;
     }
-
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
-        setCollapsedWorkspaceKeys(getDefaultCollapsedWorkspaceKeys(chatSectionsRef.current));
-        hasAppliedInitialCollapseRef.current = true;
-        scheduleLoadChats(DRAWER_EVENT_REFRESH_DEBOUNCE_MS, true);
+    return ws.onStatus((connected) => {
+      if (connected) {
+        void refreshAgentMetadata();
       }
     });
+  }, [active, refreshAgentMetadata, ws]);
 
-    return () => {
-      subscription.remove();
-    };
-  }, [active, scheduleLoadChats]);
+  const attentionModel = useMemo(
+    () =>
+      buildDrawerAttentionModel({
+        chats,
+        agents,
+        runIndicatorsByThread,
+        pendingApprovals,
+        pendingUserInputs,
+        selectedFolderKey,
+        workspaceChatLimit: normalizedWorkspaceChatLimit,
+      }),
+    [
+      agents,
+      chats,
+      normalizedWorkspaceChatLimit,
+      pendingApprovals,
+      pendingUserInputs,
+      runIndicatorsByThread,
+      selectedFolderKey,
+    ]
+  );
 
-  const toggleWorkspaceSection = useCallback((sectionKey: string) => {
-    setCollapsedWorkspaceKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(sectionKey)) {
-        next.delete(sectionKey);
+  useEffect(() => {
+    if (
+      selectedFolderKey &&
+      !attentionModel.folderOptions.some((option) => option.key === selectedFolderKey)
+    ) {
+      setSelectedFolderKey(null);
+    }
+  }, [attentionModel.folderOptions, selectedFolderKey]);
+
+  const visibleAttentionSections = useMemo(
+    () =>
+      attentionModel.sections.map((section) =>
+        collapsedLaneKeys.has(section.key)
+          ? {
+              ...section,
+              data: [],
+            }
+          : section
+      ),
+    [attentionModel.sections, collapsedLaneKeys]
+  );
+
+  const toggleAttentionSection = useCallback((lane: DrawerAttentionLane) => {
+    setCollapsedLaneKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(lane)) {
+        next.delete(lane);
       } else {
-        next.add(sectionKey);
+        next.add(lane);
       }
       return next;
     });
   }, []);
 
-  const handleSelectChat = useCallback(
-    (chatId: string) => {
-      if (!isSearching) {
-        setFilterMenuVisible(false);
-      }
-      cancelChatListStream();
-      onSelectChat(chatId);
-    },
-    [cancelChatListStream, isSearching, onSelectChat]
-  );
-
-  const handleNewChat = useCallback(() => {
-    if (!isSearching) {
-      setFilterMenuVisible(false);
-    }
-    cancelChatListStream();
-    onNewChat();
-  }, [cancelChatListStream, isSearching, onNewChat]);
-
-  const handleNavigate = useCallback(
-    (screen: DrawerScreen) => {
-      if (!isSearching) {
-        setFilterMenuVisible(false);
-      }
-      cancelChatListStream();
-      onNavigate(screen);
-    },
-    [cancelChatListStream, isSearching, onNavigate]
-  );
-
-  const toggleAgentFilter = useCallback((agentId: AgentId) => {
-    setSelectedAgentIds((prev) => {
-      const selected = prev.includes(agentId);
-      if (selected && prev.length === 1) {
-        return prev;
-      }
-      return selected ? prev.filter((entry) => entry !== agentId) : [...prev, agentId];
-    });
+  const handleSelectFolder = useCallback((folderKey: string | null) => {
+    setSelectedFolderKey(folderKey);
+    setFolderPickerVisible(false);
   }, []);
 
-  const handleToggleFilterMenu = useCallback(() => {
-    if (filterMenuVisible) {
-      if (isSearching) {
-        setSearchQuery('');
-      }
-      setFilterMenuVisible(false);
+  const handleOpenFolderPicker = useCallback(() => {
+    if (Platform.OS !== 'ios') {
+      setFolderPickerVisible(true);
       return;
     }
 
-    setFilterMenuVisible(true);
-  }, [filterMenuVisible, isSearching]);
+    const labels = getDrawerFolderPickerLabels(attentionModel.folderOptions);
+    const cancelButtonIndex = labels.length;
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        options: [...labels, 'Cancel'],
+        cancelButtonIndex,
+        title: 'Folder',
+      },
+      (buttonIndex) => {
+        const option = attentionModel.folderOptions[buttonIndex];
+        if (buttonIndex !== cancelButtonIndex && option) {
+          handleSelectFolder(option.key);
+        }
+      }
+    );
+  }, [attentionModel.folderOptions, handleSelectFolder]);
+
+  const refreshDrawer = useCallback(async () => {
+    await Promise.all([
+      loadChats(true, true),
+      refreshAttentionRequests(),
+      refreshAgentMetadata(),
+    ]);
+  }, [loadChats, refreshAgentMetadata, refreshAttentionRequests]);
+
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        setCollapsedLaneKeys(new Set());
+        scheduleLoadChats(DRAWER_EVENT_REFRESH_DEBOUNCE_MS, true);
+        void refreshAttentionRequests();
+      }
+    });
+    return () => {
+      subscription.remove();
+    };
+  }, [active, refreshAttentionRequests, scheduleLoadChats]);
+
+  const handleSelectChat = useCallback(
+    (chatId: string) => {
+      cancelChatListStream();
+      onSelectChat(chatId);
+    },
+    [cancelChatListStream, onSelectChat]
+  );
+
+  const handleNewChat = useCallback(() => {
+    cancelChatListStream();
+    onNewChat();
+  }, [cancelChatListStream, onNewChat]);
+
+  const handleNavigate = useCallback(
+    (screen: DrawerScreen) => {
+      cancelChatListStream();
+      onNavigate(screen);
+    },
+    [cancelChatListStream, onNavigate]
+  );
+
+  const resolvedEmptyTitle =
+    chats.length === 0
+      ? 'No sessions yet'
+      : selectedFolderKey
+        ? `No sessions in ${attentionModel.selectedFolderLabel}`
+        : 'No sessions to show';
+  const resolvedEmptyHint =
+    chats.length === 0
+      ? 'Start a new chat and it will appear here with live activity.'
+      : 'Choose another folder to see its sessions.';
+  const noticeMessages = [
+    attentionRequestError,
+    agentMetadataError,
+    ...partialHistoryDiagnostics,
+  ].filter((message): message is string => Boolean(message));
 
   const viewModel = {
-    agents,
-    chatFilterOptions,
-    chats,
-    chatSections,
-    visibleChatSections,
-    chatSectionByKey,
-    collapsedWorkspaceKeys,
-    filterMenuVisible,
-    filteredChatCount,
+    attentionCount: attentionModel.attentionCount,
+    collapsedLaneKeys,
+    folderOptions: attentionModel.folderOptions,
+    folderPickerVisible,
+    handleDismissFolderPicker: () => setFolderPickerVisible(false),
     handleNavigate,
     handleNewChat,
+    handleOpenFolderPicker,
     handleSelectChat,
-    handleToggleFilterMenu,
-    hasActiveFilters,
-    isSearching,
-    loadChats,
+    handleSelectFolder,
     loading,
     loadingOlderChats,
-    normalizedWorkspaceChatLimit,
-    partialHistoryDiagnostics,
-    pinnedChatIdSet,
-    pinnedWorkspacePathSet,
-    refreshing,
+    noticeMessages,
+    recentCount: attentionModel.recentCount,
+    refreshing: refreshing || refreshingAttentionRequests,
+    refreshDrawer,
     resolvedEmptyHint,
     resolvedEmptyTitle,
     retryDeepChatListRef,
-    runningChatCount,
-    runIndicatorsByThread,
-    searchQuery,
-    selectedAgentIdSet,
     selectedChatId,
-    setSearchQuery,
-    showAllWorkspaceChats,
-    showChatPinAction,
-    showWorkspacePinAction,
+    selectedFolderKey,
+    selectedFolderLabel: attentionModel.selectedFolderLabel,
     styles,
     theme,
-    toggleAgentFilter,
-    toggleWorkspaceSection,
+    toggleAttentionSection,
+    totalChatCount: chats.length,
+    visibleAttentionSections,
+    visibleChatCount: attentionModel.visibleChatCount,
+    workingCount: attentionModel.workingCount,
     wsConnected,
   };
   return (

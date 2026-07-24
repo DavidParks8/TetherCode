@@ -49,7 +49,10 @@ const DRAWER_HEARTBEAT_METHODS = new Set([
   'turn/plan/updated',
   'turn/diff/updated',
 ]);
-const DRAWER_TERMINAL_METHODS = new Set<string>();
+const DRAWER_TERMINAL_METHODS = new Set([
+  'bridge/approval.resolved',
+  'bridge/userInput.resolved',
+]);
 
 export function countDrawerRunningChats(
   chats: ChatSummary[],

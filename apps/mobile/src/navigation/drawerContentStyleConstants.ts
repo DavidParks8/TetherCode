@@ -1,6 +1,0 @@
-export const DRAWER_WORKSPACE_ROW_HEIGHT = 58;
-export const DRAWER_CHAT_ROW_HEIGHT = 50;
-export const DRAWER_ROW_RADIUS = 14;
-export const DRAWER_ACTION_HEIGHT = 36;
-export const DRAWER_FOOTER_ACTION_HEIGHT = 52;
-export const DRAWER_ICON_TILE_SIZE = 26;

@@ -1,23 +1,39 @@
-import { useCallback, useEffect, useRef, useState } from 'react'; import type { HostBridgeApiClient } from '../api/client';
-import type { ChatSummary, RpcNotification } from '../api/types';
-import type { HostBridgeWsClient } from '../api/ws'; import { filterDrawerChats } from './drawerChats';
-import { pruneStaleDrawerRunIndicators, reconcileDrawerRunIndicatorsWithChats,
-  updateDrawerRunIndicatorsForEvent, type DrawerRunIndicatorMap } from './drawerRuntimeIndicators';
-import { areDrawerChatListsEquivalent, dedupeChatsById, mergeDrawerChatBatch, sortChats } from './drawerContentHelpers';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { HostBridgeApiClient } from '../api/client';
+import type { HostBridgeWsClient } from '../api/ws';
 import { DRAWER_CHAT_CACHE_TTL_MS, DRAWER_DEEP_CHAT_CACHE_TTL_MS, DRAWER_DEEP_CHAT_PAGE_LIMIT,
   DRAWER_DEEP_LOAD_DELAY_MS, DRAWER_EVENT_REFRESH_DEBOUNCE_MS, DRAWER_FAST_CHAT_LIST_LIMIT,
-  DRAWER_FULL_CHAT_LIST_LIMIT, DRAWER_OPEN_STALE_REFRESH_MS, DRAWER_REFRESH_CONNECTED_MS,
-  DRAWER_REFRESH_DISCONNECTED_MS, DRAWER_STREAM_BATCH_DELAY_MS, DRAWER_STREAM_CHAT_LIST_LIMITS,
-  drawerEventRequiresRefresh, type DrawerChatLoadingState } from './drawerChatLoadingConfig';
+  DRAWER_FULL_CHAT_LIST_LIMIT, DRAWER_OPEN_STALE_REFRESH_MS, DRAWER_STREAM_BATCH_DELAY_MS,
+  DRAWER_STREAM_CHAT_LIST_LIMITS, type DrawerChatLoadingState } from './drawerChatLoadingConfig';
+import { useDrawerPrioritySessionHydration } from './useDrawerPrioritySessionHydration';
+import { useDrawerChatCollection } from './useDrawerChatCollection';
+import { useDrawerLoadedChatHydration } from './useDrawerLoadedChatHydration';
+import { useDrawerChatLiveSync } from './useDrawerChatLiveSync';
 
-export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsClient, active: boolean): DrawerChatLoadingState {
-  const [chats, setChats] = useState<ChatSummary[]>([]);
+export function useDrawerChatLoading(
+  api: HostBridgeApiClient,
+  ws: HostBridgeWsClient,
+  active: boolean,
+  priorityThreadIds: readonly string[] = []
+): DrawerChatLoadingState {
   const [loading, setLoading] = useState(true);
   const [loadingOlderChats, setLoadingOlderChats] = useState(false);
-  const [partialHistoryDiagnostics, setPartialHistoryDiagnostics] = useState<string[]>([]);
+  const [deepHistoryDiagnostics, setDeepHistoryDiagnostics] = useState<string[]>([]);
+  const [hydrationDiagnostics, setHydrationDiagnostics] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [runIndicatorsByThread, setRunIndicatorsByThread] = useState<DrawerRunIndicatorMap>({});
   const [wsConnected, setWsConnected] = useState(ws.isConnected);
+  const handleChatsApplied = useCallback(() => {
+    setLoading(false);
+  }, []);
+  const {
+    applyChats,
+    chats,
+    chatsRef,
+    hasHydratedOnceRef,
+    lastLoadedAtRef,
+    runIndicatorsByThread,
+    setRunIndicatorsByThread,
+  } = useDrawerChatCollection(api, handleChatsApplied);
   const loadChatsInFlightRef = useRef<Promise<void> | null>(null);
   const queuedLoadChatsRef = useRef<{ showRefresh: boolean; forceRefresh: boolean } | null>(
     null
@@ -28,10 +44,13 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
   const chatListStreamRef = useRef<{ cancel: () => void } | null>(null);
   const deepLoadInFlightRef = useRef<Promise<void> | null>(null);
   const hasLoadedDeepChatListRef = useRef(false);
-  const hasHydratedOnceRef = useRef(false);
-  const lastLoadedAtRef = useRef(0);
   const activeRef = useRef(active);
-  const chatsRef = useRef<ChatSummary[]>([]);
+  const hydrateLoadedChats = useDrawerLoadedChatHydration({
+    activeRef,
+    api,
+    applyChats,
+    setDiagnostics: setHydrationDiagnostics,
+  });
   const cancelChatListStream = useCallback(() => {
     chatListStreamRef.current?.cancel();
     chatListStreamRef.current = null;
@@ -47,48 +66,8 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
         setRefreshing(true);
       }
 
-      const applyChats = (rawChats: ChatSummary[], cacheLimit?: number) => {
-        const incomingChats = sortChats(dedupeChatsById(filterDrawerChats(rawChats)));
-        const shouldPreserveExisting =
-          hasHydratedOnceRef.current || chatsRef.current.length > incomingChats.length;
-        const nextChats = shouldPreserveExisting
-          ? mergeDrawerChatBatch(chatsRef.current, incomingChats)
-          : incomingChats;
-        chatsRef.current = nextChats;
-        setChats((previous) =>
-          areDrawerChatListsEquivalent(previous, nextChats) ? previous : nextChats
-        );
-        if (cacheLimit) {
-          const cacheKeyLimit = Math.max(cacheLimit, Math.min(nextChats.length, 200));
-          api.rememberChats(nextChats, { limit: cacheKeyLimit });
-        }
-        hasHydratedOnceRef.current = true;
-        lastLoadedAtRef.current = Date.now();
-        setLoading(false);
-
-        setRunIndicatorsByThread((prev) => reconcileDrawerRunIndicatorsWithChats(prev, nextChats));
-      };
-
-      const hydrateLoadedChats = async (listedChats: ChatSummary[], cacheLimit?: number) => {
-        const listedChatIds = new Set(listedChats.map((chat) => chat.id));
-        try {
-          const loadedIds = await api.listLoadedChatIds();
-          const missingIds = loadedIds.filter((threadId) => !listedChatIds.has(threadId));
-          if (missingIds.length === 0) {
-            return;
-          }
-
-          const loadedChats = await api.getChatSummaries(missingIds);
-          if (loadedChats.length > 0 && activeRef.current) {
-            applyChats([...listedChats, ...loadedChats], cacheLimit);
-          }
-        } catch {
-          // Keep the drawer usable if loaded-thread hydration fails.
-        }
-      };
-
       const applyCachedDeepChats = () => {
-        const cachedDeepChats = api.peekAllChats();
+        const cachedDeepChats = api.peekAllChats({ includeSubAgents: true });
         if (!cachedDeepChats) {
           return false;
         }
@@ -111,6 +90,7 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
 
         const request = api
           .listAllChats({
+            includeSubAgents: true,
             pageLimit: DRAWER_DEEP_CHAT_PAGE_LIMIT,
             cacheTtlMs: DRAWER_DEEP_CHAT_CACHE_TTL_MS,
             forceRefresh: forceDeepRefresh,
@@ -125,7 +105,7 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
             if (activeRef.current) {
               applyChats(result.chats);
               void hydrateLoadedChats(result.chats);
-              setPartialHistoryDiagnostics(result.partial ? result.diagnostics : []);
+              setDeepHistoryDiagnostics(result.partial ? result.diagnostics : []);
             }
           })
           .catch(() => {})
@@ -178,6 +158,7 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
       if (!activeRef.current) {
         try {
           await api.listChats({
+            includeSubAgents: true,
             limit: DRAWER_FAST_CHAT_LIST_LIMIT,
             cacheTtlMs: DRAWER_CHAT_CACHE_TTL_MS,
             forceRefresh,
@@ -193,6 +174,7 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
         if (hasCachedDeepChats) {
           try {
             const latestChats = await api.listChats({
+              includeSubAgents: true,
               limit: showRefresh ? DRAWER_FULL_CHAT_LIST_LIMIT : DRAWER_FAST_CHAT_LIST_LIMIT,
               cacheTtlMs: DRAWER_CHAT_CACHE_TTL_MS,
               forceRefresh,
@@ -209,10 +191,16 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
           return;
         }
 
-        const cachedFullChats = api.peekChats({ limit: DRAWER_FULL_CHAT_LIST_LIMIT });
+        const cachedFullChats = api.peekChats({
+          includeSubAgents: true,
+          limit: DRAWER_FULL_CHAT_LIST_LIMIT,
+        });
         const cachedFastChats = cachedFullChats
           ? null
-          : api.peekChats({ limit: DRAWER_FAST_CHAT_LIST_LIMIT });
+          : api.peekChats({
+              includeSubAgents: true,
+              limit: DRAWER_FAST_CHAT_LIST_LIMIT,
+            });
         if (cachedFullChats) {
           applyChats(cachedFullChats, DRAWER_FULL_CHAT_LIST_LIMIT);
         } else if (cachedFastChats) {
@@ -222,10 +210,15 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
         cancelChatListStream();
         const stream = await api.startChatListStream(
           {
+            includeSubAgents: true,
             limits: DRAWER_STREAM_CHAT_LIST_LIMITS,
             delayMs: DRAWER_STREAM_BATCH_DELAY_MS,
           },
           (batch) => {
+            if (batch.done) {
+              streamFinished = true;
+              chatListStreamRef.current = null;
+            }
             if (!activeRef.current) {
               return;
             }
@@ -234,8 +227,6 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
               setRefreshing(false);
             }
             if (batch.done) {
-              streamFinished = true;
-              chatListStreamRef.current = null;
               void hydrateLoadedChats(batch.chats, batch.limit);
               scheduleDeepLoadChatsOnce();
             }
@@ -250,12 +241,19 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
           }
         );
         streamStarted = true;
+        if (!activeRef.current) {
+          stream.cancel();
+          streamFinished = true;
+          chatListStreamRef.current = null;
+          return;
+        }
         if (!streamFinished) {
           chatListStreamRef.current = stream;
         }
       } catch {
         try {
           const fastListedChats = await api.listChats({
+            includeSubAgents: true,
             limit: DRAWER_FAST_CHAT_LIST_LIMIT,
             cacheTtlMs: DRAWER_CHAT_CACHE_TTL_MS,
             forceRefresh,
@@ -265,6 +263,7 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
           }
 
           const fullListedChats = await api.listChats({
+            includeSubAgents: true,
             limit: DRAWER_FULL_CHAT_LIST_LIMIT,
             cacheTtlMs: DRAWER_CHAT_CACHE_TTL_MS,
             forceRefresh,
@@ -286,7 +285,7 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
         }
       }
     },
-    [api, cancelChatListStream]
+    [api, applyChats, cancelChatListStream, hydrateLoadedChats]
   );
 
   const loadChats = useCallback(
@@ -330,11 +329,24 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
 
   useEffect(() => {
     activeRef.current = active;
+    return () => {
+      activeRef.current = false;
+    };
   }, [active]);
 
   useEffect(() => {
     chatsRef.current = chats;
   }, [chats]);
+
+  useDrawerPrioritySessionHydration({
+    active,
+    api,
+    applyChats,
+    chats,
+    chatsRef,
+    priorityThreadIds,
+    setDiagnostics: setHydrationDiagnostics,
+  });
 
   const scheduleLoadChats = useCallback(
     (delay = DRAWER_EVENT_REFRESH_DEBOUNCE_MS, forceRefresh = false) => {
@@ -371,49 +383,14 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
     void loadChats(false, shouldRefreshVisibleDrawer);
   }, [active, loadChats, ws]);
 
-  useEffect(() => {
-    return ws.onEvent((event: RpcNotification) => {
-      if (event.method === 'bridge/events/snapshotRequired') {
-        setRunIndicatorsByThread({});
-        scheduleLoadChats(0, true);
-        return;
-      }
-
-      setRunIndicatorsByThread((prev) => updateDrawerRunIndicatorsForEvent(prev, event));
-      if (drawerEventRequiresRefresh(event)) {
-        scheduleLoadChats(DRAWER_EVENT_REFRESH_DEBOUNCE_MS, true);
-      }
-    });
-  }, [scheduleLoadChats, ws]);
-
-  useEffect(() => {
-    return ws.onStatus((connected) => {
-      setWsConnected(connected);
-      if (connected) {
-        scheduleLoadChats(DRAWER_EVENT_REFRESH_DEBOUNCE_MS, true);
-      }
-    });
-  }, [scheduleLoadChats, ws]);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setRunIndicatorsByThread((prev) => pruneStaleDrawerRunIndicators(prev));
-    }, 5000);
-
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    if (!active) {
-      return;
-    }
-
-    const timer = setInterval(() => {
-      scheduleLoadChats();
-    }, wsConnected ? DRAWER_REFRESH_CONNECTED_MS : DRAWER_REFRESH_DISCONNECTED_MS);
-
-    return () => clearInterval(timer);
-  }, [active, scheduleLoadChats, wsConnected]);
+  useDrawerChatLiveSync({
+    active,
+    scheduleLoadChats,
+    setRunIndicators: setRunIndicatorsByThread,
+    setWsConnected,
+    ws,
+    wsConnected,
+  });
 
   useEffect(() => {
     if (active) {
@@ -442,6 +419,10 @@ export function useDrawerChatLoading(api: HostBridgeApiClient, ws: HostBridgeWsC
     };
   }, [cancelChatListStream]);
 
+  const partialHistoryDiagnostics = useMemo(
+    () => Array.from(new Set([...deepHistoryDiagnostics, ...hydrationDiagnostics])),
+    [deepHistoryDiagnostics, hydrationDiagnostics]
+  );
   return { chats, loading, loadingOlderChats, partialHistoryDiagnostics, refreshing,
     runIndicatorsByThread, wsConnected, loadChats, retryDeepChatListRef, cancelChatListStream,
     scheduleLoadChats, setRunIndicatorsByThread };

@@ -1,23 +1,20 @@
-import * as FileSystem from 'expo-file-system/legacy';
-import { ActionSheetIOS, Alert, AppState, Platform, RefreshControl } from 'react-native';
+import { ActionSheetIOS, AppState, Platform, RefreshControl } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import renderer, { act, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 import type { HostBridgeApiClient } from '../api/client';
-import type { AgentDescriptor, ChatSummary, RpcNotification } from '../api/types';
+import type {
+  AgentDescriptor,
+  ChatSummary,
+  PendingApproval,
+  PendingUserInputRequest,
+  RpcNotification,
+} from '../api/types';
 import type { HostBridgeWsClient } from '../api/ws';
 import { AppThemeProvider, createAppTheme } from '../theme';
 import { DrawerContent } from './DrawerContent';
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
-let mockDocumentDirectory: string | null = 'file:///documents/';
-jest.mock('expo-file-system/legacy', () => ({
-  get documentDirectory() {
-    return mockDocumentDirectory;
-  },
-  readAsStringAsync: jest.fn(),
-  writeAsStringAsync: jest.fn(),
-}));
 
 type Queryable = ReactTestInstance & {
   type: unknown;
@@ -83,21 +80,65 @@ function createChat(overrides: Partial<ChatSummary> = {}): ChatSummary {
   };
 }
 
+function createApproval(
+  threadId: string,
+  overrides: Partial<PendingApproval> = {}
+): PendingApproval {
+  return {
+    requestId: `approval-${threadId}`,
+    agentId: 'codex',
+    kind: 'command',
+    threadId,
+    turnId: `turn-${threadId}`,
+    itemId: `item-${threadId}`,
+    title: 'Approval required',
+    message: 'Approve this command.',
+    requestedAt: '2026-07-20T00:29:30.000Z',
+    options: [{ id: 'accept', label: 'Accept' }],
+    ...overrides,
+  };
+}
+
+function createUserInput(
+  threadId: string,
+  overrides: Partial<PendingUserInputRequest> = {}
+): PendingUserInputRequest {
+  return {
+    requestId: `input-${threadId}`,
+    agentId: 'copilot',
+    threadId,
+    turnId: `turn-${threadId}`,
+    itemId: `item-${threadId}`,
+    message: 'Input required.',
+    requestedAt: '2026-07-20T00:29:00.000Z',
+    questions: [],
+    ...overrides,
+  };
+}
+
 function createHarness({
   chats = [],
   agents = readyAgents,
+  approvals = [],
+  userInputs = [],
   connected = true,
   streamFailure = false,
   listFailure = false,
+  approvalFailure = false,
+  userInputFailure = false,
 }: {
   chats?: ChatSummary[];
   agents?: AgentDescriptor[];
+  approvals?: PendingApproval[];
+  userInputs?: PendingUserInputRequest[];
   connected?: boolean;
   streamFailure?: boolean;
   listFailure?: boolean;
+  approvalFailure?: boolean;
+  userInputFailure?: boolean;
 } = {}): DrawerHarness {
-  let eventHandler: (event: RpcNotification) => void = () => {};
-  let statusHandler: (connected: boolean) => void = () => {};
+  const eventHandlers = new Set<(event: RpcNotification) => void>();
+  const statusHandlers = new Set<(connected: boolean) => void>();
   const cancelStream = jest.fn();
   const listChats = listFailure
     ? jest.fn().mockRejectedValue(new Error('list failed'))
@@ -109,6 +150,12 @@ function createHarness({
     rememberChats: jest.fn(),
     listLoadedChatIds: jest.fn().mockResolvedValue([]),
     getChatSummaries: jest.fn().mockResolvedValue([]),
+    listApprovals: approvalFailure
+      ? jest.fn().mockRejectedValue(new Error('approval list failed'))
+      : jest.fn().mockResolvedValue(approvals),
+    listPendingUserInputs: userInputFailure
+      ? jest.fn().mockRejectedValue(new Error('user input list failed'))
+      : jest.fn().mockResolvedValue(userInputs),
     listChats,
     listAllChats: jest.fn().mockResolvedValue({ chats, partial: false, diagnostics: [] }),
     startChatListStream: streamFailure
@@ -121,20 +168,20 @@ function createHarness({
   const ws = {
     isConnected: connected,
     onEvent: jest.fn().mockImplementation((handler) => {
-      eventHandler = handler;
-      return jest.fn();
+      eventHandlers.add(handler);
+      return jest.fn(() => eventHandlers.delete(handler));
     }),
     onStatus: jest.fn().mockImplementation((handler) => {
-      statusHandler = handler;
-      return jest.fn();
+      statusHandlers.add(handler);
+      return jest.fn(() => statusHandlers.delete(handler));
     }),
   } as unknown as HostBridgeWsClient;
 
   return {
     api,
     ws,
-    emitEvent: (event) => eventHandler(event),
-    emitStatus: (nextConnected) => statusHandler(nextConnected),
+    emitEvent: (event) => eventHandlers.forEach((handler) => handler(event)),
+    emitStatus: (nextConnected) => statusHandlers.forEach((handler) => handler(nextConnected)),
     cancelStream,
   };
 }
@@ -221,9 +268,6 @@ describe('DrawerContent render behavior matrix', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-07-20T00:30:00.000Z'));
-    mockDocumentDirectory = 'file:///documents/';
-    jest.mocked(FileSystem.readAsStringAsync).mockRejectedValue(new Error('not persisted'));
-    jest.mocked(FileSystem.writeAsStringAsync).mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -250,121 +294,159 @@ describe('DrawerContent render behavior matrix', () => {
       await Promise.resolve();
     });
     if (!tree) throw new Error('Expected drawer tree');
-    expect(hasText(tree.root as Queryable, 'Loading chats')).toBe(true);
+    expect(hasText(tree.root as Queryable, 'Loading sessions')).toBe(true);
 
     await act(async () => {
       rejectStream?.(new Error('stream failed'));
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(hasText(tree.root as Queryable, 'No chats yet')).toBe(true);
-    expect(hasText(tree.root as Queryable, 'Start a new chat and it will show up here with live activity.')).toBe(true);
+    expect(hasText(tree.root as Queryable, 'No sessions yet')).toBe(true);
+    expect(hasText(tree.root as Queryable, 'Start a new chat and it will appear here with live activity.')).toBe(true);
     act(() => tree?.unmount());
   });
 
-  it('renders populated workspaces, tree branches, status badges, selection, and actions', async () => {
+  it('keeps pending-session hydration failures retryable in an empty drawer', async () => {
+    const harness = createHarness({
+      userInputs: [createUserInput('missing-child')],
+    });
+    (harness.api.getChatSummaries as jest.Mock).mockRejectedValue(
+      new Error('summary unavailable')
+    );
+    const tree = await renderDrawer(harness);
+    const root = tree.root as Queryable;
+    const noticeLabel =
+      'Some pending request sessions could not be loaded. Retry';
+
+    expect(findByLabel(root, noticeLabel)).toBeDefined();
+    expect(root.findAll((node) => node.type === RefreshControl)).toHaveLength(1);
+    await act(async () => {
+      jest.advanceTimersByTime(2500);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(findByLabel(root, noticeLabel)).toBeDefined();
+    act(() => tree.unmount());
+  });
+
+  it('clears a hydration warning when the live stream supplies the pending session', async () => {
+    let streamBatch:
+      | ((batch: { streamId: string; limit: number; done: boolean; chats: ChatSummary[] }) => void)
+      | undefined;
+    const hydrated = createChat({
+      id: 'stream-child',
+      title: 'Streamed pending session',
+      cwd: '/repo/streamed',
+      agentId: 'codex',
+    });
+    const harness = createHarness({
+      userInputs: [createUserInput('stream-child')],
+    });
+    (harness.api.getChatSummaries as jest.Mock).mockRejectedValue(
+      new Error('summary unavailable')
+    );
+    (harness.api.startChatListStream as jest.Mock).mockImplementation(
+      async (_options, onBatch) => {
+        streamBatch = onBatch;
+        onBatch({ streamId: 'stream', limit: 5, done: false, chats: [] });
+        return { streamId: 'stream', cancel: harness.cancelStream };
+      }
+    );
+    const tree = await renderDrawer(harness);
+    const root = tree.root as Queryable;
+    const noticeLabel =
+      'Some pending request sessions could not be loaded. Retry';
+    expect(findByLabel(root, noticeLabel)).toBeDefined();
+
+    await act(async () => {
+      streamBatch?.({
+        streamId: 'stream',
+        limit: 5,
+        done: false,
+        chats: [hydrated],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(root.findAll((node) => node.props.accessibilityLabel === noticeLabel)).toHaveLength(0);
+    expect(findByLabel(root, 'Streamed pending session, streamed, Codex, Input requested')).toBeDefined();
+    act(() => tree.unmount());
+  });
+
+  it('renders attention lanes, explicit agents, selection, and primary actions', async () => {
     const onSelectChat = jest.fn();
     const onNewChat = jest.fn();
     const onNavigate = jest.fn();
     const chats = [
-      createChat({ id: 'root', title: 'Running root', status: 'running', cwd: '/repo/alpha', lastMessagePreview: 'Working', updatedAt: '2026-07-20T00:29:00.000Z' }),
-      createChat({ id: 'child', title: '', status: 'error', cwd: '/repo/alpha', parentThreadId: 'root', subAgentDepth: 1, lastError: 'Build failed', updatedAt: '2026-07-20T00:28:00.000Z' }),
-      createChat({ id: 'other', title: 'Other workspace', cwd: '/repo/beta', lastMessagePreview: 'Other workspace', updatedAt: '2026-07-20T00:27:00.000Z' }),
+      createChat({ id: 'root', title: 'Running root', status: 'running', cwd: '/repo/alpha', agentId: 'copilot', updatedAt: '2026-07-20T00:29:00.000Z' }),
+      createChat({ id: 'approval', title: 'Approval chat', cwd: '/repo/beta', agentId: 'codex', updatedAt: '2026-07-20T00:28:00.000Z' }),
+      createChat({ id: 'input', title: 'Input chat', cwd: '/repo/beta', agentId: 'copilot', updatedAt: '2026-07-20T00:27:30.000Z' }),
+      createChat({ id: 'failed', title: 'Failed chat', status: 'error', cwd: '/repo/beta', agentId: 'codex', lastError: 'Build failed', updatedAt: '2026-07-20T00:27:00.000Z' }),
+      createChat({ id: 'recent', title: 'Recent chat', cwd: '/repo/alpha', agentId: 'copilot', updatedAt: '2026-07-20T00:26:00.000Z' }),
     ];
-    const harness = createHarness({ chats, agents: [] });
+    const harness = createHarness({
+      chats,
+      approvals: [createApproval('approval')],
+      userInputs: [createUserInput('input')],
+    });
     const tree = await renderDrawer(harness, { selectedChatId: 'root', onSelectChat, onNewChat, onNavigate });
     const root = tree.root as Queryable;
 
-    expect(findByLabel(root, 'beta, 1 chats').props.accessibilityState).toEqual(expect.objectContaining({ expanded: false }));
-    expect(findByLabel(root, 'Running root, Working, running').props.accessibilityState).toEqual(expect.objectContaining({ selected: true }));
+    expect(findByLabel(root, 'Needs your attention, 3 sessions').props.accessibilityState).toEqual(expect.objectContaining({ expanded: true }));
+    expect(findByLabel(root, 'Running root, alpha, Copilot, Working').props.accessibilityState).toEqual(expect.objectContaining({ selected: true }));
+    expect(findByLabel(root, 'Approval chat, beta, Codex, Approval requested')).toBeDefined();
+    expect(findByLabel(root, 'Input chat, beta, Copilot, Input requested')).toBeDefined();
+    expect(findByLabel(root, 'Failed chat, beta, Codex, Failed')).toBeDefined();
+    expect(hasText(root, 'Copilot')).toBe(true);
+    expect(hasText(root, 'Codex')).toBe(true);
 
-    await press(findByLabel(root, 'Running root, Working, running'));
+    await press(findByLabel(root, 'Running root, alpha, Copilot, Working'));
     await press(findByLabel(root, 'New chat'));
     await press(findByLabel(root, 'Open preview browser'));
     await press(findByLabel(root, 'Open settings'));
-    await press(findByLabel(root, 'beta, 1 chats'));
+    await press(findByLabel(root, 'Needs your attention, 3 sessions'));
 
     expect(onSelectChat).toHaveBeenCalledWith('root');
     expect(onNewChat).toHaveBeenCalledTimes(1);
     expect(onNavigate).toHaveBeenNthCalledWith(1, 'Browser');
     expect(onNavigate).toHaveBeenNthCalledWith(2, 'Settings');
-    expect(hasText(root, 'Other workspace')).toBe(true);
+    expect(hasText(root, 'Approval chat')).toBe(false);
     act(() => tree.unmount());
   });
 
-  it('filters by agents, searches across workspaces, clears search, and preserves one agent', async () => {
-    const emptyAgent: AgentDescriptor = {
-      agentId: 'empty',
-      displayName: 'Empty',
-      version: '1',
-      provenance: 'test',
-      lifecycle: 'ready',
-    };
+  it('filters every lane with the native iOS folder picker', async () => {
+    const originalPlatform = Platform.OS;
+    Object.defineProperty(Platform, 'OS', { configurable: true, value: 'ios' });
+    const sheet = jest.spyOn(ActionSheetIOS, 'showActionSheetWithOptions')
+      .mockImplementationOnce((options, callback) => {
+        callback(options.options.indexOf('beta'));
+      })
+      .mockImplementationOnce((_options, callback) => callback(0));
     const harness = createHarness({
-      agents: [...readyAgents, emptyAgent],
       chats: [
-        createChat({ id: 'copilot-chat', title: 'Fix navigation', agentId: 'copilot', cwd: '/repo/mobile' }),
-        createChat({ id: 'codex-chat', title: 'Bridge diagnostics', agentId: 'codex', cwd: '/repo/bridge' }),
+        createChat({ id: 'alpha', title: 'Alpha session', agentId: 'copilot', cwd: '/repo/alpha', updatedAt: '2026-07-20T00:29:00.000Z' }),
+        createChat({ id: 'beta', title: 'Beta session', agentId: 'codex', cwd: '/repo/beta', status: 'running', updatedAt: '2026-07-20T00:28:00.000Z' }),
       ],
     });
-    const tree = await renderDrawer(harness);
-    const root = tree.root as Queryable;
-    await press(findByLabel(root, 'Filter chat agents'));
+    try {
+      const tree = await renderDrawer(harness);
+      const root = tree.root as Queryable;
+      await press(findByLabel(root, 'Filter sessions by folder, All folders'));
+      expect(sheet).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Folder' }),
+        expect.any(Function)
+      );
+      expect(hasText(root, 'Alpha session')).toBe(false);
+      expect(hasText(root, 'Beta session')).toBe(true);
+      expect(findByLabel(root, 'Filter sessions by folder, beta')).toBeDefined();
 
-    expect(findByLabel(root, 'Toggle Copilot chats').props.accessibilityState).toEqual({ checked: true });
-    expect(root.findAll((node) => node.props.accessibilityLabel === 'Toggle Offline agent chats')).toHaveLength(0);
-    await press(findByLabel(root, 'Toggle Copilot chats'));
-    expect(hasText(root, 'Fix navigation')).toBe(false);
-    expect(hasText(root, 'Bridge diagnostics')).toBe(true);
-
-    const search = findByLabel(root, 'Search chats');
-    await act(async () => {
-      (search.props.onChangeText as (value: string) => void)('missing title');
-      await Promise.resolve();
-    });
-    expect(hasText(root, 'No matching chats')).toBe(true);
-    expect(hasText(root, 'Try a different title, keyword, or workspace name.')).toBe(true);
-    await press(findByLabel(root, 'Clear chat search'));
-    expect(hasText(root, 'Bridge diagnostics')).toBe(true);
-
-    await press(findByLabel(root, 'Toggle Copilot chats'));
-    await press(findByLabel(root, 'Toggle Codex chats'));
-    await press(findByLabel(root, 'Toggle Copilot chats'));
-    expect(hasText(root, 'No Empty chats')).toBe(true);
-    expect(hasText(root, 'Turn another agent back on or start a new Empty chat.')).toBe(true);
-    await press(findByLabel(root, 'Toggle Empty chats'));
-    expect(hasText(root, 'No Empty chats')).toBe(true);
-    act(() => tree.unmount());
-  });
-
-  it('limits workspace rows, shows all, and persists chat and workspace pin actions', async () => {
-    const chats = Array.from({ length: 12 }, (_, index) => createChat({
-      id: `chat-${index}`,
-      title: `Chat ${index}`,
-      cwd: '/repo/many',
-      updatedAt: `2026-07-20T00:${String(29 - index).padStart(2, '0')}:00.000Z`,
-    }));
-    const harness = createHarness({ chats });
-    const actionSheet = jest.spyOn(ActionSheetIOS, 'showActionSheetWithOptions').mockImplementation((_options, callback) => callback(0));
-    const tree = await renderDrawer(harness, { workspaceChatLimit: 10 });
-    const root = tree.root as Queryable;
-
-    expect(hasText(root, 'Chat 11')).toBe(false);
-    await press(findByLabel(root, 'Show all chats in many'));
-    expect(root.findAll((node) => node.props.accessibilityLabel === 'Show all chats in many')).toHaveLength(0);
-    await press(findByLabel(root, 'Chat 0, done'), 'onLongPress');
-    await press(findByLabel(root, 'many, 12 chats'), 'onLongPress');
-
-    expect(actionSheet).toHaveBeenCalledTimes(2);
-    expect(FileSystem.writeAsStringAsync).toHaveBeenCalledWith(
-      'file:///documents/tethercode-pinned-chats.json',
-      JSON.stringify({ ids: ['chat-0'] })
-    );
-    expect(FileSystem.writeAsStringAsync).toHaveBeenCalledWith(
-      'file:///documents/tethercode-workspace-favorites.json',
-      JSON.stringify({ version: 1, paths: ['/repo/many'] })
-    );
-    act(() => tree.unmount());
+      await press(findByLabel(root, 'Filter sessions by folder, beta'));
+      expect(hasText(root, 'Alpha session')).toBe(true);
+      expect(hasText(root, 'Beta session')).toBe(true);
+      act(() => tree.unmount());
+    } finally {
+      Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatform });
+    }
   });
 
   it('reacts to websocket connectivity, lifecycle events, and snapshot refresh', async () => {
@@ -374,7 +456,7 @@ describe('DrawerContent render behavior matrix', () => {
     });
     const tree = await renderDrawer(harness);
     const root = tree.root as Queryable;
-    expect(hasText(root, 'Offline')).toBe(true);
+    expect(hasText(root, 'Bridge offline')).toBe(true);
 
     await act(async () => {
       harness.emitStatus(true);
@@ -383,8 +465,8 @@ describe('DrawerContent render behavior matrix', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(hasText(root, 'Live')).toBe(true);
-    expect(hasText(root, '1 chats · 1 live')).toBe(true);
+    expect(hasText(root, 'Bridge connected')).toBe(true);
+    expect(findByLabel(root, 'Working now, 1 session')).toBeDefined();
 
     await act(async () => {
       harness.emitEvent({ method: 'bridge/events/snapshotRequired', params: null });
@@ -396,92 +478,116 @@ describe('DrawerContent render behavior matrix', () => {
     act(() => tree.unmount());
   });
 
-  it('renders persisted pin ordering, pinned badges, unpin actions, and all age badges', async () => {
-    jest.mocked(FileSystem.readAsStringAsync)
-      .mockResolvedValueOnce(JSON.stringify({ ids: ['week', 'root'] }))
-      .mockResolvedValueOnce(JSON.stringify({ version: 1, paths: ['/repo/zeta', '/repo/alpha'] }));
-    const actionSheet = jest.spyOn(ActionSheetIOS, 'showActionSheetWithOptions')
-      .mockImplementation((_options, callback) => callback(0));
-    const harness = createHarness({
-      chats: [
-        createChat({ id: 'root', title: 'Pinned root', cwd: '/repo/alpha', lastMessagePreview: undefined, updatedAt: '2026-07-20T00:30:00.000Z' }),
-        createChat({ id: 'child', title: 'Pinned child', cwd: '/repo/alpha', parentThreadId: 'root', subAgentDepth: 6, lastMessagePreview: undefined, updatedAt: '2026-07-19T22:30:00.000Z' }),
-        createChat({ id: 'day', title: 'Day old', cwd: '/repo/alpha', lastMessagePreview: undefined, updatedAt: '2026-07-17T00:30:00.000Z' }),
-        createChat({ id: 'week', title: 'Week old', cwd: '/repo/alpha', lastMessagePreview: undefined, updatedAt: '2026-07-06T00:30:00.000Z' }),
-        createChat({ id: 'month', title: 'Month old', cwd: '/repo/alpha', lastMessagePreview: undefined, updatedAt: '2026-05-20T00:30:00.000Z' }),
-        createChat({ id: 'zeta', title: 'Pinned workspace chat', cwd: '/repo/zeta', lastMessagePreview: undefined, updatedAt: '2026-07-19T22:30:00.000Z' }),
-      ],
+  it('refreshes pending interaction lanes from websocket request events', async () => {
+    const pendingChat = createChat({
+      id: 'pending',
+      title: 'Pending interaction',
+      cwd: '/repo/pending',
+      agentId: 'copilot',
     });
-    const tree = await renderDrawer(harness, { selectedChatId: 'child', workspaceChatLimit: null });
+    const harness = createHarness({ chats: [pendingChat] });
+    (harness.api.listApprovals as jest.Mock)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([createApproval('pending')])
+      .mockResolvedValueOnce([]);
+    const tree = await renderDrawer(harness);
     const root = tree.root as Queryable;
-    const alphaWorkspace = root.findAll(
-      (node) =>
-        (node.props.accessibilityState as { expanded?: boolean } | undefined)?.expanded === false &&
-        typeof node.props.accessibilityLabel === 'string' &&
-        node.props.accessibilityLabel.endsWith('chats')
-    )[0];
-    if (!alphaWorkspace) throw new Error('Expected collapsed workspace');
 
-    expect(alphaWorkspace.props.accessibilityState).toEqual(expect.objectContaining({ expanded: false }));
-    await press(alphaWorkspace);
-    await press(findByLabel(root, 'Filter chat agents'));
     await act(async () => {
-      (findByLabel(root, 'Search chats').props.onChangeText as (value: string) => void)('/repo');
+      harness.emitEvent({ method: 'bridge/approval.requested', params: { threadId: 'pending' } });
+      await Promise.resolve();
       await Promise.resolve();
     });
-    const pinnedRoot = root.findAll(
-      (node) => typeof node.props.accessibilityLabel === 'string' && node.props.accessibilityLabel.startsWith('Pinned root')
-    )[0];
-    if (!pinnedRoot) throw new Error('Expected pinned root row');
-    expect(pinnedRoot.props.accessibilityLabel).toContain('pinned');
-    expect(hasText(root, 'now')).toBe(true);
-    expect(hasText(root, '2h')).toBe(true);
-    expect(hasText(root, '3d')).toBe(true);
-    expect(hasText(root, '2w')).toBe(true);
-    expect(hasText(root, '2mo')).toBe(true);
+    expect(findByLabel(root, 'Pending interaction, pending, Copilot, Approval requested')).toBeDefined();
 
-    await press(pinnedRoot, 'onLongPress');
-    await press(alphaWorkspace, 'onLongPress');
-    expect(actionSheet).toHaveBeenCalledWith(
-      expect.objectContaining({ options: ['Unpin chat', 'Cancel'] }),
-      expect.any(Function)
-    );
-    expect(actionSheet).toHaveBeenCalledWith(
-      expect.objectContaining({ options: ['Unpin workspace', 'Cancel'] }),
-      expect.any(Function)
-    );
-    renderPressedStyles(root);
+    await act(async () => {
+      harness.emitEvent({ method: 'bridge/approval.resolved', params: { threadId: 'pending' } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(findByLabel(root, 'Pending interaction, pending, Copilot, Complete')).toBeDefined();
     act(() => tree.unmount());
   });
 
-  it('keeps search active while selecting and closes a searched filter menu explicitly', async () => {
-    const onSelectChat = jest.fn();
-    const onNewChat = jest.fn();
-    const onNavigate = jest.fn();
-    const harness = createHarness({ chats: [createChat({ title: 'Search target', cwd: '/repo/search' })] });
-    const tree = await renderDrawer(harness, { onSelectChat, onNewChat, onNavigate });
+  it('hydrates a pending sub-agent and requests sub-agent-inclusive chat lists', async () => {
+    const rootChat = createChat({
+      id: 'parent',
+      title: 'Parent session',
+      cwd: '/repo/mobile',
+      agentId: 'copilot',
+    });
+    const childChat = createChat({
+      id: 'child',
+      title: 'Sub-agent request',
+      cwd: undefined,
+      parentThreadId: 'parent',
+      subAgentDepth: 1,
+      agentId: 'codex',
+    });
+    const harness = createHarness({
+      chats: [rootChat],
+      userInputs: [createUserInput('child')],
+    });
+    (harness.api.getChatSummaries as jest.Mock).mockResolvedValue([childChat]);
+    const tree = await renderDrawer(harness);
     const root = tree.root as Queryable;
 
-    await press(findByLabel(root, 'Filter chat agents'));
-    const search = findByLabel(root, 'Search chats');
-    await act(async () => {
-      (search.props.onChangeText as (value: string) => void)('target');
-      await Promise.resolve();
-    });
-    expect(findByLabel(root, 'search, 1 chats').props.accessibilityState).toEqual({ disabled: true });
-    await press(findByLabel(root, 'Search target, done'));
-    await press(findByLabel(root, 'New chat'));
-    await press(findByLabel(root, 'Open preview browser'));
-    await press(findByLabel(root, 'Open settings'));
-    expect(findByLabel(root, 'Search chats').props.value).toBe('target');
+    expect(harness.api.getChatSummaries).toHaveBeenCalledWith(['child']);
+    expect(harness.api.startChatListStream).toHaveBeenCalledWith(
+      expect.objectContaining({ includeSubAgents: true }),
+      expect.any(Function),
+      expect.any(Function)
+    );
+    expect(findByLabel(root, 'Sub-agent request, mobile, Codex, Input requested')).toBeDefined();
+    act(() => tree.unmount());
+  });
 
-    await press(findByLabel(root, 'Filter chat agents'));
-    expect(root.findAll((node) => node.props.accessibilityLabel === 'Search chats')).toHaveLength(0);
-    expect(onSelectChat).toHaveBeenCalledWith('thread');
-    expect(onNewChat).toHaveBeenCalledTimes(1);
-    expect(onNavigate).toHaveBeenCalledWith('Browser');
-    expect(onNavigate).toHaveBeenCalledWith('Settings');
-    renderPressedStyles(root);
+  it('keeps successful approval data when user-input refresh fails', async () => {
+    const approvalChat = createChat({
+      id: 'approval-partial',
+      title: 'Visible approval',
+      cwd: '/repo/partial',
+      agentId: 'codex',
+    });
+    const harness = createHarness({
+      chats: [approvalChat],
+      approvals: [createApproval('approval-partial')],
+      userInputFailure: true,
+    });
+    const tree = await renderDrawer(harness);
+    const root = tree.root as Queryable;
+
+    expect(findByLabel(root, 'Visible approval, partial, Codex, Approval requested')).toBeDefined();
+    expect(findByLabel(root, 'Could not refresh pending input requests. Retry')).toBeDefined();
+    act(() => tree.unmount());
+  });
+
+  it('retries agent metadata from the drawer notice', async () => {
+    const customAgent: AgentDescriptor = {
+      agentId: 'custom-agent',
+      displayName: 'Friendly Agent',
+      version: '1',
+      provenance: 'test',
+      lifecycle: 'ready',
+    };
+    const harness = createHarness({
+      agents: [customAgent],
+      chats: [createChat({
+        id: 'custom',
+        title: 'Custom agent session',
+        cwd: '/repo/custom',
+        agentId: 'custom-agent',
+      })],
+    });
+    (harness.api.readBridgeCapabilities as jest.Mock)
+      .mockRejectedValueOnce(new Error('capabilities failed'));
+    const tree = await renderDrawer(harness);
+    const root = tree.root as Queryable;
+
+    expect(findByLabel(root, 'Custom agent session, custom, Custom Agent, Complete')).toBeDefined();
+    await press(findByLabel(root, 'Could not refresh agent names. Retry'));
+    expect(findByLabel(root, 'Custom agent session, custom, Friendly Agent, Complete')).toBeDefined();
+    expect(root.findAll((node) => node.props.accessibilityLabel === 'Could not refresh agent names. Retry')).toHaveLength(0);
     act(() => tree.unmount());
   });
 
@@ -645,42 +751,76 @@ describe('DrawerContent render behavior matrix', () => {
     expect(harness.cancelStream).toHaveBeenCalled();
   });
 
-  it.each([
-    ['legacy arrays', JSON.stringify(['chat-pin', ' chat-pin ', 7, '']), JSON.stringify(['/repo/pins', '/repo/pins', 7])],
-    ['invalid records', JSON.stringify({ ids: 'invalid' }), JSON.stringify({ paths: 'invalid' })],
-    ['primitive records', JSON.stringify(42), JSON.stringify(null)],
-  ])('renders safely from %s persisted pin payloads', async (_name, chatPayload, workspacePayload) => {
-    jest.mocked(FileSystem.readAsStringAsync)
-      .mockResolvedValueOnce(chatPayload)
-      .mockResolvedValueOnce(workspacePayload);
-    const harness = createHarness({ chats: [createChat({ id: 'chat-pin', title: 'Persisted row', cwd: '/repo/pins' })] });
+  it('cancels a stream controller that resolves after the drawer deactivates', async () => {
+    let resolveStream:
+      | ((controller: { streamId: string; cancel: () => void }) => void)
+      | undefined;
+    const harness = createHarness();
+    (harness.api.startChatListStream as jest.Mock)
+      .mockImplementationOnce(
+        () => new Promise((resolve) => {
+          resolveStream = resolve;
+        })
+      )
+      .mockImplementationOnce(async (_options, onBatch) => {
+        onBatch({ streamId: 'second', limit: 5, done: true, chats: [] });
+        return { streamId: 'second', cancel: jest.fn() };
+      });
     const tree = await renderDrawer(harness);
-    expect(hasText(tree.root as Queryable, 'Persisted row')).toBe(true);
+
+    await act(async () => {
+      tree.update(
+        <SafeAreaProvider initialMetrics={{ frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 47, left: 0, right: 0, bottom: 34 } }}>
+          <AppThemeProvider theme={theme}>
+            <DrawerContent api={harness.api} ws={harness.ws} active={false} selectedChatId={null} onSelectChat={jest.fn()} onNewChat={jest.fn()} onNavigate={jest.fn()} />
+          </AppThemeProvider>
+        </SafeAreaProvider>
+      );
+      resolveStream?.({ streamId: 'late', cancel: harness.cancelStream });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(harness.cancelStream).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      tree.update(
+        <SafeAreaProvider initialMetrics={{ frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 47, left: 0, right: 0, bottom: 34 } }}>
+          <AppThemeProvider theme={theme}>
+            <DrawerContent api={harness.api} ws={harness.ws} active selectedChatId={null} onSelectChat={jest.fn()} onNewChat={jest.fn()} onNavigate={jest.fn()} />
+          </AppThemeProvider>
+        </SafeAreaProvider>
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(harness.api.startChatListStream).toHaveBeenCalledTimes(2);
     act(() => tree.unmount());
   });
 
-  it('uses Android alert pin actions and leaves state unchanged when iOS sheets are cancelled', async () => {
-    const harness = createHarness({ chats: [createChat({ title: 'Platform pin', cwd: '/repo/platform' })] });
+  it('uses the in-app folder picker outside iOS', async () => {
     const originalPlatform = Platform.OS;
     Object.defineProperty(Platform, 'OS', { configurable: true, value: 'android' });
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => buttons?.[0]?.onPress?.());
-    const tree = await renderDrawer(harness);
-    const root = tree.root as Queryable;
-
-    await press(findByLabel(root, 'Platform pin, done'), 'onLongPress');
-    await press(findByLabel(root, 'platform, 1 chats'), 'onLongPress');
-    expect(alert).toHaveBeenCalledTimes(2);
-    Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatform });
-
-    const sheet = jest.spyOn(ActionSheetIOS, 'showActionSheetWithOptions')
-      .mockImplementation((_options, callback) => callback(1));
-    await press(findByLabel(root, 'Platform pin, done, pinned'), 'onLongPress');
-    await press(findByLabel(root, 'platform, 1 chats'), 'onLongPress');
-    expect(sheet).toHaveBeenCalledTimes(2);
-    act(() => tree.unmount());
+    const harness = createHarness({
+      chats: [
+        createChat({ id: 'platform', title: 'Platform session', cwd: '/repo/platform' }),
+        createChat({ id: 'other', title: 'Other session', cwd: '/repo/other' }),
+      ],
+    });
+    try {
+      const tree = await renderDrawer(harness);
+      const root = tree.root as Queryable;
+      await press(findByLabel(root, 'Filter sessions by folder, All folders'));
+      await press(findByLabel(root, 'platform, 1 session'));
+      expect(hasText(root, 'Platform session')).toBe(true);
+      expect(hasText(root, 'Other session')).toBe(false);
+      expect(root.findAll((node) => node.props.accessibilityLabel === 'Close folder picker')).toHaveLength(0);
+      act(() => tree.unmount());
+    } finally {
+      Object.defineProperty(Platform, 'OS', { configurable: true, value: originalPlatform });
+    }
   });
 
-  it('renders light theme, compact counts, duplicate updates, and searched sub-agent errors', async () => {
+  it('renders light theme, compact counts, duplicate updates, and explicit error state', async () => {
     const manyChats = Array.from({ length: 1001 }, (_, index) => createChat({
       id: `bulk-${index}`,
       title: `Bulk ${index}`,
@@ -696,6 +836,7 @@ describe('DrawerContent render behavior matrix', () => {
       subAgentDepth: 2,
       status: 'error',
       lastError: 'Visible failure',
+      agentId: 'codex',
     });
     const harness = createHarness({ chats: [...manyChats, olderDuplicate, newerDuplicate, subAgent] });
     let tree: ReactTestRenderer | undefined;
@@ -714,16 +855,7 @@ describe('DrawerContent render behavior matrix', () => {
     expect(hasText(root, '1k')).toBe(true);
     expect(hasText(root, 'Newer duplicate')).toBe(true);
     expect(hasText(root, 'Older duplicate')).toBe(false);
-
-    await press(findByLabel(root, 'Filter chat agents'));
-    await act(async () => {
-      (findByLabel(root, 'Search chats').props.onChangeText as (value: string) => void)('Error child');
-      await Promise.resolve();
-    });
-    const errorRow = root.findAll(
-      (node) => typeof node.props.accessibilityLabel === 'string' && node.props.accessibilityLabel.startsWith('Error child, Visible failure')
-    )[0];
-    if (!errorRow) throw new Error('Expected visible sub-agent error row');
+    const errorRow = findByLabel(root, 'Error child, bulk, Codex, Failed');
     expect(errorRow.props.accessibilityState).toEqual(expect.objectContaining({ selected: true }));
     renderPressedStyles(root);
     act(() => tree?.unmount());
@@ -757,11 +889,11 @@ describe('DrawerContent render behavior matrix', () => {
     act(() => tree.unmount());
   });
 
-  it('updates collapsed workspaces as streamed workspace membership changes', async () => {
+  it('keeps collapsed lanes stable as streamed activity changes', async () => {
     let streamBatch: ((batch: { streamId: string; limit: number; done: boolean; chats: ChatSummary[] }) => void) | undefined;
-    const first = createChat({ id: 'first', title: 'First workspace', cwd: '/repo/first' });
-    const second = createChat({ id: 'second', title: 'Second workspace', cwd: '/repo/second' });
-    const third = createChat({ id: 'third', title: 'Third workspace', cwd: '/repo/third' });
+    const first = createChat({ id: 'first', title: 'First recent', cwd: '/repo/first' });
+    const second = createChat({ id: 'second', title: 'Second recent', cwd: '/repo/second' });
+    const third = createChat({ id: 'third', title: 'New working session', cwd: '/repo/third', status: 'running' });
     const harness = createHarness();
     (harness.api.startChatListStream as jest.Mock).mockImplementation(async (_options, onBatch) => {
       streamBatch = onBatch;
@@ -770,68 +902,44 @@ describe('DrawerContent render behavior matrix', () => {
     });
     const tree = await renderDrawer(harness);
     const root = tree.root as Queryable;
-    await press(findByLabel(root, 'second, 1 chats'));
-    await press(findByLabel(root, 'second, 1 chats'));
+    await press(findByLabel(root, 'Recent, 2 sessions'));
 
     await act(async () => {
-      streamBatch?.({ streamId: 'stream', limit: 20, done: false, chats: [first, third] });
+      streamBatch?.({ streamId: 'stream', limit: 20, done: false, chats: [first, second, third] });
       await Promise.resolve();
     });
-    expect(findByLabel(root, 'third, 1 chats').props.accessibilityState).toEqual(expect.objectContaining({ expanded: true }));
-    expect(findByLabel(root, 'second, 1 chats')).toBeDefined();
+    expect(findByLabel(root, 'Recent, 2 sessions').props.accessibilityState).toEqual(expect.objectContaining({ expanded: false }));
+    expect(findByLabel(root, 'Working now, 1 session').props.accessibilityState).toEqual(expect.objectContaining({ expanded: true }));
+    expect(hasText(root, 'First recent')).toBe(false);
+    expect(hasText(root, 'New working session')).toBe(true);
     act(() => tree.unmount());
   });
 
-  it('keeps rendered pin state usable when persistence writes reject', async () => {
-    jest.mocked(FileSystem.writeAsStringAsync).mockRejectedValue(new Error('write failed'));
-    jest.spyOn(ActionSheetIOS, 'showActionSheetWithOptions')
-      .mockImplementation((_options, callback) => callback(0));
-    const harness = createHarness({ chats: [createChat({ title: 'Write failure', cwd: '/repo/write-failure' })] });
-    const tree = await renderDrawer(harness);
-    const root = tree.root as Queryable;
-
-    await press(findByLabel(root, 'Write failure, done'), 'onLongPress');
-    await press(findByLabel(root, 'write-failure, 1 chats'), 'onLongPress');
-    expect(findByLabel(root, 'Write failure, done, pinned')).toBeDefined();
-    act(() => tree.unmount());
-  });
-
-  it('renders pressed responder states for actions, workspaces, pagination, chats, and settings', async () => {
+  it('renders pressed responder states for header, folders, lanes, chats, and footer actions', async () => {
     const harness = createHarness({
-      chats: Array.from({ length: 12 }, (_, index) => createChat({
+      chats: Array.from({ length: 4 }, (_, index) => createChat({
         id: `pressed-${index}`,
-        title: index === 1 ? '' : `Pressed ${index}`,
+        title: `Pressed ${index}`,
         cwd: '/repo/pressed',
-        parentThreadId: index === 1 ? 'pressed-0' : undefined,
-        subAgentDepth: index === 1 ? 1 : undefined,
         status: index === 1 ? 'error' : 'complete',
         lastError: index === 1 ? 'Pressed error' : undefined,
       })),
     });
-    const tree = await renderDrawer(harness, { selectedChatId: 'pressed-1', workspaceChatLimit: 10 });
+    const tree = await renderDrawer(harness, { selectedChatId: 'pressed-1' });
     const root = tree.root as Queryable;
-    await press(findByLabel(root, 'Filter chat agents'));
-    await act(async () => {
-      (findByLabel(root, 'Search chats').props.onChangeText as (value: string) => void)('/repo/pressed');
-      await Promise.resolve();
-    });
     await exercisePressResponders(root);
     renderPressedStyles(root);
     act(() => tree.unmount());
   });
 
-  it('orders multiple persisted pinned roots and workspaces and keeps the newest duplicate', async () => {
-    jest.mocked(FileSystem.readAsStringAsync)
-      .mockResolvedValueOnce(JSON.stringify({ ids: ['pin-b', 'pin-a'] }))
-      .mockResolvedValueOnce(JSON.stringify({ version: 1, paths: ['/repo/z', '/repo/a'] }));
+  it('keeps the newest duplicate and renders rows in attention order', async () => {
     const newest = createChat({ id: 'duplicate-order', title: 'Newest duplicate order', cwd: '/repo/a', updatedAt: '2026-07-20T00:20:00.000Z' });
     const older = createChat({ id: 'duplicate-order', title: 'Older duplicate order', cwd: '/repo/a', updatedAt: '2026-07-19T00:20:00.000Z' });
     const harness = createHarness({
       chats: [
         createChat({ id: 'plain', title: 'Plain root', cwd: '/repo/a', updatedAt: '2026-07-20T00:29:00.000Z' }),
-        createChat({ id: 'pin-a', title: 'Pinned A', cwd: '/repo/a', updatedAt: '2026-07-20T00:27:00.000Z' }),
-        createChat({ id: 'pin-b', title: 'Pinned B', cwd: '/repo/a', updatedAt: '2026-07-20T00:28:00.000Z' }),
-        createChat({ id: 'z-root', title: 'Z workspace', cwd: '/repo/z' }),
+        createChat({ id: 'working', title: 'Working root', cwd: '/repo/a', status: 'running', updatedAt: '2026-07-20T00:27:00.000Z' }),
+        createChat({ id: 'failed', title: 'Failed root', cwd: '/repo/z', status: 'error' }),
         newest,
         older,
       ],
@@ -840,30 +948,10 @@ describe('DrawerContent render behavior matrix', () => {
     const root = tree.root as Queryable;
     expect(hasText(root, 'Newest duplicate order')).toBe(true);
     expect(hasText(root, 'Older duplicate order')).toBe(false);
-    expect(findByLabel(root, 'Pinned B, done, pinned')).toBeDefined();
-    expect(findByLabel(root, 'Pinned A, done, pinned')).toBeDefined();
-    expect(findByLabel(root, 'z, 1 chats').props.accessibilityState).toEqual(expect.objectContaining({ expanded: false }));
+    expect(findByLabel(root, 'Needs your attention, 1 session')).toBeDefined();
+    expect(findByLabel(root, 'Working now, 1 session')).toBeDefined();
+    expect(findByLabel(root, 'Recent, 2 sessions')).toBeDefined();
     act(() => tree.unmount());
-  });
-
-  it('ignores persisted pin reads that settle after unmount', async () => {
-    let resolveChatPins: ((value: string) => void) | undefined;
-    let rejectWorkspacePins: ((error: Error) => void) | undefined;
-    jest.mocked(FileSystem.readAsStringAsync)
-      .mockImplementationOnce(() => new Promise((resolve) => { resolveChatPins = resolve; }))
-      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectWorkspacePins = reject; }));
-    jest.mocked(FileSystem.readAsStringAsync).mockClear();
-    const harness = createHarness({ chats: [createChat({ title: 'Late persistence' })] });
-    const tree = await renderDrawer(harness);
-    act(() => tree.unmount());
-
-    await act(async () => {
-      resolveChatPins?.(JSON.stringify({ ids: ['thread'] }));
-      rejectWorkspacePins?.(new Error('late failure'));
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(FileSystem.readAsStringAsync).toHaveBeenCalledTimes(2);
   });
 
   it('formats five-digit chat totals as a whole compact count', async () => {
@@ -898,7 +986,7 @@ describe('DrawerContent render behavior matrix', () => {
     act(() => tree.unmount());
   });
 
-  it('settles refreshing through the stream error callback and closes an empty filter', async () => {
+  it('settles refreshing through the stream error callback', async () => {
     let streamError: (() => void) | undefined;
     const harness = createHarness({ chats: [listedChat] });
     (harness.api.startChatListStream as jest.Mock)
@@ -912,8 +1000,6 @@ describe('DrawerContent render behavior matrix', () => {
       });
     const tree = await renderDrawer(harness);
     const root = tree.root as Queryable;
-    await press(findByLabel(root, 'Filter chat agents'));
-    await press(findByLabel(root, 'Filter chat agents'));
     const refreshControl = root.findAll((node) => node.type === RefreshControl)[0];
     if (typeof refreshControl?.props.onRefresh !== 'function') throw new Error('Expected error refresh control');
 
@@ -1056,6 +1142,8 @@ describe('DrawerContent partial history diagnostics', () => {
       getChatSummaries: jest.fn().mockResolvedValue([]),
       listChats: jest.fn().mockResolvedValue([listedChat]),
       listAllChats,
+      listApprovals: jest.fn().mockResolvedValue([]),
+      listPendingUserInputs: jest.fn().mockResolvedValue([]),
       startChatListStream: jest.fn().mockImplementation(async (_options, onBatch) => {
         onBatch({ streamId: 'stream', limit: 20, done: true, chats: [listedChat] });
         return { streamId: 'stream', cancel: jest.fn() };
@@ -1093,11 +1181,11 @@ describe('DrawerContent partial history diagnostics', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(hasText(tree.root as Queryable, 'Some chat history could not be listed')).toBe(true);
-    expect(hasText(tree.root as Queryable, 'Chat listing reached the 32-page safety limit. Tap to retry.')).toBe(true);
+    expect(hasText(tree.root as Queryable, 'Some drawer data may be stale')).toBe(true);
+    expect(hasText(tree.root as Queryable, 'Chat listing reached the 32-page safety limit.')).toBe(true);
 
     const retry = (tree.root as Queryable).findAll(
-      (node) => node.props.accessibilityLabel === 'Chat history is partial. Retry loading all chats'
+      (node) => node.props.accessibilityLabel === 'Chat listing reached the 32-page safety limit. Retry'
     )[0];
     if (typeof retry?.props.onPress !== 'function') throw new Error('Expected retry action');
     await act(async () => {
@@ -1107,7 +1195,7 @@ describe('DrawerContent partial history diagnostics', () => {
     });
 
     expect(listAllChats).toHaveBeenLastCalledWith(expect.objectContaining({ forceRefresh: true }));
-    expect(hasText(tree.root as Queryable, 'Some chat history could not be listed')).toBe(false);
+    expect(hasText(tree.root as Queryable, 'Some drawer data may be stale')).toBe(false);
     act(() => tree?.unmount());
   });
 });
